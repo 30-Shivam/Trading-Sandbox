@@ -97,3 +97,19 @@ def log_trade_signals(df: pd.DataFrame, config_snapshot: dict) -> int:
     for _, row in eligible.iterrows():
         log_trade_signal(row.to_dict(), config_snapshot)
     return len(eligible)
+
+
+def get_unsettled_signals() -> list[dict]:
+    """Return every Trade_Signals document not yet resolved to a terminal
+    outcome. The settlement job re-walks each of these from scratch every
+    run -- cheap, and avoids needing to track incremental per-trade state."""
+    db = get_db()
+    return list(db[COLLECTION_NAME].find({"settled": {"$ne": True}}))
+
+
+def mark_settled(ticker: str, signal_date: str) -> None:
+    db = get_db()
+    db[COLLECTION_NAME].update_one(
+        {"ticker": ticker, "signal_date": signal_date},
+        {"$set": {"settled": True}},
+    )

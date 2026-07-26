@@ -50,6 +50,10 @@ class TradingConfig:
     # Position sizing
     fractional_share_decimals: int = 4     # precision for fractional-share sizing
 
+    # Settlement (Phase 3)
+    max_holding_days: int = 15             # mark EXPIRED if neither stop nor target
+                                            # hit within N trading days of entry
+
     def to_dict(self) -> dict:
         return asdict(self)
 
