@@ -5,3 +5,4 @@ yfinance>=0.2.60
 lxml>=6.0.0
 pymongo[srv]>=4.9
 python-dotenv>=1.0
+optuna>=4.9
