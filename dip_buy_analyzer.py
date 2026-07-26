@@ -50,9 +50,17 @@ for every scanned ticker:
      last close is to the buy trigger into a single priority score, mapped to
      a Signal of Strong Buy / Buy / Watch / Ignore.
 
+  9. Every "Strong Buy"/"Buy" signal is logged to MongoDB's Trade_Signals
+     collection (idempotent per ticker/day), using the *pre-allocation*
+     Signal -- a personal cash shortfall ("Insufficient Funds") shouldn't be
+     recorded as if the underlying technical signal changed. If MONGODB_URI
+     isn't configured, the dashboard still works; logging is just skipped
+     with a sidebar note.
+
 The actual level/score/allocation math lives in the `swingtrade` package
-(no yfinance/streamlit dependency there); this file only handles data
-fetching, Streamlit UI, and wiring the two together.
+(no yfinance/streamlit dependency there); persistence lives in the
+`storage` package (no yfinance/streamlit dependency there either). This
+file only handles data fetching, Streamlit UI, and wiring it all together.
 """
 
 import re
@@ -63,6 +71,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+import storage
 import swingtrade
 
 # ----------------------------- Configuration -----------------------------
@@ -251,6 +260,20 @@ def style_results(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     )
 
 
+@st.cache_resource(show_spinner=False)
+def init_storage() -> tuple[bool, str]:
+    """One-time-per-process MongoDB connectivity check + index setup.
+    Returns (ok, message) rather than raising, so a missing/unreachable
+    database degrades the dashboard gracefully instead of crashing it."""
+    try:
+        storage.ensure_indexes()
+        return True, ""
+    except storage.MongoNotConfigured as exc:
+        return False, str(exc)
+    except Exception as exc:
+        return False, f"Could not connect to MongoDB: {exc}"
+
+
 def main():
     st.set_page_config(page_title="Swing-Trading Dashboard", layout="wide")
     st.title("Swing-Trading Dashboard")
@@ -318,6 +341,20 @@ def main():
     results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
     results_df = swingtrade.add_trade_score(results_df, CONFIG)
     results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
+
+    # Log signals BEFORE the capital-allocation overlay: Trade_Signals should
+    # reflect the underlying technical signal, not whether cash happened to
+    # be available today.
+    storage_ok, storage_message = init_storage()
+    if storage_ok:
+        try:
+            logged_count = storage.log_trade_signals(results_df, CONFIG.to_dict())
+            st.sidebar.caption(f"Logged {logged_count} signal(s) to MongoDB.")
+        except Exception as exc:
+            st.sidebar.warning(f"Signal logging failed: {exc}")
+    else:
+        st.sidebar.caption(f"MongoDB not connected ({storage_message}) -- signals aren't being logged.")
+
     results_df, capital_allocated = swingtrade.allocate_capital(results_df, total_cash)
     remaining_idle_cash = round(total_cash - capital_allocated, 2)
 
