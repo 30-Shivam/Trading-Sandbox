@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+swing_orders.csv
+ARCHITECTURE_PLAN.md

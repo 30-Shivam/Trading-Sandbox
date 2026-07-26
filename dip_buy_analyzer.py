@@ -6,17 +6,17 @@ It applies a fixed, deterministic rule set to historical price data to compute,
 for every scanned ticker:
 
   1. A limit BUY price, defined as the structural support level: the lowest
-     daily Low over the last SUPPORT_LOOKBACK_DAYS trading days (recent swing
-     low). The 20-day SMA discount price is still reported for context but no
+     daily Low over the last support_lookback_days trading days (recent swing
+     low). The SMA discount price is still reported for context but no
      longer used to set the buy price.
 
      Buy_Signal is True only when both are satisfied:
        a) the last close is at/below the structural support buy price, and
-       b) the 14-day RSI is below RSI_OVERSOLD_THRESHOLD (mathematically
+       b) the 14-day RSI is below rsi_oversold_threshold (mathematically
           oversold), computed via pandas_ta.
 
   2. A limit SELL (take-profit) price, defined as
-       buy_price + (ATR_TAKE_PROFIT_MULTIPLIER * ATR14)
+       buy_price + (atr_take_profit_multiplier * ATR14)
      where ATR14 is the 14-day Average True Range (via pandas_ta), so the
      take-profit target scales with the stock's actual current volatility
      instead of a static percentage.
@@ -31,27 +31,28 @@ for every scanned ticker:
 
   5. Catalyst awareness: the next upcoming earnings date and the most recent
      news headline (yfinance). Catalyst_Warning is True when the next
-     earnings date falls within EARNINGS_WARNING_DAYS days, flagging a
+     earnings date falls within earnings_warning_days days, flagging a
      volatile binary event -- shown in the table (highlighted red) rather
      than removed, so it can inform rather than hide the decision.
 
   6. Macro trend and liquidity gates: tickers are excluded from the results
      when the last close is below the 200-day SMA (macro downtrend) or when
-     20-day average dollar volume is below MIN_DOLLAR_VOLUME (too illiquid to
+     20-day average dollar volume is below min_dollar_volume (too illiquid to
      swing-trade safely). A broad-market gate (MARKET_INDEX_TICKER vs. its
      own 200-day SMA) halts the whole scan when the index itself is in a
      macro downtrend.
 
   7. Shares_To_Buy = position_budget / buy_price, rounded to
-     FRACTIONAL_SHARE_DECIMALS places -- a fixed-dollar-budget position size,
+     fractional_share_decimals places -- a fixed-dollar-budget position size,
      recalculated live from the sidebar "Position Budget" input.
 
   8. Trade_Score (0-100) blends Risk-to-Reward Ratio, RSI, and how close the
      last close is to the buy trigger into a single priority score, mapped to
      a Signal of Strong Buy / Buy / Watch / Ignore.
 
-Every number is derived mechanically from the fetched data using the constants
-below.
+The actual level/score/allocation math lives in the `swingtrade` package
+(no yfinance/streamlit dependency there); this file only handles data
+fetching, Streamlit UI, and wiring the two together.
 """
 
 import re
@@ -59,49 +60,28 @@ import time
 from pathlib import Path
 
 import pandas as pd
-import pandas_ta as ta
 import streamlit as st
 import yfinance as yf
+
+import swingtrade
 
 # ----------------------------- Configuration -----------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 
+CONFIG = swingtrade.DEFAULT_CONFIG   # Phase 6 will load this from MongoDB System_Config
+
 LOOKBACK_PERIOD = "1y"           # data window to fetch (needs 200d+ for SMA200)
-MA_WINDOW = 20                   # moving-average window (trading days), context only
-SUPPORT_LOOKBACK_DAYS = 20       # window to scan for the structural swing low
-MA_DISCOUNT_PCT = 0.05           # 5% below the 20-day MA, context only
-
-RSI_WINDOW = 14                  # RSI lookback (trading days)
-ATR_WINDOW = 14                  # ATR lookback (trading days)
-RSI_OVERSOLD_THRESHOLD = 45      # buy signal requires RSI below this
-ATR_TAKE_PROFIT_MULTIPLIER = 1.5 # sell_price = buy_price + multiplier * ATR14
-STOP_LOSS_ATR_MULTIPLIER = 1.0   # stop_loss = buy_price - multiplier * ATR14
-
-SMA_TREND_WINDOW = 200           # macro trend filter window (trading days)
-VOLUME_LOOKBACK_DAYS = 20        # window for average volume / liquidity check
-MIN_DOLLAR_VOLUME = 5_000_000    # exclude tickers below this 20d $ volume
-DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for position sizing
-DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash
-FRACTIONAL_SHARE_DECIMALS = 4    # precision for fractional-share sizing
-
 MARKET_INDEX_TICKER = "SPY"      # broad-market proxy for the macro gate
 
 NEWS_HEADLINE_COUNT = 3          # recent news articles to fetch per ticker
-EARNINGS_WARNING_DAYS = 14       # flag Catalyst_Warning if earnings within N days
+
+DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for position sizing
+DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash
 
 REQUEST_DELAY_SEC = 0.5          # pause between API calls to avoid rate-limiting
 SCAN_CACHE_TTL_SEC = 900         # how long a scan result stays cached (15 min)
-
-# Trade_Score weights (must sum to 100)
-RRR_SCORE_WEIGHT = 40            # points for Risk-to-Reward Ratio
-RRR_SCORE_CAP = 4.0              # RRR at/above this earns full RRR points
-RSI_SCORE_WEIGHT = 40            # points for RSI (oversold-ness)
-RSI_SCORE_FLOOR = 30             # RSI at/below this earns full RSI points
-RSI_SCORE_CEILING = 60           # RSI at/above this earns zero RSI points
-DISTANCE_SCORE_WEIGHT = 20       # points for proximity to the buy trigger
-DISTANCE_SCORE_CAP_PCT = 20      # distance at/above this earns zero points
 
 SIGNAL_COLORS = {
     "Strong Buy": "background-color: #1b7a3d; color: #ffffff;",
@@ -212,159 +192,9 @@ def get_recent_headlines(ticker_obj: yf.Ticker, count: int = NEWS_HEADLINE_COUNT
 
 
 def check_market_uptrend(index_ticker: str = MARKET_INDEX_TICKER) -> tuple[bool, float, float]:
-    """Return (is_uptrend, last_close, sma200) for the broad-market index."""
+    """Fetch the broad-market index and evaluate it via swingtrade.is_market_uptrend."""
     df = fetch_data(index_ticker)
-    sma200 = df["Close"].rolling(window=SMA_TREND_WINDOW).mean().iloc[-1]
-    last_close = float(df["Close"].iloc[-1])
-    sma200 = float(sma200)
-    if pd.isna(sma200):
-        raise RuntimeError(f"insufficient history to compute {SMA_TREND_WINDOW}-day SMA for {index_ticker}")
-    return last_close >= sma200, last_close, sma200
-
-
-def compute_levels(ticker: str, df: pd.DataFrame, ticker_obj: yf.Ticker) -> dict:
-    df = df.copy()
-    df["SMA20"] = df["Close"].rolling(window=MA_WINDOW).mean()
-    df["SMA200"] = df["Close"].rolling(window=SMA_TREND_WINDOW).mean()
-    df["RSI"] = ta.rsi(df["Close"], length=RSI_WINDOW)
-    df["ATR"] = ta.atr(df["High"], df["Low"], df["Close"], length=ATR_WINDOW)
-    df["AvgVolume"] = df["Volume"].rolling(window=VOLUME_LOOKBACK_DAYS).mean()
-
-    last_row = df.iloc[-1]
-    last_close = float(last_row["Close"])
-    last_date = df.index[-1]
-    sma20 = float(last_row["SMA20"])
-    sma200 = float(last_row["SMA200"])
-    rsi = float(last_row["RSI"])
-    atr = float(last_row["ATR"])
-    avg_volume = float(last_row["AvgVolume"])
-    if pd.isna(sma20):
-        raise RuntimeError(f"insufficient history to compute {MA_WINDOW}-day SMA")
-    if pd.isna(sma200):
-        raise RuntimeError(f"insufficient history to compute {SMA_TREND_WINDOW}-day SMA")
-    if pd.isna(rsi):
-        raise RuntimeError(f"insufficient history to compute {RSI_WINDOW}-day RSI")
-    if pd.isna(atr):
-        raise RuntimeError(f"insufficient history to compute {ATR_WINDOW}-day ATR")
-    if pd.isna(avg_volume):
-        raise RuntimeError(f"insufficient history to compute {VOLUME_LOOKBACK_DAYS}-day average volume")
-
-    if last_close < sma200:
-        raise RuntimeError(
-            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA200 {sma200:.2f})"
-        )
-
-    dollar_volume = avg_volume * last_close
-    if dollar_volume < MIN_DOLLAR_VOLUME:
-        raise RuntimeError(
-            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
-            f"< ${MIN_DOLLAR_VOLUME:,.0f})"
-        )
-
-    recent_window = df.tail(SUPPORT_LOOKBACK_DAYS)
-    support_level = float(recent_window["Low"].min())
-    support_date = recent_window["Low"].idxmin()
-    ma_discount_price = sma20 * (1 - MA_DISCOUNT_PCT)
-
-    buy_price = round(support_level, 2)
-    buy_basis = f"structural swing low (last {SUPPORT_LOOKBACK_DAYS}d, {support_date.date()})"
-
-    sell_price = round(buy_price + (ATR_TAKE_PROFIT_MULTIPLIER * atr), 2)
-    stop_loss = round(buy_price - (STOP_LOSS_ATR_MULTIPLIER * atr), 2)
-    risk = buy_price - stop_loss
-    # risk can be <= 0 only if ATR rounds to 0 (flat price action); fall back
-    # to 0.0 instead of None so the column stays numeric in the DataFrame/CSV.
-    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
-
-    distance_to_buy_pct = ((last_close - buy_price) / buy_price) * 100
-    buy_signal = (last_close <= buy_price) and (rsi < RSI_OVERSOLD_THRESHOLD)
-
-    now_utc = pd.Timestamp.now(tz="UTC")
-    next_earnings = get_next_earnings_date(ticker_obj, now_utc)
-    if next_earnings is not None:
-        days_to_earnings = (next_earnings - now_utc).total_seconds() / 86400
-        catalyst_warning = days_to_earnings <= EARNINGS_WARNING_DAYS
-        next_earnings_date = next_earnings.date()
-    else:
-        catalyst_warning = False
-        next_earnings_date = None
-
-    headlines = get_recent_headlines(ticker_obj)
-    top_headline = headlines[0] if headlines else ""
-
-    return {
-        "Ticker": ticker,
-        "As_Of": last_date.date(),
-        "Last_Close": round(last_close, 2),
-        "SMA20": round(sma20, 2),
-        "MA_Discount_Price": round(ma_discount_price, 2),
-        "Support_Level": round(support_level, 2),
-        "Support_Date": support_date.date(),
-        "RSI": round(rsi, 2),
-        "ATR": round(atr, 2),
-        "Buy_Price": buy_price,
-        "Buy_Basis": buy_basis,
-        "Buy_Signal": buy_signal,
-        "Sell_Price": sell_price,
-        "Stop_Loss": stop_loss,
-        "RRR": rrr,
-        "Distance_to_Buy_Pct": round(distance_to_buy_pct, 2),
-        "Next_Earnings_Date": next_earnings_date,
-        "Catalyst_Warning": catalyst_warning,
-        "Top_Headline": top_headline,
-    }
-
-
-def signal_for_score(score: float) -> str:
-    if score > 80:
-        return "Strong Buy"
-    if score >= 60:
-        return "Buy"
-    if score >= 40:
-        return "Watch"
-    return "Ignore"
-
-
-def add_trade_score(df: pd.DataFrame) -> pd.DataFrame:
-    """Blend RRR, RSI, and Distance_to_Buy_Pct into a 0-100 Trade_Score and
-    map it to a Strong Buy / Buy / Watch / Ignore Signal."""
-    df = df.copy()
-
-    rrr_score = (df["RRR"].clip(lower=0, upper=RRR_SCORE_CAP) / RRR_SCORE_CAP) * RRR_SCORE_WEIGHT
-
-    rsi_clipped = df["RSI"].clip(lower=RSI_SCORE_FLOOR, upper=RSI_SCORE_CEILING)
-    rsi_score = (
-        (RSI_SCORE_CEILING - rsi_clipped) / (RSI_SCORE_CEILING - RSI_SCORE_FLOOR)
-    ) * RSI_SCORE_WEIGHT
-
-    distance_clipped = df["Distance_to_Buy_Pct"].clip(lower=0, upper=DISTANCE_SCORE_CAP_PCT)
-    distance_score = (1 - distance_clipped / DISTANCE_SCORE_CAP_PCT) * DISTANCE_SCORE_WEIGHT
-
-    df["Trade_Score"] = (rrr_score + rsi_score + distance_score).round(1)
-    df["Signal"] = df["Trade_Score"].apply(signal_for_score)
-    return df
-
-
-def allocate_capital(df: pd.DataFrame, total_cash: float) -> tuple[pd.DataFrame, float]:
-    """Greedily allocate total_cash down the (already Trade_Score-sorted) list
-    of Strong Buy / Buy signals, in order. A trade whose Est_Cost exceeds the
-    remaining cash is relabeled Insufficient Funds -- without consuming any
-    cash or stopping the walk, so a cheaper trade further down the list can
-    still be funded. Returns the updated DataFrame and total capital spent."""
-    df = df.copy()
-    remaining_cash = total_cash
-    signals = df["Signal"].tolist()
-    costs = df["Est_Cost"].tolist()
-    for i in range(len(df)):
-        if signals[i] not in ("Strong Buy", "Buy"):
-            continue
-        if costs[i] <= remaining_cash:
-            remaining_cash -= costs[i]
-        else:
-            signals[i] = "Insufficient Funds"
-    df["Signal"] = signals
-    capital_allocated = round(total_cash - remaining_cash, 2)
-    return df, capital_allocated
+    return swingtrade.is_market_uptrend(df, CONFIG)
 
 
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Checking broad-market macro trend...")
@@ -385,7 +215,14 @@ def scan_watchlist(tickers: tuple[str, ...]) -> tuple[pd.DataFrame, list[tuple[s
         try:
             df = fetch_data(ticker)
             ticker_obj = yf.Ticker(ticker)
-            results.append(compute_levels(ticker, df, ticker_obj))
+            now_utc = pd.Timestamp.now(tz="UTC")
+            next_earnings = get_next_earnings_date(ticker_obj, now_utc)
+            headlines = get_recent_headlines(ticker_obj)
+            top_headline = headlines[0] if headlines else ""
+            levels = swingtrade.compute_levels(
+                ticker, df, CONFIG, next_earnings_date=next_earnings, top_headline=top_headline
+            )
+            results.append(levels)
         except Exception as exc:
             skipped.append((ticker, str(exc)))
     results_df = pd.DataFrame(results)
@@ -477,11 +314,11 @@ def main():
                 st.dataframe(pd.DataFrame(skipped, columns=["Ticker", "Reason"]), hide_index=True)
         st.stop()
 
-    results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(FRACTIONAL_SHARE_DECIMALS)
+    results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(CONFIG.fractional_share_decimals)
     results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
-    results_df = add_trade_score(results_df)
+    results_df = swingtrade.add_trade_score(results_df, CONFIG)
     results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
-    results_df, capital_allocated = allocate_capital(results_df, total_cash)
+    results_df, capital_allocated = swingtrade.allocate_capital(results_df, total_cash)
     remaining_idle_cash = round(total_cash - capital_allocated, 2)
 
     strong_buys = int((results_df["Signal"] == "Strong Buy").sum())

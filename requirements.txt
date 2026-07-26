@@ -1,0 +1,5 @@
+streamlit>=1.60.0
+pandas>=2.3.2
+pandas_ta>=0.4.71b0
+yfinance>=0.2.60
+lxml>=6.0.0
