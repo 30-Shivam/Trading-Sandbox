@@ -58,9 +58,14 @@ MIN_TRADES_FOR_SCORE = 15    # penalize candidates with too few pooled trades to
 UNDER_SAMPLED_PENALTY = -10.0  # well below any realistic sharpe_like, but finite (no inf/NaN into Optuna)
 
 # Search space bounds for the tunables this study is allowed to move.
-RSI_OVERSOLD_RANGE = (25.0, 55.0)
+# A prior run pinned rsi_oversold_threshold at 54.9/55 and stop_loss_atr_multiplier
+# at 0.53/0.5 -- both right against their old boundaries, which usually means the
+# bound was cutting off the true optimum rather than the search finding an interior
+# sweet spot. Widened accordingly; atr_take_profit_multiplier landed interior
+# (2.13 of 1.0-3.0) so it's untouched.
+RSI_OVERSOLD_RANGE = (15.0, 70.0)
 ATR_TAKE_PROFIT_RANGE = (1.0, 3.0)
-STOP_LOSS_ATR_RANGE = (0.5, 2.5)
+STOP_LOSS_ATR_RANGE = (0.25, 3.0)
 
 
 def build_objective(ticker_data: dict, market_data: pd.DataFrame, folds: list):
