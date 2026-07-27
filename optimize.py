@@ -26,15 +26,30 @@ reviews it and runs promote_config.py to actually put it live
 (champion/challenger pattern): a noisy optimization run should not be able
 to silently degrade live trading.
 
-Live Trade_Outcomes are reported for context (how many exist, their
-aggregate performance) but are NOT mixed into the per-trial score: live
-outcomes were generated under one specific historical config, not the
-trial's varying candidate config, so blending them into a comparison across
-candidates would conflate two different questions. As Trade_Outcomes
-accumulates, a future revision can incorporate it more directly.
+Recency-weighted scoring: out-of-sample folds closer to --end (i.e. closer
+to today, the period your actual live trades fall in) count exponentially
+more toward the pooled score than older folds, via --recency-half-life-days
+(default 180). This is deliberately NOT the same thing as mixing live
+Trade_Outcomes documents directly into the score -- those reflect one
+specific historical config, not each trial's varying candidate, so grafting
+them in would conflate two different questions (see summarize_weighted()).
+Instead, every trial gets re-simulated fairly over the SAME recent calendar
+window under ITS OWN candidate config, and that recent window is simply
+weighted more heavily -- so what's been working lately (the regime your
+live trades are actually part of) has outsized influence on the winner,
+without corrupting the cross-candidate comparison. Weighting uses Kish's
+effective sample size (not raw trade_count) for the MIN_TRADES_FOR_SCORE
+check, so a large pool of old, near-zero-weight trades can't fake
+statistical significance. Pass --recency-half-life-days 0 to fall back to
+old-style uniform pooling.
+
+Live Trade_Outcomes are still reported separately for context (how many
+exist, their aggregate performance) -- useful as a sanity check against what
+the backtest predicts, but not an input to the score.
 
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
+    python optimize.py --trials 50 --recency-half-life-days 90   # weight recent regime more heavily
 """
 
 import argparse
@@ -68,7 +83,61 @@ ATR_TAKE_PROFIT_RANGE = (1.0, 3.0)
 STOP_LOSS_ATR_RANGE = (0.25, 3.0)
 
 
-def build_objective(ticker_data: dict, market_data: pd.DataFrame, folds: list):
+def fold_weight(fold: swingtrade.Fold, end: pd.Timestamp, half_life_days: float) -> float:
+    """Exponential recency weight for one fold's out-of-sample window: 1.0
+    at `end`, halving every `half_life_days`. half_life_days <= 0 disables
+    weighting (every fold counts equally, matching the old behavior)."""
+    if half_life_days <= 0:
+        return 1.0
+    age_days = max((end - fold.out_sample_end).days, 0)
+    return 0.5 ** (age_days / half_life_days)
+
+
+def summarize_weighted(fold_results: list, end: pd.Timestamp, half_life_days: float) -> dict:
+    """Like swingtrade.summarize_trades, but pools out-of-sample trades
+    weighted by fold recency instead of uniformly -- the current market
+    regime counts for more than one from a year ago. Uses Kish's effective
+    sample size (not raw trade_count) so heavy weighting can't let a big
+    pile of old, near-zero-weight trades masquerade as a trustworthy
+    sample."""
+    pnls, weights, win_weight, total_weight = [], [], 0.0, 0.0
+    raw_count = 0
+    for fr in fold_results:
+        w = fold_weight(fr.fold, end, half_life_days)
+        for t in fr.out_sample_trades:
+            if t["status"] == "OPEN":
+                continue
+            raw_count += 1
+            pnls.append(t["pnl_pct"])
+            weights.append(w)
+            total_weight += w
+            if t["status"] == "WIN":
+                win_weight += w
+
+    if not pnls or total_weight <= 0:
+        return {
+            "trade_count": 0, "effective_trade_count": 0.0,
+            "win_rate": None, "avg_pnl_pct": None, "pnl_std": None, "sharpe_like": None,
+        }
+
+    pnl_s = pd.Series(pnls)
+    w_s = pd.Series(weights)
+    weighted_mean = float((pnl_s * w_s).sum() / total_weight)
+    weighted_var = float((w_s * (pnl_s - weighted_mean) ** 2).sum() / total_weight)
+    weighted_std = weighted_var ** 0.5
+    effective_n = float(total_weight ** 2 / (w_s ** 2).sum())  # Kish effective sample size
+
+    return {
+        "trade_count": raw_count,
+        "effective_trade_count": round(effective_n, 1),
+        "win_rate": round(win_weight / total_weight * 100, 2),
+        "avg_pnl_pct": round(weighted_mean, 2),
+        "pnl_std": round(weighted_std, 2),
+        "sharpe_like": round(weighted_mean / weighted_std, 3) if weighted_std > 0 else None,
+    }
+
+
+def build_objective(ticker_data: dict, market_data: pd.DataFrame, folds: list, end: pd.Timestamp, half_life_days: float):
     def objective(trial: optuna.Trial) -> float:
         candidate = swingtrade.TradingConfig(**{
             **swingtrade.DEFAULT_CONFIG.to_dict(),
@@ -78,11 +147,10 @@ def build_objective(ticker_data: dict, market_data: pd.DataFrame, folds: list):
         })
 
         fold_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, candidate)
-        pooled_oos_trades = [t for fr in fold_results for t in fr.out_sample_trades]
-        metrics = swingtrade.summarize_trades(pooled_oos_trades)
+        metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
 
-        if metrics["trade_count"] < MIN_TRADES_FOR_SCORE or metrics["sharpe_like"] is None:
+        if metrics["effective_trade_count"] < MIN_TRADES_FOR_SCORE or metrics["sharpe_like"] is None:
             return UNDER_SAMPLED_PENALTY
         return metrics["sharpe_like"]
 
@@ -90,8 +158,9 @@ def build_objective(ticker_data: dict, market_data: pd.DataFrame, folds: list):
 
 
 def report_live_outcomes_context() -> None:
-    """Informational only -- see module docstring for why live outcomes
-    aren't mixed into the per-trial score yet."""
+    """Informational only -- see module docstring for why live outcomes are
+    kept out of the per-trial score itself (recency-weighting is the
+    mechanism that lets the score respond to what's working lately)."""
     try:
         db = storage.get_db()
     except storage.MongoNotConfigured:
@@ -115,6 +184,11 @@ def main():
     parser.add_argument("--step-days", type=int, default=30)
     parser.add_argument("--tickers", default=None, help="Comma-separated tickers to override watchlist.txt.")
     parser.add_argument("--seed", type=int, default=None, help="Sampler seed, for reproducible searches.")
+    parser.add_argument(
+        "--recency-half-life-days", type=float, default=180.0,
+        help="Out-of-sample folds this many days before --end count half as much as the most "
+             "recent fold (exponential decay). 0 disables weighting (uniform pooling).",
+    )
     args = parser.parse_args()
 
     try:
@@ -163,13 +237,20 @@ def main():
         sys.exit(1)
 
     baseline_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG)
-    baseline_metrics = swingtrade.summarize_trades([t for fr in baseline_results for t in fr.out_sample_trades])
-    print(f"\nBaseline (current DEFAULT_CONFIG) pooled out-of-sample metrics: {baseline_metrics}")
+    baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
+    weight_note = (
+        f"(recency-weighted, half-life={args.recency_half_life_days:.0f}d)"
+        if args.recency_half_life_days > 0 else "(uniform pooling)"
+    )
+    print(f"\nBaseline (current DEFAULT_CONFIG) pooled out-of-sample metrics {weight_note}: {baseline_metrics}")
     report_live_outcomes_context()
 
     sampler = optuna.samplers.TPESampler(seed=args.seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
-    study.optimize(build_objective(ticker_data, market_data, folds), n_trials=args.trials, show_progress_bar=False)
+    study.optimize(
+        build_objective(ticker_data, market_data, folds, end, args.recency_half_life_days),
+        n_trials=args.trials, show_progress_bar=False,
+    )
 
     best = study.best_trial
     best_metrics = best.user_attrs.get("metrics", {})
@@ -188,7 +269,8 @@ def main():
     candidate_config = swingtrade.TradingConfig(**{**swingtrade.DEFAULT_CONFIG.to_dict(), **best.params})
     notes = (
         f"Optuna search: {args.trials} trials, {start.date()}..{end.date()}, "
-        f"{len(ticker_data)} ticker(s), {len(folds)} fold(s). "
+        f"{len(ticker_data)} ticker(s), {len(folds)} fold(s), "
+        f"recency_half_life_days={args.recency_half_life_days:.0f}. "
         f"Baseline sharpe_like={baseline_metrics.get('sharpe_like')}, best sharpe_like={best.value:.4f}."
     )
     version = storage.write_candidate(candidate_config.to_dict(), notes=notes, metrics=best_metrics)
