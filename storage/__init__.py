@@ -10,6 +10,7 @@ from .outcomes import log_trade_outcome
 from .signals import get_unsettled_signals, log_trade_signal, log_trade_signals, mark_settled
 from .system_config import (
     get_active_config,
+    get_active_config_doc,
     get_config_by_version,
     get_next_version,
     list_configs,
@@ -27,6 +28,7 @@ __all__ = [
     "mark_settled",
     "log_trade_outcome",
     "get_active_config",
+    "get_active_config_doc",
     "get_next_version",
     "write_candidate",
     "list_configs",

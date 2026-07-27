@@ -57,6 +57,14 @@ for every scanned ticker:
      isn't configured, the dashboard still works; logging is just skipped
      with a sidebar note.
 
+  10. All of the above run on whichever TradingConfig is currently "active"
+      in MongoDB's System_Config (the output of optimize.py + a deliberate
+      promote_config.py decision -- see ARCHITECTURE_PLAN.md Phase 5),
+      re-checked periodically at the same cadence as the rest of the scan
+      cache. If nothing is active yet, or Mongo is unreachable, this falls
+      back to swingtrade.DEFAULT_CONFIG rather than crashing -- the sidebar
+      always shows which one is actually in effect.
+
 The actual level/score/allocation math lives in the `swingtrade` package
 (no yfinance/streamlit dependency there); persistence lives in the
 `storage` package (no yfinance/streamlit dependency there either). This
@@ -78,8 +86,6 @@ from watchlist import parse_ticker_text, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
-
-CONFIG = swingtrade.DEFAULT_CONFIG   # Phase 6 will load this from MongoDB System_Config
 
 LOOKBACK_PERIOD = "1y"           # data window to fetch (needs 200d+ for SMA200)
 MARKET_INDEX_TICKER = "SPY"      # broad-market proxy for the macro gate
@@ -156,22 +162,28 @@ def get_recent_headlines(ticker_obj: yf.Ticker, count: int = NEWS_HEADLINE_COUNT
     return titles
 
 
-def check_market_uptrend(index_ticker: str = MARKET_INDEX_TICKER) -> tuple[bool, float, float]:
+def check_market_uptrend(
+    config: swingtrade.TradingConfig, index_ticker: str = MARKET_INDEX_TICKER
+) -> tuple[bool, float, float]:
     """Fetch the broad-market index and evaluate it via swingtrade.is_market_uptrend."""
     df = fetch_data(index_ticker)
-    return swingtrade.is_market_uptrend(df, CONFIG)
+    return swingtrade.is_market_uptrend(df, config)
 
 
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Checking broad-market macro trend...")
-def cached_market_uptrend() -> tuple[bool, float, float]:
-    return check_market_uptrend()
+def cached_market_uptrend(config: swingtrade.TradingConfig) -> tuple[bool, float, float]:
+    return check_market_uptrend(config)
 
 
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Scanning watchlist...")
-def scan_watchlist(tickers: tuple[str, ...]) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
+def scan_watchlist(
+    tickers: tuple[str, ...], config: swingtrade.TradingConfig
+) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
     """Fetch data and compute levels for every ticker. This is the only
     network-heavy step and is cached so sidebar tweaks (budget, sorting)
-    don't re-trigger a full re-scan."""
+    don't re-trigger a full re-scan. `config` is part of the cache key, so
+    a newly-promoted System_Config correctly triggers a fresh scan instead
+    of serving results computed under the old parameters."""
     results = []
     skipped = []
     for i, ticker in enumerate(tickers):
@@ -185,7 +197,7 @@ def scan_watchlist(tickers: tuple[str, ...]) -> tuple[pd.DataFrame, list[tuple[s
             headlines = get_recent_headlines(ticker_obj)
             top_headline = headlines[0] if headlines else ""
             levels = swingtrade.compute_levels(
-                ticker, df, CONFIG, next_earnings_date=next_earnings, top_headline=top_headline
+                ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
             )
             results.append(levels)
         except Exception as exc:
@@ -230,6 +242,31 @@ def init_storage() -> tuple[bool, str]:
         return False, f"Could not connect to MongoDB: {exc}"
 
 
+@st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner=False)
+def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
+    """Load the active TradingConfig from MongoDB's System_Config (re-checked
+    on the same TTL cadence as the rest of the scan cache, so a newly
+    promoted config takes effect without restarting the app), falling back
+    to swingtrade.DEFAULT_CONFIG if Mongo is unreachable, unconfigured, or
+    nothing has been promoted yet. Returns (config, status_message)."""
+    try:
+        doc = storage.get_active_config_doc()
+    except storage.MongoNotConfigured:
+        return swingtrade.DEFAULT_CONFIG, "MongoDB not configured -- using built-in defaults."
+    except Exception as exc:
+        return swingtrade.DEFAULT_CONFIG, f"Could not reach MongoDB ({exc}) -- using built-in defaults."
+
+    if doc is None:
+        return swingtrade.DEFAULT_CONFIG, "No active System_Config yet -- using built-in defaults."
+
+    try:
+        config = swingtrade.TradingConfig.from_dict(doc["params"])
+    except Exception as exc:
+        return swingtrade.DEFAULT_CONFIG, f"Active System_Config failed to parse ({exc}) -- using built-in defaults."
+
+    return config, f"Using System_Config v{doc['version']} (active)."
+
+
 def main():
     st.set_page_config(page_title="Swing-Trading Dashboard", layout="wide")
     st.title("Swing-Trading Dashboard")
@@ -238,8 +275,18 @@ def main():
         "recommendation. Verify live price/liquidity before placing orders."
     )
 
+    config, config_source = load_active_config()
+
     with st.sidebar:
         st.header("Configuration")
+        st.caption(config_source)
+        with st.expander("Active trading parameters"):
+            st.json({
+                "rsi_oversold_threshold": config.rsi_oversold_threshold,
+                "atr_take_profit_multiplier": config.atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": config.stop_loss_atr_multiplier,
+                "max_holding_days": config.max_holding_days,
+            })
         position_budget = st.number_input(
             "Position Budget ($)",
             min_value=1.0,
@@ -269,7 +316,7 @@ def main():
         st.stop()
 
     try:
-        market_uptrend, market_close, market_sma200 = cached_market_uptrend()
+        market_uptrend, market_close, market_sma200 = cached_market_uptrend(config)
     except Exception as exc:
         st.error(f"Could not evaluate {MARKET_INDEX_TICKER} macro trend: {exc}")
         st.stop()
@@ -284,7 +331,7 @@ def main():
         st.stop()
     st.success(f"{MARKET_INDEX_TICKER} is above its 200-day SMA ({market_close:.2f} >= {market_sma200:.2f}).")
 
-    results_df, skipped = scan_watchlist(tickers)
+    results_df, skipped = scan_watchlist(tickers, config)
 
     if results_df.empty:
         st.error("No tickers were successfully analyzed. See skipped tickers below.")
@@ -293,9 +340,9 @@ def main():
                 st.dataframe(pd.DataFrame(skipped, columns=["Ticker", "Reason"]), hide_index=True)
         st.stop()
 
-    results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(CONFIG.fractional_share_decimals)
+    results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
     results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
-    results_df = swingtrade.add_trade_score(results_df, CONFIG)
+    results_df = swingtrade.add_trade_score(results_df, config)
     results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
 
     # Log signals BEFORE the capital-allocation overlay: Trade_Signals should
@@ -304,7 +351,7 @@ def main():
     storage_ok, storage_message = init_storage()
     if storage_ok:
         try:
-            logged_count = storage.log_trade_signals(results_df, CONFIG.to_dict())
+            logged_count = storage.log_trade_signals(results_df, config.to_dict())
             st.sidebar.caption(f"Logged {logged_count} signal(s) to MongoDB.")
         except Exception as exc:
             st.sidebar.warning(f"Signal logging failed: {exc}")

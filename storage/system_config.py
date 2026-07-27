@@ -42,9 +42,17 @@ def get_active_config() -> dict | None:
     """Return the active System_Config document's `params` dict, or None if
     nothing has been promoted yet (callers should fall back to
     swingtrade.DEFAULT_CONFIG)."""
-    db = get_db()
-    doc = db[COLLECTION_NAME].find_one({"status": "active"})
+    doc = get_active_config_doc()
     return doc["params"] if doc else None
+
+
+def get_active_config_doc() -> dict | None:
+    """Return the full active System_Config document (version, params,
+    metrics, notes, promoted_at, ...), or None if nothing is active. Useful
+    when a caller wants to display provenance (e.g. "using v3"), not just
+    the bare params dict."""
+    db = get_db()
+    return db[COLLECTION_NAME].find_one({"status": "active"})
 
 
 def get_next_version() -> int:
