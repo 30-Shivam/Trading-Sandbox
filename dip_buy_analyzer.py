@@ -55,7 +55,11 @@ for every scanned ticker:
      Signal -- a personal cash shortfall ("Insufficient Funds") shouldn't be
      recorded as if the underlying technical signal changed. If MONGODB_URI
      isn't configured, the dashboard still works; logging is just skipped
-     with a sidebar note.
+     with a sidebar note. The same scan-and-log pipeline also runs headless,
+     independent of anyone having this dashboard open, via `ingest.py`
+     (see ARCHITECTURE_PLAN.md Phase 7) -- both share the fetch logic in
+     `market_data.py` and the config-loading logic in `config_loader.py` so
+     they can never silently drift apart.
 
   10. All of the above run on whichever TradingConfig is currently "active"
       in MongoDB's System_Config (the output of optimize.py + a deliberate
@@ -71,13 +75,13 @@ The actual level/score/allocation math lives in the `swingtrade` package
 file only handles data fetching, Streamlit UI, and wiring it all together.
 """
 
-import time
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-import yfinance as yf
 
+import config_loader
+import market_data
 import storage
 import swingtrade
 from watchlist import parse_ticker_text, read_tickers
@@ -87,15 +91,9 @@ from watchlist import parse_ticker_text, read_tickers
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 
-LOOKBACK_PERIOD = "1y"           # data window to fetch (needs 200d+ for SMA200)
-MARKET_INDEX_TICKER = "SPY"      # broad-market proxy for the macro gate
-
-NEWS_HEADLINE_COUNT = 3          # recent news articles to fetch per ticker
-
 DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for position sizing
 DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash
 
-REQUEST_DELAY_SEC = 0.5          # pause between API calls to avoid rate-limiting
 SCAN_CACHE_TTL_SEC = 900         # how long a scan result stays cached (15 min)
 
 SIGNAL_COLORS = {
@@ -116,94 +114,23 @@ DISPLAY_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 
-def fetch_data(ticker: str) -> pd.DataFrame:
-    df = yf.download(ticker, period=LOOKBACK_PERIOD, interval="1d", progress=False, auto_adjust=False)
-    if df.empty:
-        raise RuntimeError(f"no data returned for ticker '{ticker}'")
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
-
-
-def get_next_earnings_date(ticker_obj: yf.Ticker, now_utc: pd.Timestamp):
-    """Return the next upcoming earnings date (tz-aware, UTC) or None if
-    unavailable / no future date is listed."""
-    try:
-        earnings = ticker_obj.get_earnings_dates(limit=12)
-    except Exception:
-        return None
-    if earnings is None or earnings.empty:
-        return None
-    dates_utc = earnings.index.tz_convert("UTC")
-    future_dates = dates_utc[dates_utc >= now_utc]
-    if future_dates.empty:
-        return None
-    return future_dates.min()
-
-
-def get_recent_headlines(ticker_obj: yf.Ticker, count: int = NEWS_HEADLINE_COUNT) -> list[str]:
-    """Return up to `count` most recent news headline titles."""
-    try:
-        news_items = ticker_obj.news or []
-    except Exception:
-        return []
-
-    titles = []
-    for item in news_items[:count]:
-        title = None
-        if isinstance(item, dict):
-            content = item.get("content")
-            if isinstance(content, dict):
-                title = content.get("title")
-            if not title:
-                title = item.get("title")
-        if title:
-            titles.append(str(title))
-    return titles
-
-
-def check_market_uptrend(
-    config: swingtrade.TradingConfig, index_ticker: str = MARKET_INDEX_TICKER
-) -> tuple[bool, float, float]:
-    """Fetch the broad-market index and evaluate it via swingtrade.is_market_uptrend."""
-    df = fetch_data(index_ticker)
-    return swingtrade.is_market_uptrend(df, config)
-
-
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Checking broad-market macro trend...")
 def cached_market_uptrend(config: swingtrade.TradingConfig) -> tuple[bool, float, float]:
-    return check_market_uptrend(config)
+    return market_data.check_market_uptrend(config)
 
 
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Scanning watchlist...")
 def scan_watchlist(
     tickers: tuple[str, ...], config: swingtrade.TradingConfig
 ) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
-    """Fetch data and compute levels for every ticker. This is the only
-    network-heavy step and is cached so sidebar tweaks (budget, sorting)
-    don't re-trigger a full re-scan. `config` is part of the cache key, so
-    a newly-promoted System_Config correctly triggers a fresh scan instead
-    of serving results computed under the old parameters."""
-    results = []
-    skipped = []
-    for i, ticker in enumerate(tickers):
-        if i > 0:
-            time.sleep(REQUEST_DELAY_SEC)
-        try:
-            df = fetch_data(ticker)
-            ticker_obj = yf.Ticker(ticker)
-            now_utc = pd.Timestamp.now(tz="UTC")
-            next_earnings = get_next_earnings_date(ticker_obj, now_utc)
-            headlines = get_recent_headlines(ticker_obj)
-            top_headline = headlines[0] if headlines else ""
-            levels = swingtrade.compute_levels(
-                ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
-            )
-            results.append(levels)
-        except Exception as exc:
-            skipped.append((ticker, str(exc)))
-    results_df = pd.DataFrame(results)
-    return results_df, skipped
+    """Fetch data and compute levels for every ticker, via the shared
+    market_data module (also used standalone by ingest.py -- see
+    ARCHITECTURE_PLAN.md Phase 7). Cached so sidebar tweaks (budget, sorting)
+    don't re-trigger a full re-scan; `config` is part of the cache key, so a
+    newly-promoted System_Config correctly triggers a fresh scan instead of
+    serving results computed under the old parameters."""
+    results, skipped = market_data.scan_tickers(tickers, config)
+    return pd.DataFrame(results), skipped
 
 
 def style_results(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
@@ -246,25 +173,10 @@ def init_storage() -> tuple[bool, str]:
 def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
     """Load the active TradingConfig from MongoDB's System_Config (re-checked
     on the same TTL cadence as the rest of the scan cache, so a newly
-    promoted config takes effect without restarting the app), falling back
-    to swingtrade.DEFAULT_CONFIG if Mongo is unreachable, unconfigured, or
-    nothing has been promoted yet. Returns (config, status_message)."""
-    try:
-        doc = storage.get_active_config_doc()
-    except storage.MongoNotConfigured:
-        return swingtrade.DEFAULT_CONFIG, "MongoDB not configured -- using built-in defaults."
-    except Exception as exc:
-        return swingtrade.DEFAULT_CONFIG, f"Could not reach MongoDB ({exc}) -- using built-in defaults."
-
-    if doc is None:
-        return swingtrade.DEFAULT_CONFIG, "No active System_Config yet -- using built-in defaults."
-
-    try:
-        config = swingtrade.TradingConfig.from_dict(doc["params"])
-    except Exception as exc:
-        return swingtrade.DEFAULT_CONFIG, f"Active System_Config failed to parse ({exc}) -- using built-in defaults."
-
-    return config, f"Using System_Config v{doc['version']} (active)."
+    promoted config takes effect without restarting the app). Logic lives in
+    config_loader (shared with ingest.py, unwrapped there) so the dashboard
+    and the standalone scan can never disagree on what "active" means."""
+    return config_loader.load_active_config()
 
 
 def main():
@@ -318,18 +230,18 @@ def main():
     try:
         market_uptrend, market_close, market_sma200 = cached_market_uptrend(config)
     except Exception as exc:
-        st.error(f"Could not evaluate {MARKET_INDEX_TICKER} macro trend: {exc}")
+        st.error(f"Could not evaluate {market_data.MARKET_INDEX_TICKER} macro trend: {exc}")
         st.stop()
 
     if not market_uptrend:
         st.error(
-            f"**{MARKET_INDEX_TICKER} is in a macro downtrend** "
+            f"**{market_data.MARKET_INDEX_TICKER} is in a macro downtrend** "
             f"(Last_Close {market_close:.2f} < SMA200 {market_sma200:.2f}). "
             "Individual structural-support levels are unreliable when the broad market "
             "itself is breaking down -- watchlist analysis has been skipped."
         )
         st.stop()
-    st.success(f"{MARKET_INDEX_TICKER} is above its 200-day SMA ({market_close:.2f} >= {market_sma200:.2f}).")
+    st.success(f"{market_data.MARKET_INDEX_TICKER} is above its 200-day SMA ({market_close:.2f} >= {market_sma200:.2f}).")
 
     results_df, skipped = scan_watchlist(tickers, config)
 
