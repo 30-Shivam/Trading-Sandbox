@@ -159,6 +159,14 @@ pool (greedily allocated down the ranked signal list). Every Strong Buy/Buy
 it computes gets logged to Mongo automatically, same as the headless path
 below.
 
+Allocation also caps concentration per sector (`max_sector_allocation_pct`,
+default 40% of total cash, read from `watchlist.txt`'s JSON `sector` field —
+see the "Capital allocated by sector" expander on the page). Without this, a
+day with several correlated Technology signals would greedily dump nearly
+all your cash into one sector; trades that would breach the cap are labeled
+`Sector Limit Reached` (distinct from `Insufficient Funds`) instead of
+funded.
+
 **Headless — `ingest.py`**, for keeping signals accumulating even when
 nobody has the dashboard open:
 
