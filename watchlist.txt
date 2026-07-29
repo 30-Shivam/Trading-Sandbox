@@ -55,10 +55,64 @@
     { "ticker": "GS", "sector": "Financials", "strategy": "Cyclical/Bank" },
     { "ticker": "MS", "sector": "Financials", "strategy": "Cyclical/Bank" },
     { "ticker": "V", "sector": "Financials", "strategy": "Growth/Payments" },
-    { "ticker": "MA", "sector": "Financials", "strategy": "Growth/Payments" }
+    { "ticker": "MA", "sector": "Financials", "strategy": "Growth/Payments" },
+
+    { "ticker": "CSU.TO", "sector": "Technology", "strategy": "Growth/Software (TSX, CAD)" },
+
+    { "ticker": "UNH", "sector": "Healthcare", "strategy": "Core/Stable" },
+    { "ticker": "JNJ", "sector": "Healthcare", "strategy": "Core/Stable" },
+    { "ticker": "LLY", "sector": "Healthcare", "strategy": "Growth/Pharma" },
+    { "ticker": "ABBV", "sector": "Healthcare", "strategy": "Value/Pharma" },
+    { "ticker": "MRK", "sector": "Healthcare", "strategy": "Value/Pharma" },
+    { "ticker": "ABT", "sector": "Healthcare", "strategy": "Core/Stable" },
+    { "ticker": "TMO", "sector": "Healthcare", "strategy": "Growth/Industrial" },
+
+    { "ticker": "PG", "sector": "Consumer Staples", "strategy": "Core/Stable" },
+    { "ticker": "KO", "sector": "Consumer Staples", "strategy": "Core/Stable" },
+    { "ticker": "PEP", "sector": "Consumer Staples", "strategy": "Core/Stable" },
+    { "ticker": "COST", "sector": "Consumer Staples", "strategy": "Growth/Retail" },
+    { "ticker": "WMT", "sector": "Consumer Staples", "strategy": "Core/Retail" },
+
+    { "ticker": "XOM", "sector": "Energy", "strategy": "Value/Cyclical" },
+    { "ticker": "CVX", "sector": "Energy", "strategy": "Value/Cyclical" },
+    { "ticker": "COP", "sector": "Energy", "strategy": "Value/Cyclical" },
+
+    { "ticker": "CAT", "sector": "Industrials", "strategy": "Cyclical/Industrial" },
+    { "ticker": "HON", "sector": "Industrials", "strategy": "Core/Industrial" },
+    { "ticker": "GE", "sector": "Industrials", "strategy": "Growth/Industrial" },
+    { "ticker": "DE", "sector": "Industrials", "strategy": "Cyclical/Industrial" },
+    { "ticker": "UPS", "sector": "Industrials", "strategy": "Value/Logistics" },
+    { "ticker": "RTX", "sector": "Industrials", "strategy": "Core/Defense" },
+    { "ticker": "LMT", "sector": "Industrials", "strategy": "Core/Defense" },
+
+    { "ticker": "HD", "sector": "Consumer Discretionary", "strategy": "Core/Retail" },
+    { "ticker": "MCD", "sector": "Consumer Discretionary", "strategy": "Core/Stable" },
+    { "ticker": "NKE", "sector": "Consumer Discretionary", "strategy": "Value/Growth" },
+    { "ticker": "SBUX", "sector": "Consumer Discretionary", "strategy": "Growth/Value" },
+    { "ticker": "TGT", "sector": "Consumer Discretionary", "strategy": "Value/Retail" },
+    { "ticker": "LOW", "sector": "Consumer Discretionary", "strategy": "Core/Retail" },
+
+    { "ticker": "GOOGL", "sector": "Communication Services", "strategy": "Growth/AI" },
+    { "ticker": "META", "sector": "Communication Services", "strategy": "Growth/AI" },
+    { "ticker": "NFLX", "sector": "Communication Services", "strategy": "Growth/Streaming" },
+    { "ticker": "DIS", "sector": "Communication Services", "strategy": "Turnaround/Value" },
+    { "ticker": "VZ", "sector": "Communication Services", "strategy": "Value/Telecom" },
+    { "ticker": "T", "sector": "Communication Services", "strategy": "Value/Telecom" },
+
+    { "ticker": "NEE", "sector": "Utilities", "strategy": "Growth/Utility" },
+    { "ticker": "DUK", "sector": "Utilities", "strategy": "Core/Utility" },
+    { "ticker": "SO", "sector": "Utilities", "strategy": "Core/Utility" },
+
+    { "ticker": "PLD", "sector": "Real Estate", "strategy": "Growth/REIT" },
+    { "ticker": "AMT", "sector": "Real Estate", "strategy": "Growth/REIT" },
+    { "ticker": "O", "sector": "Real Estate", "strategy": "Core/REIT" },
+    { "ticker": "SPG", "sector": "Real Estate", "strategy": "Value/REIT" },
+
+    { "ticker": "LIN", "sector": "Materials", "strategy": "Core/Industrial" },
+    { "ticker": "FCX", "sector": "Materials", "strategy": "Cyclical/Materials" }
   ],
   "metadata": {
-    "last_updated": "2026-06-27",
-    "description": "Consolidated Master Watchlist: 50 Tech Tickers + Major Financials."
+    "last_updated": "2026-07-28",
+    "description": "Consolidated Master Watchlist: Technology/Financials core plus Healthcare, Consumer Staples, Energy, Industrials, Consumer Discretionary, Communication Services, Utilities, Real Estate, and Materials for sector diversification (supports the max_sector_allocation_pct concentration cap). Includes one Canadian (TSX, CAD) ticker: CSU.TO."
   }
 }
