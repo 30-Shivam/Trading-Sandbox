@@ -10,6 +10,7 @@ def allocate_capital(
     total_cash: float,
     sector_lookup: dict[str, str] | None = None,
     max_sector_allocation_pct: float | None = None,
+    existing_holdings: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, float]:
     """Greedily allocate total_cash down the (already Trade_Score-sorted) list
     of Strong Buy / Buy signals, in order. A trade whose Est_Cost exceeds the
@@ -29,17 +30,36 @@ def allocate_capital(
     exposure either). A ticker missing from sector_lookup is never capped --
     there's no sector to check it against.
 
-    Returns the updated DataFrame and total capital spent."""
+    `existing_holdings` (ticker -> dollars already committed, see
+    storage.holdings) counts toward the sector cap on BOTH sides: it inflates
+    the denominator (the cap is a fraction of total_cash + total holdings --
+    your whole portfolio, not just today's fresh cash pool in isolation) and
+    seeds each sector's already-spent total. A sector you're already
+    overweight in from prior holdings will correctly get little or no new
+    room today, even though existing_holdings never reduces `remaining_cash`
+    itself -- holdings aren't fresh cash, they're already-deployed capital.
+
+    Returns the updated DataFrame and total capital spent (today's fresh
+    cash only, not counting existing holdings)."""
     df = df.copy()
     sector_lookup = sector_lookup or {}
+    existing_holdings = existing_holdings or {}
+
+    portfolio_value = total_cash + sum(existing_holdings.values())
     sector_cap_dollars = (
-        max_sector_allocation_pct * total_cash
+        max_sector_allocation_pct * portfolio_value
         if max_sector_allocation_pct and max_sector_allocation_pct > 0
         else None
     )
 
     remaining_cash = total_cash
     sector_spent: dict[str, float] = {}
+    if sector_cap_dollars is not None:
+        for ticker, amount in existing_holdings.items():
+            sector = sector_lookup.get(ticker)
+            if sector:
+                sector_spent[sector] = sector_spent.get(sector, 0.0) + amount
+
     tickers = df["Ticker"].tolist()
     signals = df["Signal"].tolist()
     costs = df["Est_Cost"].tolist()

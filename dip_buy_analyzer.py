@@ -49,10 +49,17 @@ for every scanned ticker:
      Available Cash": a trade that no longer fits the remaining cash is
      marked Insufficient Funds, and (if watchlist.txt's JSON form supplies a
      "sector" per ticker) a trade that would push its sector's cumulative
-     spend past max_sector_allocation_pct of total cash is marked Sector
-     Limit Reached instead -- five Strong Buys in one sector on the same day
-     are one concentrated bet wearing five tickers, not five independent
-     ones, and nothing else in this pipeline catches that.
+     spend past max_sector_allocation_pct of your whole portfolio value is
+     marked Sector Limit Reached instead -- five Strong Buys in one sector on
+     the same day are one concentrated bet wearing five tickers, not five
+     independent ones, and nothing else in this pipeline catches that.
+     "Whole portfolio value" includes the sidebar's "Current Holdings" box
+     (persisted to MongoDB's Current_Holdings collection via a Save button,
+     manually maintained rather than inferred from unsettled signals, since a
+     logged signal doesn't guarantee you actually got filled) -- a sector
+     you're already overweight in from prior holdings gets little or no new
+     room today, even though holdings never reduce Total Available Cash
+     itself.
 
   8. Trade_Score (0-100) blends Risk-to-Reward Ratio, RSI, and how close the
      last close is to the buy trigger into a single priority score, mapped to
@@ -142,6 +149,29 @@ def scan_watchlist(
     return pd.DataFrame(results), skipped
 
 
+def parse_holdings_text(raw: str) -> dict[str, float]:
+    """Parse 'TICKER,AMOUNT' (or 'TICKER AMOUNT') lines into {ticker: dollars
+    currently committed}. Blank/malformed lines and non-positive amounts are
+    skipped rather than erroring -- this is a manually-typed box, not a
+    validated form."""
+    holdings = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.replace(",", " ").split()]
+        if len(parts) != 2:
+            continue
+        ticker, amount_str = parts
+        try:
+            amount = float(amount_str)
+        except ValueError:
+            continue
+        if amount > 0:
+            holdings[ticker.upper()] = amount
+    return holdings
+
+
 def style_results(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     formats = {
         "Trade_Score": "{:.1f}",
@@ -226,6 +256,30 @@ def main():
                  "over-concentrate one sector are marked Sector Limit Reached (see "
                  "max_sector_allocation_pct in the active config above).",
         )
+
+        st.subheader("Current Holdings")
+        try:
+            saved_holdings = storage.get_holdings()
+        except Exception:
+            saved_holdings = {}
+        default_holdings_text = "\n".join(f"{t},{a:g}" for t, a in saved_holdings.items())
+        holdings_text = st.text_area(
+            "What you're actually holding right now (TICKER,AMOUNT $ per line)",
+            value=default_holdings_text,
+            height=100,
+            help="Counted toward the sector cap below as already-deployed capital (your whole "
+                 "portfolio, not just today's cash pool) -- never subtracted from Total "
+                 "Available Cash itself. Used live from this box every run; click Save to "
+                 "persist it as the default for next time.",
+        )
+        existing_holdings = parse_holdings_text(holdings_text)
+        if st.button("Save holdings"):
+            try:
+                storage.set_holdings(existing_holdings)
+                st.success(f"Saved {len(existing_holdings)} holding(s).")
+            except Exception as exc:
+                st.warning(f"Could not save holdings: {exc}")
+
         default_ticker_text = "\n".join(read_tickers(WATCHLIST_FILE)) if WATCHLIST_FILE.exists() else ""
         ticker_text = st.text_area(
             "Watchlist (one ticker per line, or comma-separated)",
@@ -287,6 +341,7 @@ def main():
     results_df, capital_allocated = swingtrade.allocate_capital(
         results_df, total_cash,
         sector_lookup=sector_lookup, max_sector_allocation_pct=config.max_sector_allocation_pct,
+        existing_holdings=existing_holdings,
     )
     remaining_idle_cash = round(total_cash - capital_allocated, 2)
 
@@ -307,18 +362,33 @@ def main():
     if sector_lookup:
         funded = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])].copy()
         funded["Sector"] = funded["Ticker"].map(sector_lookup).fillna("Unknown")
-        sector_spend = funded.groupby("Sector")["Est_Cost"].sum().sort_values(ascending=False)
-        sector_cap_dollars = config.max_sector_allocation_pct * total_cash if config.max_sector_allocation_pct > 0 else None
+        new_by_sector = funded.groupby("Sector")["Est_Cost"].sum()
+
+        holdings_by_sector: dict[str, float] = {}
+        for ticker, amount in existing_holdings.items():
+            sector = sector_lookup.get(ticker, "Unknown")
+            holdings_by_sector[sector] = holdings_by_sector.get(sector, 0.0) + amount
+        holdings_by_sector = pd.Series(holdings_by_sector, dtype=float)
+
+        breakdown = pd.DataFrame({
+            "Existing Holdings ($)": holdings_by_sector,
+            "New Today ($)": new_by_sector,
+        }).fillna(0.0)
+        breakdown["Total ($)"] = breakdown["Existing Holdings ($)"] + breakdown["New Today ($)"]
+        breakdown = breakdown.sort_values("Total ($)", ascending=False)
+
+        portfolio_value = total_cash + sum(existing_holdings.values())
+        sector_cap_dollars = (
+            config.max_sector_allocation_pct * portfolio_value if config.max_sector_allocation_pct > 0 else None
+        )
         with st.expander("Capital allocated by sector"):
             if sector_cap_dollars is not None:
                 st.caption(
-                    f"Cap: {config.max_sector_allocation_pct * 100:.0f}% of total cash per "
-                    f"sector (${sector_cap_dollars:,.2f})."
+                    f"Cap: {config.max_sector_allocation_pct * 100:.0f}% of total portfolio value "
+                    f"(${portfolio_value:,.2f} = today's cash + existing holdings) per sector "
+                    f"= ${sector_cap_dollars:,.2f}."
                 )
-            st.dataframe(
-                sector_spend.reset_index().rename(columns={"Est_Cost": "Allocated ($)"}),
-                width="stretch", hide_index=True,
-            )
+            st.dataframe(breakdown.reset_index(names="Sector"), width="stretch", hide_index=True)
 
     st.subheader("Scan Results")
     st.dataframe(style_results(results_df[DISPLAY_COLUMNS]), width="stretch", hide_index=True)

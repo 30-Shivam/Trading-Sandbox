@@ -160,12 +160,23 @@ it computes gets logged to Mongo automatically, same as the headless path
 below.
 
 Allocation also caps concentration per sector (`max_sector_allocation_pct`,
-default 40% of total cash, read from `watchlist.txt`'s JSON `sector` field —
-see the "Capital allocated by sector" expander on the page). Without this, a
-day with several correlated Technology signals would greedily dump nearly
-all your cash into one sector; trades that would breach the cap are labeled
+default 40%, read from `watchlist.txt`'s JSON `sector` field — see the
+"Capital allocated by sector" expander on the page). Without this, a day
+with several correlated Technology signals would greedily dump nearly all
+your cash into one sector; trades that would breach the cap are labeled
 `Sector Limit Reached` (distinct from `Insufficient Funds`) instead of
 funded.
+
+The cap is measured against your *whole portfolio*, not just today's cash —
+the sidebar's "Current Holdings" box lets you type what you're actually
+holding right now (`TICKER,AMOUNT` per line, e.g. `INTC,8000`), click Save
+to persist it (MongoDB's `Current_Holdings`), and it counts toward both the
+cap's denominator and each sector's already-spent total. It's manually
+maintained on purpose, not inferred from unsettled `Trade_Signals` — a
+logged signal doesn't guarantee you actually got filled (see the fill gap in
+section 4), so guessing your real holdings from it would be unreliable.
+Holdings never reduce "Total Available Cash" itself — they only tighten the
+sector cap.
 
 **Headless — `ingest.py`**, for keeping signals accumulating even when
 nobody has the dashboard open:

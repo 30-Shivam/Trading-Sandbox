@@ -4,7 +4,8 @@ System_Config, all with read/write logic now. Kept separate from
 to be reused elsewhere (e.g. inside an Optuna worker sandbox).
 """
 
-from . import outcomes, signals, system_config
+from . import holdings, outcomes, signals, system_config
+from .holdings import get_holdings, set_holdings
 from .mongo import MongoNotConfigured, get_client, get_db
 from .outcomes import log_trade_outcome
 from .signals import get_unsettled_signals, log_trade_signal, log_trade_signals, mark_settled
@@ -34,6 +35,8 @@ __all__ = [
     "list_configs",
     "get_config_by_version",
     "promote_candidate",
+    "get_holdings",
+    "set_holdings",
     "ensure_indexes",
 ]
 
@@ -44,3 +47,4 @@ def ensure_indexes() -> None:
     signals.ensure_indexes()
     outcomes.ensure_indexes()
     system_config.ensure_indexes()
+    holdings.ensure_indexes()
