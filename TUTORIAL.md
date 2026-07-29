@@ -169,14 +169,31 @@ funded.
 
 The cap is measured against your *whole portfolio*, not just today's cash —
 the sidebar's "Current Holdings" box lets you type what you're actually
-holding right now (`TICKER,AMOUNT` per line, e.g. `INTC,8000`), click Save
-to persist it (MongoDB's `Current_Holdings`), and it counts toward both the
-cap's denominator and each sector's already-spent total. It's manually
-maintained on purpose, not inferred from unsettled `Trade_Signals` — a
-logged signal doesn't guarantee you actually got filled (see the fill gap in
-section 4), so guessing your real holdings from it would be unreliable.
-Holdings never reduce "Total Available Cash" itself — they only tighten the
-sector cap.
+holding right now (`TICKER,AMOUNT[,AVG_COST]` per line, e.g. `INTC,8000,95.00`),
+click Save to persist it (MongoDB's `Current_Holdings`), and the AMOUNT
+counts toward both the cap's denominator and each sector's already-spent
+total. It's manually maintained on purpose, not inferred from unsettled
+`Trade_Signals` — a logged signal doesn't guarantee you actually got filled
+(see the fill gap in section 4), so guessing your real holdings from it
+would be unreliable. Holdings never reduce "Total Available Cash" itself —
+they only tighten the sector cap.
+
+**Position Review.** Any holding with an AVG_COST populates a "Position
+Review" table: the same ATR-based stop/target math the scanner uses for new
+candidates, anchored to your real entry price instead of a freshly computed
+support level (`Stop_Loss = avg_cost - stop_loss_atr_multiplier × ATR`,
+`Sell_Price = avg_cost + atr_take_profit_multiplier × ATR`), with a
+HOLD / SELL (stop breached) / SELL (target hit) recommendation and your
+unrealized P&L%. Same caveat as everything else here: informational, not a
+guarantee — it uses whatever config is currently active, same trust level
+as every live Buy signal.
+
+**Screening without your portfolio state.** The "Apply capital allocation"
+checkbox, when unchecked, shows raw Strong Buy/Buy/Watch/Ignore with Total
+Available Cash and Current Holdings ignored entirely — useful when you just
+want to see what the scanner found today without your cash/sector state
+influencing which ones look fundable. Position Review is unaffected either
+way.
 
 **Headless — `ingest.py`**, for keeping signals accumulating even when
 nobody has the dashboard open:

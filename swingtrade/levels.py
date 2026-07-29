@@ -125,3 +125,54 @@ def compute_levels(
         "Catalyst_Warning": catalyst_warning,
         "Top_Headline": top_headline,
     }
+
+
+def review_holding(
+    ticker: str,
+    df: pd.DataFrame,
+    avg_cost: float,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> dict:
+    """Evaluate an already-held position against the system's own mechanical
+    exit rules, anchored to your actual avg_cost rather than a freshly
+    computed structural support level. Same ATR-based stop/target formulas
+    compute_levels uses for a new candidate -- Stop_Loss = avg_cost -
+    stop_loss_atr_multiplier * ATR, Sell_Price (target) = avg_cost +
+    atr_take_profit_multiplier * ATR -- just applied to a position you
+    already own instead of one you're screening. Recommends a SELL if the
+    current price has breached either level, HOLD otherwise. Informational,
+    not a guarantee -- carries the exact same reliability caveats as every
+    other signal this system produces, since it uses the same config.
+    """
+    df = df.copy()
+    df["ATR"] = ta.atr(df["High"], df["Low"], df["Close"], length=config.atr_window)
+
+    last_row = df.iloc[-1]
+    last_close = float(last_row["Close"])
+    last_date = df.index[-1]
+    atr = float(last_row["ATR"])
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+
+    stop_loss = round(avg_cost - (config.stop_loss_atr_multiplier * atr), 2)
+    sell_price = round(avg_cost + (config.atr_take_profit_multiplier * atr), 2)
+    unrealized_pnl_pct = round((last_close - avg_cost) / avg_cost * 100, 2)
+
+    if last_close <= stop_loss:
+        recommendation = "SELL (stop breached)"
+    elif last_close >= sell_price:
+        recommendation = "SELL (target hit)"
+    else:
+        recommendation = "HOLD"
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Avg_Cost": round(avg_cost, 2),
+        "Last_Close": round(last_close, 2),
+        "ATR": round(atr, 2),
+        "Stop_Loss": stop_loss,
+        "Sell_Price": sell_price,
+        "Unrealized_PnL_Pct": unrealized_pnl_pct,
+        "Recommendation": recommendation,
+    }

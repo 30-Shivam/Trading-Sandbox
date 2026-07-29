@@ -84,6 +84,17 @@ for every scanned ticker:
       back to swingtrade.DEFAULT_CONFIG rather than crashing -- the sidebar
       always shows which one is actually in effect.
 
+  11. The sidebar's "Apply capital allocation" checkbox, when unchecked,
+      shows raw Strong Buy/Buy/Watch/Ignore signals with Total Available
+      Cash and Current Holdings ignored entirely -- useful for just
+      screening candidates without your portfolio state influencing which
+      ones get labeled fundable. Separately, any Current Holdings entry with
+      an AVG_COST populates a "Position Review" table: the same ATR-based
+      stop/target math applied to a position you already own (anchored to
+      your real entry price, not a freshly computed support level), with a
+      HOLD / SELL (stop breached) / SELL (target hit) recommendation --
+      informational, not a guarantee.
+
 The actual level/score/allocation math lives in the `swingtrade` package
 (no yfinance/streamlit dependency there); persistence lives in the
 `storage` package (no yfinance/streamlit dependency there either). This
@@ -121,6 +132,12 @@ SIGNAL_COLORS = {
 }
 CATALYST_WARNING_STYLE = "background-color: #c62828; color: #ffffff; font-weight: 600;"
 
+REVIEW_COLORS = {
+    "SELL (stop breached)": "background-color: #c62828; color: #ffffff; font-weight: 600;",
+    "SELL (target hit)": "background-color: #1b7a3d; color: #ffffff; font-weight: 600;",
+    "HOLD": "",
+}
+
 DISPLAY_COLUMNS = [
     "Ticker", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
     "Sell_Price", "RRR", "RSI", "ATR", "Distance_to_Buy_Pct", "Shares_To_Buy",
@@ -149,26 +166,59 @@ def scan_watchlist(
     return pd.DataFrame(results), skipped
 
 
-def parse_holdings_text(raw: str) -> dict[str, float]:
-    """Parse 'TICKER,AMOUNT' (or 'TICKER AMOUNT') lines into {ticker: dollars
-    currently committed}. Blank/malformed lines and non-positive amounts are
-    skipped rather than erroring -- this is a manually-typed box, not a
-    validated form."""
+@st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Reviewing current holdings...")
+def cached_review_holdings(
+    holdings_key: tuple[tuple[str, float], ...], config: swingtrade.TradingConfig
+) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
+    """Evaluate each held ticker (with a known avg_cost) against the active
+    config's stop/target rules. `holdings_key` is a hashable
+    ((ticker, avg_cost), ...) tuple so this can be cached like scan_watchlist."""
+    results, skipped = market_data.review_holdings(dict(holdings_key), config)
+    return pd.DataFrame(results), skipped
+
+
+def style_review(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    formats = {
+        "Avg_Cost": "{:.2f}", "Last_Close": "{:.2f}", "ATR": "{:.2f}",
+        "Stop_Loss": "{:.2f}", "Sell_Price": "{:.2f}", "Unrealized_PnL_Pct": "{:+.2f}%",
+    }
+    return (
+        df.style
+        .format(formats, na_rep="-")
+        .map(lambda v: REVIEW_COLORS.get(v, ""), subset=["Recommendation"])
+    )
+
+
+def parse_holdings_text(raw: str) -> dict[str, dict]:
+    """Parse 'TICKER,AMOUNT[,AVG_COST]' (or space-separated) lines into
+    {ticker: {"amount": dollars committed, "avg_cost": price/share or None}}.
+    AVG_COST is optional -- without it, the holding still counts toward the
+    sector cap but can't appear in the Position Review table (needs a cost
+    basis to compute a stop/target against). Blank/malformed lines and
+    non-positive amounts are skipped rather than erroring -- this is a
+    manually-typed box, not a validated form."""
     holdings = {}
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
         parts = [p.strip() for p in line.replace(",", " ").split()]
-        if len(parts) != 2:
+        if len(parts) not in (2, 3):
             continue
-        ticker, amount_str = parts
+        ticker = parts[0]
         try:
-            amount = float(amount_str)
+            amount = float(parts[1])
         except ValueError:
             continue
-        if amount > 0:
-            holdings[ticker.upper()] = amount
+        if amount <= 0:
+            continue
+        avg_cost = None
+        if len(parts) == 3:
+            try:
+                avg_cost = float(parts[2])
+            except ValueError:
+                avg_cost = None
+        holdings[ticker.upper()] = {"amount": amount, "avg_cost": avg_cost}
     return holdings
 
 
@@ -262,23 +312,38 @@ def main():
             saved_holdings = storage.get_holdings()
         except Exception:
             saved_holdings = {}
-        default_holdings_text = "\n".join(f"{t},{a:g}" for t, a in saved_holdings.items())
+        default_holdings_text = "\n".join(
+            f"{t},{info['amount']:g}" + (f",{info['avg_cost']:g}" if info.get("avg_cost") else "")
+            for t, info in saved_holdings.items()
+        )
         holdings_text = st.text_area(
-            "What you're actually holding right now (TICKER,AMOUNT $ per line)",
+            "What you're actually holding right now (TICKER,AMOUNT[,AVG_COST] per line)",
             value=default_holdings_text,
             height=100,
-            help="Counted toward the sector cap below as already-deployed capital (your whole "
-                 "portfolio, not just today's cash pool) -- never subtracted from Total "
-                 "Available Cash itself. Used live from this box every run; click Save to "
-                 "persist it as the default for next time.",
+            help="AMOUNT ($ currently committed) counts toward the sector cap below as "
+                 "already-deployed capital -- never subtracted from Total Available Cash "
+                 "itself. AVG_COST (optional, your entry price/share) additionally enables "
+                 "the Position Review section further down, which checks the holding against "
+                 "the active config's stop/target. Used live from this box every run; click "
+                 "Save to persist it as the default for next time.",
         )
-        existing_holdings = parse_holdings_text(holdings_text)
+        holdings_detail = parse_holdings_text(holdings_text)
+        existing_holdings = {t: info["amount"] for t, info in holdings_detail.items()}
         if st.button("Save holdings"):
             try:
-                storage.set_holdings(existing_holdings)
-                st.success(f"Saved {len(existing_holdings)} holding(s).")
+                storage.set_holdings(holdings_detail)
+                st.success(f"Saved {len(holdings_detail)} holding(s).")
             except Exception as exc:
                 st.warning(f"Could not save holdings: {exc}")
+
+        apply_allocation = st.checkbox(
+            "Apply capital allocation (cash + sector caps)",
+            value=True,
+            help="When off, the Scan Results table shows raw Strong Buy/Buy/Watch/Ignore "
+                 "signals with no Insufficient Funds / Sector Limit Reached overlay -- your "
+                 "Total Available Cash and Current Holdings are ignored for screening "
+                 "purposes (Position Review below is unaffected either way).",
+        )
 
         default_ticker_text = "\n".join(read_tickers(WATCHLIST_FILE)) if WATCHLIST_FILE.exists() else ""
         ticker_text = st.text_area(
@@ -338,12 +403,16 @@ def main():
     else:
         st.sidebar.caption(f"MongoDB not connected ({storage_message}) -- signals aren't being logged.")
 
-    results_df, capital_allocated = swingtrade.allocate_capital(
-        results_df, total_cash,
-        sector_lookup=sector_lookup, max_sector_allocation_pct=config.max_sector_allocation_pct,
-        existing_holdings=existing_holdings,
-    )
-    remaining_idle_cash = round(total_cash - capital_allocated, 2)
+    if apply_allocation:
+        results_df, capital_allocated = swingtrade.allocate_capital(
+            results_df, total_cash,
+            sector_lookup=sector_lookup, max_sector_allocation_pct=config.max_sector_allocation_pct,
+            existing_holdings=existing_holdings,
+        )
+        remaining_idle_cash = round(total_cash - capital_allocated, 2)
+    else:
+        capital_allocated = None
+        remaining_idle_cash = None
 
     strong_buys = int((results_df["Signal"] == "Strong Buy").sum())
     catalyst_warnings = int(results_df["Catalyst_Warning"].sum())
@@ -354,12 +423,18 @@ def main():
     col3.metric("Active Strong Buys", strong_buys)
     col4.metric("Catalyst Warnings", catalyst_warnings)
 
-    col5, col6, col7 = st.columns(3)
-    col5.metric("Starting Cash", f"${total_cash:,.2f}")
-    col6.metric("Capital Allocated to Orders", f"${capital_allocated:,.2f}")
-    col7.metric("Remaining Idle Cash", f"${remaining_idle_cash:,.2f}")
+    if apply_allocation:
+        col5, col6, col7 = st.columns(3)
+        col5.metric("Starting Cash", f"${total_cash:,.2f}")
+        col6.metric("Capital Allocated to Orders", f"${capital_allocated:,.2f}")
+        col7.metric("Remaining Idle Cash", f"${remaining_idle_cash:,.2f}")
+    else:
+        st.info(
+            "Capital allocation is off -- Signal column shows raw Strong Buy/Buy/Watch/Ignore, "
+            "unaffected by Total Available Cash or Current Holdings."
+        )
 
-    if sector_lookup:
+    if apply_allocation and sector_lookup:
         funded = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])].copy()
         funded["Sector"] = funded["Ticker"].map(sector_lookup).fillna("Unknown")
         new_by_sector = funded.groupby("Sector")["Est_Cost"].sum()
@@ -389,6 +464,23 @@ def main():
                     f"= ${sector_cap_dollars:,.2f}."
                 )
             st.dataframe(breakdown.reset_index(names="Sector"), width="stretch", hide_index=True)
+
+    holdings_with_cost = tuple(sorted(
+        (t, info["avg_cost"]) for t, info in holdings_detail.items() if info.get("avg_cost")
+    ))
+    if holdings_with_cost:
+        st.subheader("Position Review")
+        st.caption(
+            "Checks each holding with a known AVG_COST against the active config's ATR-based "
+            "stop/target, anchored to your real entry price -- not a guarantee, same caveats "
+            "as every other signal in this system."
+        )
+        review_df, review_skipped = cached_review_holdings(holdings_with_cost, config)
+        if not review_df.empty:
+            st.dataframe(style_review(review_df), width="stretch", hide_index=True)
+        if review_skipped:
+            with st.expander(f"Could not review ({len(review_skipped)})"):
+                st.dataframe(pd.DataFrame(review_skipped, columns=["Ticker", "Reason"]), hide_index=True)
 
     st.subheader("Scan Results")
     st.dataframe(style_results(results_df[DISPLAY_COLUMNS]), width="stretch", hide_index=True)

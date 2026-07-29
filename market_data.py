@@ -100,3 +100,23 @@ def scan_tickers(
         except Exception as exc:
             skipped.append((ticker, str(exc)))
     return results, skipped
+
+
+def review_holdings(
+    holdings: dict[str, float], config: swingtrade.TradingConfig
+) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Fetch current data and evaluate each held ticker (ticker -> avg_cost)
+    against the active config's stop/target rules, via
+    swingtrade.review_holding. Same rate-limited fetch pattern as
+    scan_tickers."""
+    results = []
+    skipped = []
+    for i, (ticker, avg_cost) in enumerate(holdings.items()):
+        if i > 0:
+            time.sleep(REQUEST_DELAY_SEC)
+        try:
+            df = fetch_data(ticker)
+            results.append(swingtrade.review_holding(ticker, df, avg_cost, config))
+        except Exception as exc:
+            skipped.append((ticker, str(exc)))
+    return results, skipped
