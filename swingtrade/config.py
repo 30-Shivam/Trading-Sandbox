@@ -50,6 +50,15 @@ class TradingConfig:
     # Position sizing
     fractional_share_decimals: int = 4     # precision for fractional-share sizing
 
+    # Portfolio-level risk (capital allocation, not signal generation --
+    # never part of optimize.py's search space: a per-ticker walk-forward
+    # backtest doesn't model simultaneous cross-ticker correlation, so this
+    # is a personal risk preference, not something to be tuned against
+    # backtested Sharpe)
+    max_sector_allocation_pct: float = 0.40  # cap any one sector at this fraction
+                                              # of total_cash in allocate_capital;
+                                              # 0 (or negative) disables the cap
+
     # Settlement (Phase 3)
     max_holding_days: int = 15             # mark EXPIRED if neither stop nor target
                                             # hit within N trading days of entry

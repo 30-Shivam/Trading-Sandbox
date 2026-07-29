@@ -37,6 +37,33 @@ def read_tickers(path: Path) -> list[str]:
     return [line.strip().upper() for line in raw.splitlines() if line.strip()]
 
 
+def read_ticker_sectors(path: Path) -> dict[str, str]:
+    """Read {ticker: sector} from the JSON watchlist form (the "sector" field
+    on each entry, e.g. {"ticker": "NVDA", "sector": "Technology", ...}).
+    Returns {} for a plain-text watchlist or any entry missing a sector --
+    callers should treat a ticker with no sector as un-capped rather than
+    erroring, since sector-based risk limits (see swingtrade.allocate_capital)
+    are a best-effort feature, not a hard requirement of the watchlist format.
+    """
+    if not path.exists():
+        return {}
+    raw = path.read_text(encoding="utf-8")
+    stripped = raw.strip()
+    if not (stripped.startswith("{") or stripped.startswith("[")):
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+    entries = data.get("watchlist", []) if isinstance(data, dict) else data
+    sectors = {}
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("ticker") and entry.get("sector"):
+            sectors[str(entry["ticker"]).strip().upper()] = str(entry["sector"]).strip()
+    return sectors
+
+
 def parse_ticker_text(raw: str) -> list[str]:
     """Parse a free-form, user-pasted ticker list (newline and/or comma separated)."""
     if not raw or not raw.strip():
