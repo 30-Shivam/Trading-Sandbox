@@ -5,3 +5,11 @@ venv/
 .env
 swing_orders.csv
 ARCHITECTURE_PLAN.md
+
+#Ruflo
+.agents
+.claude
+.claude-flow
+.swarm
+ruvector.db
+.mcp.json
