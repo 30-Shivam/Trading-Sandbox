@@ -9,14 +9,22 @@ in-sample vs. out-of-sample performance for the given TradingConfig.
 This is what will let Optuna (Phase 5) score a candidate RSI/ATR parameter
 set against years of history instantly, instead of waiting months for live
 Trade_Outcomes to accumulate -- see swingtrade/backtest.py's module
-docstring for the full walk-forward rationale and its one real limitation
-(catalyst/earnings awareness is NOT simulated here; yfinance has no
-point-in-time historical earnings calendar).
+docstring for the full walk-forward rationale.
+
+Pass --with-catalyst to also fetch each ticker's historical earnings dates
+(yfinance's get_earnings_dates(limit=40), only the calendar date, never the
+EPS/Surprise columns -- see fetch_earnings_dates and swingtrade/backtest.py
+for why this introduces no look-ahead leakage) and print a catalyst-vs-non
+performance breakdown. Off by default since it doesn't change which trades
+get simulated (Catalyst_Warning isn't consumed by Trade_Score/Signal
+anywhere) -- it costs one extra yfinance call per ticker purely for
+reporting/analysis.
 
 Usage:
     python run_backtest.py
     python run_backtest.py --start 2023-01-01 --end 2026-07-01
     python run_backtest.py --in-sample-days 120 --out-sample-days 20 --step-days 20
+    python run_backtest.py --with-catalyst
 """
 
 import argparse
@@ -35,6 +43,7 @@ WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 MARKET_INDEX_TICKER = "SPY"
 LOOKBACK_BUFFER_DAYS = 320  # calendar-day buffer before window start, for SMA200 warmup
 REQUEST_DELAY_SEC = 0.5
+EARNINGS_HISTORY_LIMIT = 40  # ~10 years of quarterly reports
 
 
 def fetch_history(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
@@ -45,6 +54,23 @@ def fetch_history(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.Dat
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
+
+
+def fetch_earnings_dates(ticker: str) -> pd.DatetimeIndex:
+    """Historical + a few upcoming earnings report dates, tz-aware UTC
+    (matching market_data.get_next_earnings_date's live convention) so they
+    compare directly against backtest `as_of` timestamps. Only the .index
+    (the calendar date) is used -- never the EPS Estimate/Reported
+    EPS/Surprise columns, which ARE genuinely forward-looking and would be
+    real leakage. The date itself, once a company schedules a report, is a
+    fixed fact that doesn't get revised the way an EPS estimate does, so
+    using it for a backtest day years in the past introduces no look-ahead
+    bias -- see swingtrade/backtest.py's module docstring."""
+    try:
+        dates = yf.Ticker(ticker).get_earnings_dates(limit=EARNINGS_HISTORY_LIMIT).index
+    except Exception:
+        return pd.DatetimeIndex([])
+    return pd.DatetimeIndex(dates).tz_convert("UTC")
 
 
 def print_fold_table(fold_results: list) -> None:
@@ -77,6 +103,11 @@ def main():
     parser.add_argument("--out-sample-days", type=int, default=30)
     parser.add_argument("--step-days", type=int, default=30)
     parser.add_argument("--tickers", default=None, help="Comma-separated tickers to override watchlist.txt.")
+    parser.add_argument(
+        "--with-catalyst", action="store_true",
+        help="Fetch historical earnings dates and simulate Catalyst_Warning honestly, printing a "
+             "catalyst-vs-non breakdown at the end. One extra yfinance call per ticker.",
+    )
     args = parser.parse_args()
 
     end = pd.Timestamp(args.end) if args.end else pd.Timestamp.now().normalize()
@@ -119,6 +150,16 @@ def main():
         print("[ERROR] No ticker data available to backtest.", file=sys.stderr)
         sys.exit(1)
 
+    earnings_data = {}
+    if args.with_catalyst:
+        print(f"\nFetching historical earnings dates for {len(ticker_data)} ticker(s)...")
+        for i, ticker in enumerate(ticker_data):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_SEC)
+            earnings_data[ticker] = fetch_earnings_dates(ticker)
+        found = sum(1 for d in earnings_data.values() if len(d) > 0)
+        print(f"Got earnings history for {found}/{len(ticker_data)} ticker(s).")
+
     folds = swingtrade.generate_folds(start, end, args.in_sample_days, args.out_sample_days, args.step_days)
     print(f"Generated {len(folds)} walk-forward fold(s) "
           f"(in-sample={args.in_sample_days}d, out-of-sample={args.out_sample_days}d, step={args.step_days}d).")
@@ -126,7 +167,9 @@ def main():
         print("[ERROR] Date range too short to generate even one fold with these window sizes.", file=sys.stderr)
         sys.exit(1)
 
-    fold_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG)
+    fold_results = swingtrade.run_walk_forward(
+        ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, earnings_data
+    )
 
     print()
     print_fold_table(fold_results)
@@ -135,9 +178,16 @@ def main():
     overall = swingtrade.summarize_trades(all_oos_trades)
     print()
     print(f"Aggregate out-of-sample performance across all {len(fold_results)} fold(s): {overall}")
+
+    if args.with_catalyst:
+        breakdown = swingtrade.summarize_by_catalyst(all_oos_trades)
+        print()
+        print(f"  Catalyst_Warning=True : {breakdown['catalyst_warning_true']}")
+        print(f"  Catalyst_Warning=False: {breakdown['catalyst_warning_false']}")
+
     print()
-    print("NOTE: catalyst/earnings awareness is not simulated -- see swingtrade/backtest.py.")
-    print("This is a mechanical replay of historical price data, not a forecast.")
+    print("This is a mechanical replay of historical price data, not a forecast. Execution "
+          "assumptions (slippage_pct, commission_pct_per_trade) are baked into pnl_pct above.")
 
 
 if __name__ == "__main__":

@@ -21,13 +21,17 @@ where the last row of fetched data IS "today"). Settling a trade started on
 decision against realized future prices is not look-ahead bias, it's just
 how you find out whether the trade won.
 
-Known limitation: catalyst awareness (earnings-date/news) is NOT simulated.
-yfinance has no point-in-time historical earnings calendar, so
-reconstructing "what was the next known earnings date as of day D" without
-leaking today's calendar backwards isn't possible with this data source.
-Backtested signals therefore always have Catalyst_Warning=False. Optuna
-tunes RSI/ATR parameters against this data, not catalyst timing -- keep
-that gap in mind when comparing backtest results to live behavior.
+Catalyst awareness IS simulated, given an optional per-ticker
+`earnings_dates` (see run_backtest.fetch_earnings_dates): yfinance's
+get_earnings_dates(limit=40) returns roughly a decade of REPORTED earnings
+dates, not just upcoming estimates. Only the calendar date is used, never
+the EPS/Surprise columns -- once a company schedules a report, the date
+itself is a fixed fact that doesn't get revised after the fact the way an
+EPS estimate does, so looking up "the next earnings date after `as_of`"
+from that static list introduces no look-ahead leakage even for a backtest
+day years in the past. Without `earnings_dates` passed in, Catalyst_Warning
+is always False (the old behavior) rather than raising -- callers that
+don't need catalyst simulation aren't forced to fetch it.
 """
 
 from dataclasses import dataclass
@@ -77,6 +81,20 @@ def generate_folds(
     return folds
 
 
+def _next_earnings_date(earnings_dates: pd.DatetimeIndex | None, as_of: pd.Timestamp):
+    """Mirrors market_data.get_next_earnings_date's live semantics (the
+    earliest date >= as_of), just reading from a static historical list
+    instead of a fresh API call. `earnings_dates` must be tz-aware UTC (see
+    run_backtest.fetch_earnings_dates) -- `as_of` is localized to UTC here
+    to match, the same way compute_levels handles its own as_of internally."""
+    if earnings_dates is None or len(earnings_dates) == 0:
+        return None
+    as_of = pd.Timestamp(as_of)
+    as_of = as_of.tz_localize("UTC") if as_of.tzinfo is None else as_of.tz_convert("UTC")
+    future = earnings_dates[earnings_dates >= as_of]
+    return future.min() if len(future) > 0 else None
+
+
 def simulate_signals(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -84,6 +102,7 @@ def simulate_signals(
     window_start,
     window_end,
     config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
 ) -> list[dict]:
     """Walk every trading day in [window_start, window_end) for one ticker,
     simulating a trade wherever swingtrade would fire a Strong Buy/Buy
@@ -94,6 +113,9 @@ def simulate_signals(
     `ohlcv` and `market_ohlcv` must each contain enough leading history
     before window_start to cover config.sma_trend_window -- see
     LOOKBACK_BUFFER_BARS and run_backtest.py's fetch buffering.
+
+    `earnings_dates` (optional, tz-aware UTC, see run_backtest.fetch_earnings_dates)
+    lets Catalyst_Warning be computed honestly instead of always False.
     """
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
@@ -112,8 +134,9 @@ def simulate_signals(
             continue
 
         price_window = ohlcv.loc[:as_of].tail(lookback_bars)
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
         try:
-            levels = compute_levels(ticker, price_window, config)
+            levels = compute_levels(ticker, price_window, config, next_earnings_date=next_earnings)
         except RuntimeError:
             continue  # insufficient history / macro downtrend / illiquid that day
 
@@ -141,6 +164,7 @@ def simulate_signals(
             "buy_price": float(scored["Buy_Price"]),
             "stop_loss": float(scored["Stop_Loss"]),
             "sell_price": float(scored["Sell_Price"]),
+            "catalyst_warning": bool(scored["Catalyst_Warning"]),
             **result,
         })
 
@@ -153,14 +177,22 @@ def run_backtest(
     window_start,
     window_end,
     config: TradingConfig = DEFAULT_CONFIG,
+    earnings_data: dict[str, pd.DatetimeIndex] | None = None,
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
-    history. Returns the combined trade list."""
+    history. Returns the combined trade list. `earnings_data` (optional,
+    ticker -> tz-aware UTC DatetimeIndex, see run_backtest.fetch_earnings_dates)
+    enables honest Catalyst_Warning simulation; without it every trade has
+    Catalyst_Warning=False."""
+    earnings_data = earnings_data or {}
     all_trades = []
     for ticker, ohlcv in ticker_data.items():
         all_trades.extend(
-            simulate_signals(ticker, ohlcv, market_data, window_start, window_end, config)
+            simulate_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker),
+            )
         )
     return all_trades
 
@@ -200,6 +232,21 @@ def summarize_trades(trades: list[dict]) -> dict:
     }
 
 
+def summarize_by_catalyst(trades: list[dict]) -> dict:
+    """Split summarize_trades() output by whether each trade carried a
+    Catalyst_Warning at entry -- lets you actually see whether performance
+    differs around earnings instead of assuming it doesn't. Requires trades
+    simulated with earnings_dates passed through (see run_backtest.py
+    --with-catalyst); without that, every trade has catalyst_warning=False
+    and this just reports everything under the false bucket."""
+    with_catalyst = [t for t in trades if t.get("catalyst_warning")]
+    without_catalyst = [t for t in trades if not t.get("catalyst_warning")]
+    return {
+        "catalyst_warning_true": summarize_trades(with_catalyst),
+        "catalyst_warning_false": summarize_trades(without_catalyst),
+    }
+
+
 @dataclass
 class FoldResult:
     fold: Fold
@@ -214,6 +261,7 @@ def run_walk_forward(
     market_data: pd.DataFrame,
     folds: list[Fold],
     config: TradingConfig = DEFAULT_CONFIG,
+    earnings_data: dict[str, pd.DatetimeIndex] | None = None,
 ) -> list[FoldResult]:
     """Run the backtest across every fold, in-sample and out-of-sample
     separately. Optuna (Phase 5) evaluates a candidate config by scoring it
@@ -221,8 +269,12 @@ def run_walk_forward(
     single fold's in-sample fit."""
     results = []
     for fold in folds:
-        in_trades = run_backtest(ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config)
-        out_trades = run_backtest(ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config)
+        in_trades = run_backtest(
+            ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config, earnings_data
+        )
+        out_trades = run_backtest(
+            ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config, earnings_data
+        )
         results.append(FoldResult(
             fold=fold,
             in_sample_trades=in_trades,

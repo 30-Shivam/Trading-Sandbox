@@ -11,6 +11,7 @@ from .backtest import (
     run_backtest,
     run_walk_forward,
     simulate_signals,
+    summarize_by_catalyst,
     summarize_trades,
 )
 from .config import DEFAULT_CONFIG, TradingConfig
@@ -34,5 +35,6 @@ __all__ = [
     "simulate_signals",
     "run_backtest",
     "summarize_trades",
+    "summarize_by_catalyst",
     "run_walk_forward",
 ]

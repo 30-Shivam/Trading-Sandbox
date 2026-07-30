@@ -66,7 +66,8 @@ interactive app). Run from the repo root.
 | `py -3 ingest.py --watchlist other.txt --position-budget 500` | Same, with a different ticker list / per-trade sizing |
 | `py -3 settle_trades.py` | Resolve unsettled signals to WIN/LOSS/EXPIRED against real subsequent price history |
 | `py -3 run_backtest.py --start 2021-06-01 --end 2026-07-26` | Walk-forward backtest one config (default: `DEFAULT_CONFIG`) against history, no Mongo needed |
-| `py -3 optimize.py --trials 50 --start 2021-06-01 --end 2026-07-26` | Optuna search for better RSI/ATR/stop-loss params; writes a `candidate`, never touches `active` |
+| `py -3 run_backtest.py --with-catalyst` | Same, plus a real (not always-False) Catalyst_Warning simulation and a catalyst-vs-non performance breakdown |
+| `py -3 optimize.py --trials 50 --start 2021-06-01 --end 2026-07-26` | Optuna search for better RSI/ATR/stop-loss/streak-penalty params (5D); writes a `candidate`, never touches `active` |
 | `py -3 optimize.py --trials 50 --recency-half-life-days 90` | Same, weighting recent conditions more heavily (0 = old uniform pooling) |
 | `py -3 evaluate_config.py --tickers A,B,C --rsi-oversold-threshold 52 ...` | Backtest one specific hand-picked config before writing it as a candidate |
 | `py -3 promote_config.py` | List every `System_Config` version (status, metrics, notes) |
@@ -239,11 +240,23 @@ py -3 optimize.py --trials 50 --start 2021-06-01 --end 2026-07-26
 ```
 
 Searches `rsi_oversold_threshold` / `atr_take_profit_multiplier` /
-`stop_loss_atr_multiplier` via Bayesian optimization, scoring each trial on
-its pooled out-of-sample `sharpe_like` (mean/stdev of pnl%, i.e. rewards
+`stop_loss_atr_multiplier` / `extended_decline_penalty_per_day` /
+`extended_decline_penalty_cap` via Bayesian optimization, scoring each trial
+on its pooled out-of-sample `sharpe_like` (mean/stdev of pnl%, i.e. rewards
 consistency, not just raw return) across every walk-forward fold. Trials
 that don't produce enough trades to trust get penalized rather than scored
-on a lucky small sample.
+on a lucky small sample. Every trial's pnl already includes execution
+realism (`slippage_pct`, `commission_pct_per_trade`) — those two are
+deliberately NOT in the search space, since letting Optuna tune away the
+friction they exist to model would defeat the point.
+
+**Don't trust a hand-picked default just because it sounds reasonable.**
+The `extended_decline_penalty_per_day` default (1.5) was a plausible guess
+motivated by a real incident, and it actually *reduced* pooled out-of-sample
+`sharpe_like` on a 15-ticker/5-year real-data test (0.97 → 0.892) versus no
+penalty at all. A small-sample catalyst check told an equally misleading
+story in the other direction (see `--with-catalyst` above). Always let the
+search (and a large-enough sample) tell you, not intuition.
 
 **It never touches your live config.** The winning trial is written to
 `System_Config` as a `candidate` document only — nothing changes for the

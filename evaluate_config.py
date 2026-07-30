@@ -43,6 +43,8 @@ def main():
     parser.add_argument("--rsi-oversold-threshold", type=float, default=None)
     parser.add_argument("--atr-take-profit-multiplier", type=float, default=None)
     parser.add_argument("--stop-loss-atr-multiplier", type=float, default=None)
+    parser.add_argument("--extended-decline-penalty-per-day", type=float, default=None)
+    parser.add_argument("--extended-decline-penalty-cap", type=float, default=None)
     parser.add_argument("--write-candidate", action="store_true", help="Write this config to System_Config as a candidate.")
     parser.add_argument("--notes", default="", help="Notes to store with the candidate (with --write-candidate).")
     args = parser.parse_args()
@@ -54,6 +56,10 @@ def main():
         overrides["atr_take_profit_multiplier"] = args.atr_take_profit_multiplier
     if args.stop_loss_atr_multiplier is not None:
         overrides["stop_loss_atr_multiplier"] = args.stop_loss_atr_multiplier
+    if args.extended_decline_penalty_per_day is not None:
+        overrides["extended_decline_penalty_per_day"] = args.extended_decline_penalty_per_day
+    if args.extended_decline_penalty_cap is not None:
+        overrides["extended_decline_penalty_cap"] = args.extended_decline_penalty_cap
     config = swingtrade.TradingConfig(**{**swingtrade.DEFAULT_CONFIG.to_dict(), **overrides})
 
     end = pd.Timestamp(args.end) if args.end else pd.Timestamp.now().normalize()

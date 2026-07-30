@@ -10,6 +10,16 @@ limit, only better, so a gap up through the target still fills at the
 gapped-up Open. That asymmetry is why gap handling only helps the stop side
 and only helps (never hurts) the target side. See ARCHITECTURE_PLAN.md
 section 3 for the full design rationale.
+
+Execution realism: config.slippage_pct haircuts ONLY stop_hit_intraday fills
+-- gap fills already use the real traded Open (already realistically
+pessimistic), and target_hit/gap_up_target are limit fills that by
+definition can't legitimately execute worse than their limit. Every
+resolution additionally pays config.commission_pct_per_trade (a % of trade
+value, not a $ amount -- this function has no notion of position size/share
+count, so a %-of-value cost is the only form that stays consistent
+regardless of how big a position was). Both default to modest-but-nonzero
+values so a backtest doesn't implicitly assume frictionless execution.
 """
 
 import pandas as pd
@@ -40,27 +50,32 @@ def settle_trade(
         close = float(bar["Close"])
 
         if open_ <= stop_loss:
-            return _resolve("LOSS", open_, "gap_down_stop", holding_days, buy_price, bar_date)
+            return _resolve("LOSS", open_, "gap_down_stop", holding_days, buy_price, bar_date, config)
         if open_ >= sell_price:
-            return _resolve("WIN", open_, "gap_up_target", holding_days, buy_price, bar_date)
+            return _resolve("WIN", open_, "gap_up_target", holding_days, buy_price, bar_date, config)
         # Same-day stop-and-target ambiguity resolves conservatively: stop first.
         if low <= stop_loss:
-            return _resolve("LOSS", stop_loss, "stop_hit_intraday", holding_days, buy_price, bar_date)
+            slipped_stop = stop_loss * (1 - config.slippage_pct)
+            return _resolve("LOSS", slipped_stop, "stop_hit_intraday", holding_days, buy_price, bar_date, config)
         if high >= sell_price:
-            return _resolve("WIN", sell_price, "target_hit", holding_days, buy_price, bar_date)
+            return _resolve("WIN", sell_price, "target_hit", holding_days, buy_price, bar_date, config)
 
         if holding_days >= config.max_holding_days:
-            return _resolve("EXPIRED", close, "expired", holding_days, buy_price, bar_date)
+            return _resolve("EXPIRED", close, "expired", holding_days, buy_price, bar_date, config)
 
     return {"status": "OPEN"}
 
 
-def _resolve(status: str, exit_price: float, exit_reason: str, holding_days: int, buy_price: float, exit_date) -> dict:
+def _resolve(
+    status: str, exit_price: float, exit_reason: str, holding_days: int, buy_price: float, exit_date,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> dict:
+    pnl_pct = ((exit_price - buy_price) / buy_price) * 100 - config.commission_pct_per_trade
     return {
         "status": status,
         "exit_price": round(exit_price, 2),
         "exit_reason": exit_reason,
         "holding_days": holding_days,
-        "pnl_pct": round(((exit_price - buy_price) / buy_price) * 100, 2),
+        "pnl_pct": round(pnl_pct, 2),
         "exit_date": pd.Timestamp(exit_date).date(),
     }

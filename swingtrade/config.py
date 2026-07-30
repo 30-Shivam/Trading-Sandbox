@@ -45,6 +45,10 @@ class TradingConfig:
                                              # rsi_oversold_threshold for at
                                              # least this many consecutive
                                              # trading days
+    extended_decline_penalty_per_day: float = 1.5  # Trade_Score points
+                                             # subtracted per day the streak
+                                             # exceeds extended_decline_warning_days
+    extended_decline_penalty_cap: float = 30.0  # max total points subtracted
 
     # Trade_Score weights (should sum to 100)
     rrr_score_weight: float = 40           # points for Risk-to-Reward Ratio
@@ -75,6 +79,19 @@ class TradingConfig:
     # Settlement (Phase 3)
     max_holding_days: int = 15             # mark EXPIRED if neither stop nor target
                                             # hit within N trading days of entry
+
+    # Execution realism (backtest optimism correction). Only applied to
+    # stop_hit_intraday fills -- gap fills already use the real traded Open,
+    # and target_hit/gap_up_target are limit fills that by definition can't
+    # legitimately execute worse than their limit. commission is a flat %
+    # of trade value per round-trip (not a $ amount -- settle_trade has no
+    # notion of position size/share count, so a %-of-value cost is the only
+    # form that stays consistent regardless of how big a position was).
+    slippage_pct: float = 0.001            # 0.1% haircut on triggered-stop fills
+    commission_pct_per_trade: float = 0.0  # round-trip cost as % of trade value;
+                                            # 0 reflects most modern zero-commission
+                                            # US-equity brokers -- override if yours
+                                            # charges per-share/flat fees
 
     def to_dict(self) -> dict:
         return asdict(self)

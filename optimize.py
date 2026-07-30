@@ -81,6 +81,12 @@ UNDER_SAMPLED_PENALTY = -10.0  # well below any realistic sharpe_like, but finit
 RSI_OVERSOLD_RANGE = (15.0, 70.0)
 ATR_TAKE_PROFIT_RANGE = (1.0, 3.0)
 STOP_LOSS_ATR_RANGE = (0.25, 3.0)
+EXTENDED_DECLINE_PENALTY_PER_DAY_RANGE = (0.0, 4.0)
+EXTENDED_DECLINE_PENALTY_CAP_RANGE = (0.0, 50.0)
+
+# slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
+# space: they model execution friction, not strategy behavior. Letting Optuna
+# tune them would just teach it to zero out the very realism they exist to add.
 
 
 def fold_weight(fold: swingtrade.Fold, end: pd.Timestamp, half_life_days: float) -> float:
@@ -144,6 +150,12 @@ def build_objective(ticker_data: dict, market_data: pd.DataFrame, folds: list, e
             "rsi_oversold_threshold": trial.suggest_float("rsi_oversold_threshold", *RSI_OVERSOLD_RANGE),
             "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
             "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+            "extended_decline_penalty_per_day": trial.suggest_float(
+                "extended_decline_penalty_per_day", *EXTENDED_DECLINE_PENALTY_PER_DAY_RANGE
+            ),
+            "extended_decline_penalty_cap": trial.suggest_float(
+                "extended_decline_penalty_cap", *EXTENDED_DECLINE_PENALTY_CAP_RANGE
+            ),
         })
 
         fold_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, candidate)
