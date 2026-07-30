@@ -18,6 +18,18 @@ recency-weighted toward what's working lately) and proposes a new parameter
 set — which a human reviews and promotes before it ever affects live
 signals. The Streamlit dashboard is just a window onto all of this.
 
+**A real caveat worth knowing up front**: RSI-based "oversold" can stay true
+for weeks during a genuine sustained decline, not just a brief dip — the
+active config's tuned threshold has landed as high as ~52 (well above a
+"classic" RSI<30 reading), and the structural support level recalculates on
+a rolling window, so a ticker that's simply making new lows day after day
+can keep generating fresh Strong Buy signals the whole way down. Every
+result now carries `Oversold_Streak_Days` / `Extended_Decline_Warning`
+(highlighted orange, 5+ consecutive days by default) specifically to
+surface this — it does NOT change `Trade_Score`, so check it, don't just
+trust a high score alone. See section 4's incident writeup for how this
+played out on a real pair of trades.
+
 ## 2. One-time setup
 
 ```bash

@@ -42,6 +42,18 @@ for every scanned ticker:
      own 200-day SMA) halts the whole scan when the index itself is in a
      macro downtrend.
 
+  6b. Extended_Decline_Warning / Oversold_Streak_Days: how many consecutive
+      trading days RSI has stayed below rsi_oversold_threshold. A loose
+      threshold (this system's tuned active value has landed as high as
+      ~52, well above a "classic" RSI<30 reading) can stay satisfied for
+      weeks during a genuine sustained decline, not just a brief dip --
+      combined with support_lookback_days recalculating the structural low
+      on a rolling window, that can produce repeated fresh Buy/Strong Buy
+      signals on a ticker simply making new lows day after day, not
+      reversing. Flagged (highlighted orange) once the streak reaches
+      extended_decline_warning_days (default 5) -- purely informational,
+      does NOT affect Trade_Score/Signal.
+
   7. Shares_To_Buy = position_budget / buy_price, rounded to
      fractional_share_decimals places -- a fixed-dollar-budget position size,
      recalculated live from the sidebar "Position Budget" input. Capital is
@@ -131,6 +143,7 @@ SIGNAL_COLORS = {
     "Sector Limit Reached": "background-color: #5e35b1; color: #ffffff;",
 }
 CATALYST_WARNING_STYLE = "background-color: #c62828; color: #ffffff; font-weight: 600;"
+EXTENDED_DECLINE_STYLE = "background-color: #e65100; color: #ffffff; font-weight: 600;"
 
 REVIEW_COLORS = {
     "SELL (stop breached)": "background-color: #c62828; color: #ffffff; font-weight: 600;",
@@ -141,7 +154,8 @@ REVIEW_COLORS = {
 DISPLAY_COLUMNS = [
     "Ticker", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
     "Sell_Price", "RRR", "RSI", "ATR", "Distance_to_Buy_Pct", "Shares_To_Buy",
-    "Est_Cost", "Next_Earnings_Date", "Catalyst_Warning", "Top_Headline", "As_Of",
+    "Est_Cost", "Next_Earnings_Date", "Catalyst_Warning", "Oversold_Streak_Days",
+    "Extended_Decline_Warning", "Top_Headline", "As_Of",
 ]
 
 # ---------------------------------------------------------------------------
@@ -241,6 +255,7 @@ def style_results(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
         .format(formats, na_rep="-")
         .map(lambda v: SIGNAL_COLORS.get(v, ""), subset=["Signal"])
         .map(lambda v: CATALYST_WARNING_STYLE if v else "", subset=["Catalyst_Warning"])
+        .map(lambda v: EXTENDED_DECLINE_STYLE if v else "", subset=["Extended_Decline_Warning"])
     )
 
 

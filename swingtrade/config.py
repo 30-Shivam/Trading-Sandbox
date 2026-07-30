@@ -33,6 +33,19 @@ class TradingConfig:
     # Catalyst awareness
     earnings_warning_days: int = 14        # flag Catalyst_Warning if earnings within N days
 
+    # Falling-knife awareness -- a loose rsi_oversold_threshold (this system's
+    # tuned active value has landed as high as ~52, well above a "classic"
+    # RSI<30 reading) can stay satisfied for weeks during a genuine sustained
+    # decline, not just a brief dip. Combined with support_lookback_days
+    # recalculating the structural low on a rolling window, that can produce
+    # repeated fresh Buy/Strong Buy signals on a ticker that's simply making
+    # new lows day after day, not reversing. Purely informational -- does NOT
+    # affect Trade_Score/Signal, just flags it for you to see.
+    extended_decline_warning_days: int = 5  # flag if RSI has stayed below
+                                             # rsi_oversold_threshold for at
+                                             # least this many consecutive
+                                             # trading days
+
     # Trade_Score weights (should sum to 100)
     rrr_score_weight: float = 40           # points for Risk-to-Reward Ratio
     rrr_score_cap: float = 4.0             # RRR at/above this earns full RRR points

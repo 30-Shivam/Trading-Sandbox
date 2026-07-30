@@ -69,6 +69,8 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime) -> dict:
         "est_cost": _native(row["Est_Cost"]),
         "next_earnings_date": str(next_earnings) if next_earnings is not None else None,
         "catalyst_warning": bool(_native(row["Catalyst_Warning"])),
+        "oversold_streak_days": _native(row.get("Oversold_Streak_Days")),
+        "extended_decline_warning": bool(_native(row.get("Extended_Decline_Warning", False))),
         "config_snapshot": config_snapshot,
         "settled": False,
         "updated_at": now,

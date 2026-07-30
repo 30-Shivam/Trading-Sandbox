@@ -74,6 +74,13 @@ def compute_levels(
             f"< ${config.min_dollar_volume:,.0f})"
         )
 
+    oversold_streak_days = 0
+    for rsi_val in reversed(df["RSI"].tolist()):
+        if pd.isna(rsi_val) or rsi_val >= config.rsi_oversold_threshold:
+            break
+        oversold_streak_days += 1
+    extended_decline_warning = oversold_streak_days >= config.extended_decline_warning_days
+
     recent_window = df.tail(config.support_lookback_days)
     support_level = float(recent_window["Low"].min())
     support_date = recent_window["Low"].idxmin()
@@ -124,6 +131,8 @@ def compute_levels(
         "Next_Earnings_Date": next_earnings_date_out,
         "Catalyst_Warning": catalyst_warning,
         "Top_Headline": top_headline,
+        "Oversold_Streak_Days": oversold_streak_days,
+        "Extended_Decline_Warning": extended_decline_warning,
     }
 
 
