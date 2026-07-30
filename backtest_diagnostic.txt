@@ -1,0 +1,195 @@
+BACKTEST vs. LIVE PERFORMANCE GAP — DIAGNOSTIC NOTES
+2026-07-30
+
+The trigger: every backtest tonight (old config, new config, DEFAULT_CONFIG,
+the new Optuna candidate) reports 66-88% win rates. The 63 real, settled
+live trades in Trade_Outcomes show a 31.75% win rate. That gap is too large
+to be execution-cost modeling alone. Below is everything I actually checked
+tonight, and everything I think is going on but haven't fully verified.
+Marked CONFIRMED where I ran a real query against the data, HYPOTHESIS
+where it's reasoning I believe but haven't proven.
+
+===============================================================================
+THE SINGLE BIGGEST FINDING (CONFIRMED)
+===============================================================================
+
+The 63 live trades are NOT a broad, representative sample of "how this
+system trades." They are:
+  - All from a 3-trading-day window: signal dates 2026-07-24, 07-27, 07-28.
+  - 82.5% Technology sector (52/63) -- CAT, MS, GS and a handful of others
+    are the only non-Tech names in the whole set.
+  - All generated under the exact same config (v3's params) -- so this
+    isn't config drift across versions, it's one config's real behavior
+    during one narrow, specific stretch.
+
+That stretch is the same active semiconductor/tech decline that caught the
+real INTC and MRVL trades earlier tonight (19-day RSI-oversold streaks,
+"buy the dip" repeatedly firing on names that just kept making new lows).
+This is close to the worst-case scenario for a mean-reversion dip-buying
+strategy: a sustained, sector-wide breakdown, not the choppier/more
+range-bound conditions a "buy the dip, wait for reversion" thesis is built
+for. A 5-year, thousands-of-trades backtest dilutes a stretch like this into
+a small share of the pooled sample; the live sample right now IS that
+stretch, almost in its entirety.
+
+Conclusion: 31.75% is very likely a real, honest measurement of how badly
+this specific config performs during an active, concentrated sector rout --
+not a reliable estimate of its long-run win rate. It's also not something to
+wave away as "just bad luck" -- it happened, it's real money, and it's a
+real weakness (see "what this doesn't mean" below).
+
+===============================================================================
+CATALYST BREAKDOWN WITHIN THE LIVE SAMPLE (CONFIRMED)
+===============================================================================
+
+catalyst_warning=True:  5 WIN, 20 LOSS (20.0% win rate)
+catalyst_warning=False: 15 WIN, 23 LOSS (39.5% win rate)
+
+Both bad, but catalyst-flagged trades were meaningfully worse even within
+this already-bad window. Consistent with the earlier 4-ticker/3-year smoke
+test result (35.71% vs 72.22%) -- but NOT consistent with the larger
+15-ticker/5-year backtest sample (79.43% vs 73.24%, catalyst actually
+BETTER). My read: catalyst risk is genuinely elevated during an active
+sector-wide decline (earnings landmines land harder when the whole sector
+is already jumpy) but isn't a fixed, generalizable penalty across all market
+conditions. Small samples in this specific window keep pointing to the same
+local conclusion; the large diversified sample points the other way. Both
+are "true" for their respective conditions -- neither is "the" answer.
+
+===============================================================================
+SETTLE_TRADES.PY DOESN'T LOAD THE ACTIVE CONFIG (CONFIRMED, latent bug)
+===============================================================================
+
+settle_trades.py has `CONFIG = swingtrade.DEFAULT_CONFIG` hardcoded at
+module level -- it never calls config_loader.load_active_config() the way
+dip_buy_analyzer.py and ingest.py do. Stop_Loss/Sell_Price levels themselves
+are fine (they're read from the stored Trade_Signals document, frozen at
+signal time, not recomputed), but max_holding_days and -- as of tonight --
+slippage_pct/commission_pct_per_trade are pulled from DEFAULT_CONFIG
+regardless of what's actually active.
+
+This hasn't visibly distorted anything YET because v3's max_holding_days
+(15) happens to match DEFAULT_CONFIG's, and slippage/commission were only
+added tonight (after these 63 trades were already settled). But it's a real
+inconsistency with the rest of the codebase's "single source of truth via
+config_loader" design, and it will silently misapply the wrong execution
+assumptions the moment someone promotes a config with different
+max_holding_days or execution parameters. Worth fixing regardless of the
+win-rate mystery.
+
+===============================================================================
+WATCHLIST SURVIVORSHIP BIAS (HYPOTHESIS, high confidence, not directly
+measurable without a point-in-time historical universe)
+===============================================================================
+
+watchlist.txt's 100 tickers were selected TODAY, with 2026 hindsight, then
+every backtest tonight ran that same list all the way back to 2021-06-01.
+Every name on it is, by construction, one that's still large, liquid, and
+worth watching in 2026 -- which selects heavily for companies that
+survived, recovered from, or grew through whatever happened to them in
+2021-2025. A stock that dipped in 2022 and never recovered wouldn't be on
+today's watchlist to begin with, so the backtest never "sees" that failure
+mode. This is the single most likely reason backtested win rates run so
+much higher than any single real stretch of live trading: the backtest's
+universe of tickers is quietly pre-filtered for "things that turned out
+fine," and live trading doesn't get that benefit -- it has to deal with
+whatever's actually happening to whatever's on the list right now,
+including a name that might still be mid-decline with no guarantee of
+recovery.
+
+I don't have a clean fix for this without a genuinely point-in-time
+historical ticker universe (e.g., "who was in the S&P 500 as of Jan 2022"),
+which isn't readily available through yfinance. Worth being honest that
+this biases EVERY backtest number in this project optimistic, not just
+tonight's.
+
+===============================================================================
+SIGNALS ARE LOGGED PRE-ALLOCATION -- "LIVE WIN RATE" ISN'T "MY TRADES"
+(CONFIRMED behavior, HYPOTHESIS about its impact on the 63-trade number)
+===============================================================================
+
+Trade_Signals logs every Strong Buy/Buy the scanner finds, deliberately
+before the capital allocator (or the sector cap) gets a chance to mark
+anything Insufficient Funds or Sector Limit Reached -- signals.py's own
+docstring says this is intentional, so the technical signal's quality isn't
+contaminated by a personal cash constraint on a given day. That's the right
+design for judging the SIGNAL. But it also means the 63-trade "live win
+rate" is measuring "every mechanical signal this system generated," not
+"trades the user actually funded and held" -- on a real account, the sector
+cap (or just limited cash) would likely have blocked a meaningful fraction
+of these 52 correlated Tech signals from ever being real positions. The
+63-trade number may be overstating how bad the user's ACTUAL realized
+performance was, at the same time as it's a real and correct measurement of
+"if you'd taken every signal, this is what would've happened."
+
+===============================================================================
+FILL-CONFIRMATION GAP (already tracked as improvements.txt point 5)
+===============================================================================
+
+Directly related to the above: the system has no way to know whether a
+logged signal became a real fill. Some fraction of these 63 "trades" may
+never have been entered by anyone at all -- they're purely mechanical
+what-if simulations, exactly like backtest trades, just on live data. That
+makes the live number MORE comparable to the backtest (both are "what if
+you took every signal"), which actually makes it harder to explain away the
+gap by mechanism-of-measurement alone -- and points back toward the
+sector-concentration / regime explanation as the more likely primary cause.
+
+===============================================================================
+SECONDARY / LOWER-CONFIDENCE HYPOTHESES (not verified)
+===============================================================================
+
+- Real slippage on a very tight stop is probably worse than the flat 0.1%
+  we modeled tonight, especially relevant to the new Optuna candidate (v5)
+  whose stop_loss_atr_multiplier pinned at 0.25 -- the search floor, same
+  failure mode v3 had before its manual cap, but tighter this time. A stop
+  that close is more exposed to real bid-ask/momentary-volatility slippage
+  than a flat percentage captures, and is also the kind of extreme value
+  that makes me suspect the search is partly exploiting how daily-bar OHLC
+  data resolves same-day stop-vs-target ambiguity rather than finding a
+  genuinely robust edge. Not confirmed, but a real suspicion.
+
+- Some of the 63 live trades may have been generated before mid-session
+  fixes landed today (sector cap, watchlist diversification, streak
+  awareness) -- if so, a few of them reflect conditions that don't fully
+  apply going forward. Weak hypothesis; I didn't find evidence one way or
+  the other, and doesn't change the dominant sector-concentration story
+  above.
+
+- 63 trades (and really, 3 trading days) is a genuinely small, noisy sample
+  regardless of any of the above. Even a "real" long-run 65-70% strategy can
+  post a stretch this bad by chance, especially concentrated in one
+  correlated sector during one bad week. This isn't an excuse to ignore the
+  result -- it's a reason not to treat 31.75% as a stable, final number
+  either.
+
+===============================================================================
+WHAT THIS DOES NOT MEAN
+===============================================================================
+
+It does not mean the tool is fundamentally broken, and it does not mean the
+backtest is worthless. It means both numbers are currently untrustworthy in
+different directions: the backtest is optimistic (survivorship-biased
+watchlist, doesn't model fill confirmation, and tonight's Optuna candidate
+specifically looks like it's exploiting an extreme boundary), and the
+live number is a narrow, sector-concentrated snapshot of one bad week, not
+a long-run estimate. Neither one is "the truth" on its own right now.
+
+===============================================================================
+WHAT I'D ACTUALLY DO NEXT, IN ORDER
+===============================================================================
+
+1. Do not promote v5. Its boundary-pinned stop is a red flag independent of
+   everything above.
+2. Fix settle_trades.py to load the active config via config_loader.py
+   instead of hardcoding DEFAULT_CONFIG -- small, mechanical, no reason not
+   to just do it.
+3. Let more live data accumulate before trusting the live win rate as a
+   number -- specifically, more data from calmer/non-Tech-dominated
+   stretches, not just more days during the same decline.
+4. Build the fill-confirmation feature (improvements.txt point 5) so a
+   future live win rate actually reflects real trades, not every mechanical
+   signal.
+5. Treat every backtest number in this project as upper-bound-optimistic
+   because of watchlist survivorship bias, until/unless a point-in-time
+   historical ticker universe becomes available to backtest against instead.
