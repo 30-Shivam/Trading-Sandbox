@@ -11,6 +11,16 @@ from scratch on the next run -- there's no incremental state to corrupt, so
 this is safe to run as often as you like (once a day, via cron, is enough
 since it's all daily-bar data).
 
+Each signal is settled using ITS OWN config_snapshot (stored on the
+Trade_Signals document at signal time), not whichever System_Config happens
+to be "active" when this job runs. That matters: max_holding_days and the
+execution-realism fields (slippage_pct, commission_pct_per_trade) are exit
+policy, and a trade should be graded against the policy in effect when it
+was entered, not retroactively reinterpreted under whatever got promoted
+afterward. TradingConfig.from_dict() handles older snapshots that predate a
+field (e.g. slippage_pct) fine -- missing keys just fall back to that
+field's dataclass default.
+
 Usage:
     python settle_trades.py
 """
@@ -25,7 +35,6 @@ import storage
 import swingtrade
 
 REQUEST_DELAY_SEC = 0.5   # pause between yfinance calls to avoid rate-limiting
-CONFIG = swingtrade.DEFAULT_CONFIG
 
 
 def fetch_bars_since(ticker: str, signal_date: str) -> pd.DataFrame:
@@ -45,12 +54,13 @@ def settle_one(signal: dict) -> str:
     if bars.empty:
         return "no new bars yet"
 
+    config = swingtrade.TradingConfig.from_dict(signal["config_snapshot"])
     result = swingtrade.settle_trade(
         buy_price=signal["buy_price"],
         stop_loss=signal["stop_loss"],
         sell_price=signal["sell_price"],
         bars_since_entry=bars,
-        config=CONFIG,
+        config=config,
     )
 
     if result["status"] == "OPEN":
