@@ -44,13 +44,18 @@ def compute_levels(
     df["AvgVolume"] = df["Volume"].rolling(window=config.volume_lookback_days).mean()
 
     last_row = df.iloc[-1]
-    last_close = float(last_row["Close"])
     last_date = df.index[-1]
-    sma = float(last_row["SMA"])
-    sma_trend = float(last_row["SMA_TREND"])
-    rsi = float(last_row["RSI"])
-    atr = float(last_row["ATR"])
-    avg_volume = float(last_row["AvgVolume"])
+    # NaN/None-check every raw value BEFORE casting to float -- ta.rsi/ta.atr
+    # can leave a genuinely bad row (e.g. a ticker symbol reused by a thin,
+    # sparsely-traded stock after the original company renamed/delisted) as
+    # a plain None rather than a float NaN, and float(None) raises a raw
+    # TypeError instead of the intended graceful RuntimeError below.
+    last_close, sma, sma_trend, rsi, atr, avg_volume = (
+        last_row["Close"], last_row["SMA"], last_row["SMA_TREND"],
+        last_row["RSI"], last_row["ATR"], last_row["AvgVolume"],
+    )
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
     if pd.isna(sma):
         raise RuntimeError(f"insufficient history to compute {config.ma_window}-day SMA")
     if pd.isna(sma_trend):
@@ -61,6 +66,10 @@ def compute_levels(
         raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
     if pd.isna(avg_volume):
         raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+
+    last_close, sma, sma_trend, rsi, atr, avg_volume = (
+        float(last_close), float(sma), float(sma_trend), float(rsi), float(atr), float(avg_volume),
+    )
 
     if last_close < sma_trend:
         raise RuntimeError(
