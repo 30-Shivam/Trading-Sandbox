@@ -78,30 +78,53 @@ max_holding_days or execution parameters. Worth fixing regardless of the
 win-rate mystery.
 
 ===============================================================================
-WATCHLIST SURVIVORSHIP BIAS (HYPOTHESIS, high confidence, not directly
-measurable without a point-in-time historical universe)
+WATCHLIST SURVIVORSHIP BIAS -- UPDATE 2026-07-30: MEASURED, SMALLER THAN
+FEARED (CONFIRMED via check_survivorship_bias.py)
 ===============================================================================
 
-watchlist.txt's 100 tickers were selected TODAY, with 2026 hindsight, then
-every backtest tonight ran that same list all the way back to 2021-06-01.
-Every name on it is, by construction, one that's still large, liquid, and
-worth watching in 2026 -- which selects heavily for companies that
-survived, recovered from, or grew through whatever happened to them in
+Original hypothesis (below, kept for the record): watchlist.txt's 100
+tickers were selected TODAY with hindsight, then every backtest ran that
+list all the way back to 2021-06-01, which should bias results optimistic.
+
+I found a real, MIT-licensed, point-in-time S&P 500 membership dataset
+(github.com/hanshof/sp500_constituents, cached as
+sp500_historical_components.csv, covers 1996-01-02 through 2025-08-23) and
+built check_survivorship_bias.py to actually measure the effect: same
+active config, same walk-forward harness, same window (2021-06-01 to
+2025-08-23, 45 folds), run against two same-sized (30 ticker) random
+samples -- today's watchlist vs. the ACTUAL S&P 500 membership as of
+2021-06-01 (not cherry-picked with any hindsight).
+
+Result: the point-in-time sample performed SLIGHTLY BETTER, not worse --
+win_rate 70.74% vs. watchlist's 69.63%, sharpe_like 0.943 vs. 0.846. That's
+the opposite direction from the hypothesis. Conclusion: watchlist curation
+is NOT the dominant driver of the backtest-vs-live gap -- the strategy's
+backtested edge generalizes reasonably well across a broad, unbiased
+large-cap universe, not just today's hand-picked names.
+
+One real residual caveat, not resolved by this test: 3 of the 30
+point-in-time tickers (ATVI, DISCK, BK) were NOT fetchable via yfinance
+today at all -- "possibly delisted; no timezone found." Those are exactly
+the "didn't make it" names survivorship bias is supposed to catch, and this
+test still couldn't include them, because their data simply isn't
+accessible through this data source. So some irreducible survivorship bias
+remains structurally baked into every backtest in this project -- it's just
+measurably smaller than I originally feared for the names that ARE still
+tradable.
+
+Downgraded from "the single most likely reason" to "a real but apparently
+minor factor" -- the sector-concentration/narrow-window explanation above
+remains the dominant, confirmed cause of the original 63-trade gap.
+
+--- Original hypothesis text, kept for context ---
+Every name on the watchlist is, by construction, one that's still large,
+liquid, and worth watching in 2026 -- which selects heavily for companies
+that survived, recovered from, or grew through whatever happened to them in
 2021-2025. A stock that dipped in 2022 and never recovered wouldn't be on
 today's watchlist to begin with, so the backtest never "sees" that failure
-mode. This is the single most likely reason backtested win rates run so
-much higher than any single real stretch of live trading: the backtest's
-universe of tickers is quietly pre-filtered for "things that turned out
-fine," and live trading doesn't get that benefit -- it has to deal with
-whatever's actually happening to whatever's on the list right now,
-including a name that might still be mid-decline with no guarantee of
-recovery.
-
-I don't have a clean fix for this without a genuinely point-in-time
-historical ticker universe (e.g., "who was in the S&P 500 as of Jan 2022"),
-which isn't readily available through yfinance. Worth being honest that
-this biases EVERY backtest number in this project optimistic, not just
-tonight's.
+mode. I don't have a clean fix for the fully-delisted-name blind spot
+without a genuinely complete point-in-time historical universe including
+delisted tickers' price data, which isn't obtainable through yfinance.
 
 ===============================================================================
 SIGNALS ARE LOGGED PRE-ALLOCATION -- "LIVE WIN RATE" ISN'T "MY TRADES"
