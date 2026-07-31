@@ -172,7 +172,10 @@ def build_objective(ticker_data: dict, market_data: pd.DataFrame, folds: list, e
 def report_live_outcomes_context() -> None:
     """Informational only -- see module docstring for why live outcomes are
     kept out of the per-trial score itself (recency-weighting is the
-    mechanism that lets the score respond to what's working lately)."""
+    mechanism that lets the score respond to what's working lately). Splits
+    out confirmed fills (see confirm_fill.py) from every mechanical signal's
+    hypothetical outcome -- most logged signals were never actually traded,
+    so the pooled-everything number overstates the sample of real trades."""
     try:
         db = storage.get_db()
     except storage.MongoNotConfigured:
@@ -183,7 +186,15 @@ def report_live_outcomes_context() -> None:
         return
     trades = [{"status": d["status"], "pnl_pct": d["pnl_pct"]} for d in docs]
     metrics = swingtrade.summarize_trades(trades)
-    print(f"Live Trade_Outcomes so far: {len(docs)} -- pooled metrics: {metrics}")
+    print(f"Live Trade_Outcomes so far (every signal): {len(docs)} -- pooled metrics: {metrics}")
+
+    confirmed_docs = [d for d in docs if d.get("confirmed_filled")]
+    if confirmed_docs:
+        confirmed_trades = [{"status": d["status"], "pnl_pct": d["pnl_pct"]} for d in confirmed_docs]
+        confirmed_metrics = swingtrade.summarize_trades(confirmed_trades)
+        print(f"  ...of which CONFIRMED real fills: {len(confirmed_docs)} -- pooled metrics: {confirmed_metrics}")
+    else:
+        print("  ...of which CONFIRMED real fills: 0 -- see confirm_fill.py.")
 
 
 def main():

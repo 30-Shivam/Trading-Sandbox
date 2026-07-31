@@ -72,6 +72,9 @@ interactive app). Run from the repo root.
 | `py -3 evaluate_config.py --tickers A,B,C --rsi-oversold-threshold 52 ...` | Backtest one specific hand-picked config before writing it as a candidate |
 | `py -3 promote_config.py` | List every `System_Config` version (status, metrics, notes) |
 | `py -3 promote_config.py --promote 4` | Promote version 4 to `active` (retires whatever was active) |
+| `py -3 confirm_fill.py` | List logged signals you haven't confirmed as real fills yet |
+| `py -3 confirm_fill.py --ticker INTC --date 2026-07-24 --price 89.60` | Mark a signal as an actual trade you made (price optional, defaults to the logged buy_price) |
+| `py -3 check_survivorship_bias.py` | Compare today's watchlist vs. a genuine point-in-time S&P 500 sample, same config/window |
 
 Add `--help` to any script for its full flag list and a detailed docstring
 (e.g. `py -3 optimize.py --help`).
@@ -128,12 +131,24 @@ a limit buy at 89.59 (day or GTC order) for the next session, and once/if
 filled, a stop-loss at 85.30 and a take-profit limit sell at 105.55 (an OCO
 bracket if your broker supports it).
 
-**The one honest gap**: the system tracks "what happens to a trade entered
-at exactly Buy_Price," independent of whether your specific limit order
-actually filled. If price gaps past your limit and you never got in, the
-system still walks the signal forward as if you did — that's intentional
+**The one honest gap, and how to close it per-trade**: by default the system
+tracks "what happens to a trade entered at exactly Buy_Price," independent
+of whether your specific limit order actually filled — that's intentional
 (it's scoring the *signal's* quality, not acting as your personal trade
-blotter), but don't mistake "it's logged" for "I definitely own this."
+blotter), but don't mistake "it's logged" for "I definitely own this." If
+you actually place the order, tell the system:
+
+```bash
+py -3 confirm_fill.py --ticker INTC --date 2026-07-24 --price 89.60
+```
+
+`--price` is optional (your real fill, if it differed from the logged
+Buy_Price) — Stop_Loss/Sell_Price never change, only the entry price used
+for the eventual pnl_pct. This doesn't change how the signal settles, but it
+lets reporting (`settle_trades.py`'s summary, `optimize.py`'s live-outcomes
+context) separate "every mechanical signal's hypothetical outcome" from
+"what actually happened to trades you made" — run `confirm_fill.py` with no
+arguments any time to see what's still unconfirmed.
 
 **Step 4 — Each following trading day, settle.**
 
@@ -330,7 +345,10 @@ the system" actually looks like right now:
    `py -3 ingest.py` then `py -3 settle_trades.py`.
 2. Open the dashboard (`streamlit run dip_buy_analyzer.py`) whenever you want
    to actually look at today's picks and size a real position.
-3. Every few weeks, once `Trade_Outcomes` has grown, or just to re-tune
+3. Whenever you actually place an order: `py -3 confirm_fill.py --ticker X
+   --date Y [--price Z]`, so `Trade_Outcomes` can eventually distinguish
+   your real track record from every mechanical signal's hypothetical one.
+4. Every few weeks, once `Trade_Outcomes` has grown, or just to re-tune
    against history: `py -3 optimize.py --trials 50 ...`, review with
    `promote_config.py`, promote if it looks like a genuine improvement (not
    just a boundary-pinned artifact — see section 6).
@@ -346,11 +364,14 @@ the system" actually looks like right now:
 | `optimize.py` | Optuna parameter search |
 | `evaluate_config.py` | Validate one manual config before promoting |
 | `promote_config.py` | List / promote `System_Config` candidates |
+| `confirm_fill.py` | Mark a logged signal as a real, confirmed trade |
+| `check_survivorship_bias.py` | Cross-check today's watchlist vs. a point-in-time S&P 500 sample |
 | `market_data.py` | All yfinance fetching, shared by the dashboard and `ingest.py` |
 | `config_loader.py` | Loads the active `TradingConfig` from Mongo, shared the same way |
+| `sp500_membership.py` | Point-in-time S&P 500 constituent lookup (cached CSV) |
 | `watchlist.py` | Ticker-list parsing (`watchlist.txt` or pasted text) |
 | `swingtrade/` | Pure calculation library — indicators, scoring, allocation, settlement math, backtest engine. No network/DB/UI dependency, so it's the one place this logic can drift out of sync from |
-| `storage/` | MongoDB read/write for `Trade_Signals`, `Trade_Outcomes`, `System_Config` |
+| `storage/` | MongoDB read/write for `Trade_Signals`, `Trade_Outcomes`, `System_Config`, `Current_Holdings` |
 
 ## 11. What's not here yet
 

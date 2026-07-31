@@ -14,6 +14,10 @@ Document shape (one per ticker per trading day):
         "catalyst_warning": bool,
         "config_snapshot": dict,     # swingtrade.TradingConfig.to_dict() at trigger time
         "settled": bool,             # flipped by the Phase 3 settlement job
+        "confirmed_filled": bool,    # absent/False until confirm_fill() is called --
+                                      # NOT written by log_trade_signal, see below
+        "fill_price": float,         # present only if confirm_fill() was given one
+        "confirmed_at": datetime,    # present only once confirmed
         "created_at": datetime, "updated_at": datetime,
     }
 
@@ -22,6 +26,13 @@ scored by swingtrade.add_trade_score), not the capital-allocator's overlay --
 "Insufficient Funds" reflects a personal cash constraint on a given day, not
 a change in the underlying technical signal, and the learning loop (Phase 5)
 needs to judge the signal itself independent of that.
+
+confirmed_filled deliberately does NOT appear in _build_document's $set:
+log_trade_signal() re-runs every time the scanner re-scans (same ticker,
+same day), and if confirmed_filled were part of that $set, a confirmation
+you made this morning would get silently wiped out the next time ingest.py
+or the dashboard re-scans today. It's only ever touched by confirm_fill()/
+unconfirm_fill() below, so a scan can never undo a confirmation.
 """
 
 import math
@@ -114,4 +125,42 @@ def mark_settled(ticker: str, signal_date: str) -> None:
     db[COLLECTION_NAME].update_one(
         {"ticker": ticker, "signal_date": signal_date},
         {"$set": {"settled": True}},
+    )
+
+
+def confirm_fill(ticker: str, signal_date: str, fill_price: float | None = None) -> None:
+    """Mark a logged signal as an actual, confirmed fill -- distinct from
+    merely being logged, since most mechanical signals are never actually
+    traded. `fill_price` (optional) records what you actually paid if it
+    differed from the system's computed buy_price; settle_trades.py uses it
+    as the real entry price for pnl_pct when set. Stop_Loss/Sell_Price are
+    never touched -- they're absolute levels computed at signal time, not
+    relative to whatever price you actually got filled at."""
+    db = get_db()
+    update = {"confirmed_filled": True, "confirmed_at": datetime.now(timezone.utc)}
+    if fill_price is not None:
+        update["fill_price"] = float(fill_price)
+    db[COLLECTION_NAME].update_one(
+        {"ticker": ticker, "signal_date": signal_date},
+        {"$set": update},
+    )
+
+
+def unconfirm_fill(ticker: str, signal_date: str) -> None:
+    """Undo a mistaken confirm_fill call."""
+    db = get_db()
+    db[COLLECTION_NAME].update_one(
+        {"ticker": ticker, "signal_date": signal_date},
+        {"$set": {"confirmed_filled": False}, "$unset": {"fill_price": "", "confirmed_at": ""}},
+    )
+
+
+def get_signals_pending_confirmation() -> list[dict]:
+    """Loggable (Strong Buy/Buy) signals not yet marked confirmed_filled,
+    most recent first -- for a human to review and confirm or ignore."""
+    db = get_db()
+    return list(
+        db[COLLECTION_NAME]
+        .find({"signal": {"$in": list(LOGGABLE_SIGNALS)}, "confirmed_filled": {"$ne": True}})
+        .sort("signal_date", -1)
     )

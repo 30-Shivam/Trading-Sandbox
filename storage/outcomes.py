@@ -6,7 +6,7 @@ history using swingtrade.settle_trade(). Document shape:
     {
         "ticker": str,
         "signal_date": str,      # matches the source Trade_Signals document
-        "entry_price": float,    # == that signal's buy_price
+        "entry_price": float,    # confirmed fill_price if set, else that signal's buy_price
         "exit_price": float,
         "exit_reason": "target_hit" | "stop_hit_intraday"
                         | "gap_down_stop" | "gap_up_target" | "expired",
@@ -14,6 +14,10 @@ history using swingtrade.settle_trade(). Document shape:
         "pnl_pct": float,
         "holding_days": int,
         "exit_date": str,        # ISO date the trade actually resolved
+        "confirmed_filled": bool,# carried over from the source Trade_Signals
+                                  # doc -- most outcomes are mechanical
+                                  # what-ifs, not real trades; this is how
+                                  # you separate the two in reporting
         "settled_at": datetime,  # UTC, when this document was written
     }
 
@@ -34,7 +38,9 @@ def ensure_indexes() -> None:
     db[COLLECTION_NAME].create_index([("ticker", 1), ("signal_date", 1)], unique=True)
 
 
-def log_trade_outcome(ticker: str, signal_date: str, entry_price: float, result: dict) -> None:
+def log_trade_outcome(
+    ticker: str, signal_date: str, entry_price: float, result: dict, confirmed_filled: bool = False
+) -> None:
     """Upsert a Trade_Outcomes document for a resolved trade. `result` is
     the dict returned by swingtrade.settle_trade() for a terminal status
     (WIN/LOSS/EXPIRED) -- never call this with an OPEN result."""
@@ -52,6 +58,7 @@ def log_trade_outcome(ticker: str, signal_date: str, entry_price: float, result:
         "pnl_pct": float(result["pnl_pct"]),
         "holding_days": int(result["holding_days"]),
         "exit_date": str(result["exit_date"]),
+        "confirmed_filled": bool(confirmed_filled),
         "settled_at": datetime.now(timezone.utc),
     }
     db[COLLECTION_NAME].update_one(

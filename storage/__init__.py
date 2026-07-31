@@ -8,7 +8,15 @@ from . import holdings, outcomes, signals, system_config
 from .holdings import get_holdings, set_holdings
 from .mongo import MongoNotConfigured, get_client, get_db
 from .outcomes import log_trade_outcome
-from .signals import get_unsettled_signals, log_trade_signal, log_trade_signals, mark_settled
+from .signals import (
+    confirm_fill,
+    get_signals_pending_confirmation,
+    get_unsettled_signals,
+    log_trade_signal,
+    log_trade_signals,
+    mark_settled,
+    unconfirm_fill,
+)
 from .system_config import (
     get_active_config,
     get_active_config_doc,
@@ -27,6 +35,9 @@ __all__ = [
     "log_trade_signals",
     "get_unsettled_signals",
     "mark_settled",
+    "confirm_fill",
+    "unconfirm_fill",
+    "get_signals_pending_confirmation",
     "log_trade_outcome",
     "get_active_config",
     "get_active_config_doc",

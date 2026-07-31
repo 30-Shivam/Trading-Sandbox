@@ -21,6 +21,16 @@ afterward. TradingConfig.from_dict() handles older snapshots that predate a
 field (e.g. slippage_pct) fine -- missing keys just fall back to that
 field's dataclass default.
 
+Most logged signals were never actually traded -- see confirm_fill.py. Every
+signal still gets settled and logged to Trade_Outcomes regardless (that's
+what makes "is this signal any good" measurable at all), but a signal
+confirmed via confirm_fill.py is settled using your real fill_price as the
+entry price if you gave one (Stop_Loss/Sell_Price never change -- they're
+absolute levels computed at signal time), and confirmed_filled is carried
+onto the Trade_Outcomes document so reporting can separate "every mechanical
+signal's hypothetical outcome" from "what actually happened to trades you
+made." The summary below breaks both out.
+
 Usage:
     python settle_trades.py
 """
@@ -55,8 +65,10 @@ def settle_one(signal: dict) -> str:
         return "no new bars yet"
 
     config = swingtrade.TradingConfig.from_dict(signal["config_snapshot"])
+    confirmed = bool(signal.get("confirmed_filled", False))
+    entry_price = signal.get("fill_price") or signal["buy_price"]
     result = swingtrade.settle_trade(
-        buy_price=signal["buy_price"],
+        buy_price=entry_price,
         stop_loss=signal["stop_loss"],
         sell_price=signal["sell_price"],
         bars_since_entry=bars,
@@ -66,11 +78,12 @@ def settle_one(signal: dict) -> str:
     if result["status"] == "OPEN":
         return "OPEN (still open)"
 
-    storage.log_trade_outcome(ticker, signal_date, signal["buy_price"], result)
+    storage.log_trade_outcome(ticker, signal_date, entry_price, result, confirmed_filled=confirmed)
     storage.mark_settled(ticker, signal_date)
+    tag = "CONFIRMED" if confirmed else "unconfirmed"
     return (
         f"{result['status']} ({result['exit_reason']}, "
-        f"{result['pnl_pct']:+.2f}%, held {result['holding_days']}d)"
+        f"{result['pnl_pct']:+.2f}%, held {result['holding_days']}d, {tag})"
     )
 
 
@@ -104,6 +117,19 @@ def main():
 
     print()
     print(f"Summary: {counts}")
+
+    db = storage.get_db()
+    all_outcomes = list(db["Trade_Outcomes"].find({}))
+    confirmed_outcomes = [o for o in all_outcomes if o.get("confirmed_filled")]
+    all_trades = [{"status": o["status"], "pnl_pct": o["pnl_pct"]} for o in all_outcomes]
+    confirmed_trades = [{"status": o["status"], "pnl_pct": o["pnl_pct"]} for o in confirmed_outcomes]
+    print()
+    print(f"All-time, every mechanical signal ({len(all_trades)} settled): "
+          f"{swingtrade.summarize_trades(all_trades)}")
+    print(f"All-time, CONFIRMED fills only ({len(confirmed_trades)} settled): "
+          f"{swingtrade.summarize_trades(confirmed_trades)}")
+    if not confirmed_trades:
+        print("No confirmed fills yet -- see confirm_fill.py to mark real trades as you make them.")
 
 
 if __name__ == "__main__":
