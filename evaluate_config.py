@@ -25,7 +25,7 @@ import pandas as pd
 import storage
 import swingtrade
 from run_backtest import MARKET_INDEX_TICKER, fetch_history
-from watchlist import read_tickers
+from watchlist import read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -72,6 +72,7 @@ def main():
             print(f"[ERROR] Watchlist file not found: {WATCHLIST_FILE}", file=sys.stderr)
             sys.exit(1)
         tickers = read_tickers(WATCHLIST_FILE)
+    sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
 
     print(f"Evaluating config: {overrides}")
     print(f"Fetching history for {len(tickers)} ticker(s) + {MARKET_INDEX_TICKER}, {start.date()}..{end.date()}...")
@@ -98,15 +99,22 @@ def main():
         print("[ERROR] Date range too short for even one fold.", file=sys.stderr)
         sys.exit(1)
 
-    fold_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, config)
+    fold_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, config, sector_lookup=sector_lookup)
     pooled_oos_trades = [t for fr in fold_results for t in fr.out_sample_trades]
+    resolved_oos_trades = [t for t in pooled_oos_trades if t["status"] != "OPEN"]
     metrics = swingtrade.summarize_trades(pooled_oos_trades)
+    cluster_metrics = swingtrade.summarize_trades_weighted(
+        resolved_oos_trades, swingtrade.compute_cluster_weights(resolved_oos_trades)
+    )
 
-    baseline_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG)
+    baseline_results = swingtrade.run_walk_forward(
+        ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, sector_lookup=sector_lookup
+    )
     baseline_metrics = swingtrade.summarize_trades([t for fr in baseline_results for t in fr.out_sample_trades])
 
     print()
     print(f"Pooled out-of-sample metrics for this config: {metrics}")
+    print(f"Correlation-adjusted (same-day/same-sector counted once): {cluster_metrics}")
     print(f"Baseline (DEFAULT_CONFIG) for comparison:      {baseline_metrics}")
 
     if args.write_candidate:

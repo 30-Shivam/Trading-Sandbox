@@ -7,12 +7,14 @@ from .allocation import allocate_capital
 from .backtest import (
     Fold,
     FoldResult,
+    compute_cluster_weights,
     generate_folds,
     run_backtest,
     run_walk_forward,
     simulate_signals,
     summarize_by_catalyst,
     summarize_trades,
+    summarize_trades_weighted,
 )
 from .config import DEFAULT_CONFIG, TradingConfig
 from .levels import compute_levels, is_market_uptrend, review_holding
@@ -35,6 +37,8 @@ __all__ = [
     "simulate_signals",
     "run_backtest",
     "summarize_trades",
+    "summarize_trades_weighted",
     "summarize_by_catalyst",
+    "compute_cluster_weights",
     "run_walk_forward",
 ]

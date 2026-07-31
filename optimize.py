@@ -37,11 +37,20 @@ Instead, every trial gets re-simulated fairly over the SAME recent calendar
 window under ITS OWN candidate config, and that recent window is simply
 weighted more heavily -- so what's been working lately (the regime your
 live trades are actually part of) has outsized influence on the winner,
-without corrupting the cross-candidate comparison. Weighting uses Kish's
-effective sample size (not raw trade_count) for the MIN_TRADES_FOR_SCORE
-check, so a large pool of old, near-zero-weight trades can't fake
-statistical significance. Pass --recency-half-life-days 0 to fall back to
-old-style uniform pooling.
+without corrupting the cross-candidate comparison. Pass --recency-half-life-days
+0 to fall back to old-style uniform pooling.
+
+Correlation-adjusted scoring: pooled trades also aren't independent of each
+other -- a real, observed failure mode is dozens of correlated Technology
+signals firing the same day during one sector move, which a naive pooled
+mean/std would count as dozens of independent data points instead of one
+correlated event. summarize_weighted() combines the recency weight above
+with swingtrade.compute_cluster_weights() (same-day/same-sector clusters
+split a combined weight of 1.0), via watchlist.read_ticker_sectors. Both
+weighting effects flow into the same Kish effective-sample-size gate for
+MIN_TRADES_FOR_SCORE, so a candidate can't look well-sampled just because it
+produced a large trade_count that's secretly a handful of correlated events
+repeated many times.
 
 Live Trade_Outcomes are still reported separately for context (how many
 exist, their aggregate performance) -- useful as a sanity check against what
@@ -63,7 +72,7 @@ import pandas as pd
 import storage
 import swingtrade
 from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_history
-from watchlist import read_tickers
+from watchlist import read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -101,49 +110,37 @@ def fold_weight(fold: swingtrade.Fold, end: pd.Timestamp, half_life_days: float)
 
 def summarize_weighted(fold_results: list, end: pd.Timestamp, half_life_days: float) -> dict:
     """Like swingtrade.summarize_trades, but pools out-of-sample trades
-    weighted by fold recency instead of uniformly -- the current market
-    regime counts for more than one from a year ago. Uses Kish's effective
-    sample size (not raw trade_count) so heavy weighting can't let a big
-    pile of old, near-zero-weight trades masquerade as a trustworthy
+    weighted by BOTH fold recency (the current market regime counts for
+    more than one from a year ago) AND same-day/same-sector correlation
+    (see swingtrade.compute_cluster_weights -- 30 correlated Technology
+    signals firing one day are one effective observation, not 30
+    independent ones). Folds don't overlap in calendar time, so clustering
+    across the whole pooled set is equivalent to clustering per-fold and
+    concatenating. Uses Kish's effective sample size (not raw trade_count)
+    for MIN_TRADES_FOR_SCORE, so heavy weighting -- from either source --
+    can't let a big pile of low-weight trades masquerade as a trustworthy
     sample."""
-    pnls, weights, win_weight, total_weight = [], [], 0.0, 0.0
-    raw_count = 0
+    flat_trades, recency_weights = [], []
     for fr in fold_results:
         w = fold_weight(fr.fold, end, half_life_days)
         for t in fr.out_sample_trades:
             if t["status"] == "OPEN":
                 continue
-            raw_count += 1
-            pnls.append(t["pnl_pct"])
-            weights.append(w)
-            total_weight += w
-            if t["status"] == "WIN":
-                win_weight += w
+            flat_trades.append(t)
+            recency_weights.append(w)
 
-    if not pnls or total_weight <= 0:
-        return {
-            "trade_count": 0, "effective_trade_count": 0.0,
-            "win_rate": None, "avg_pnl_pct": None, "pnl_std": None, "sharpe_like": None,
-        }
+    if not flat_trades:
+        return swingtrade.summarize_trades_weighted([], [])
 
-    pnl_s = pd.Series(pnls)
-    w_s = pd.Series(weights)
-    weighted_mean = float((pnl_s * w_s).sum() / total_weight)
-    weighted_var = float((w_s * (pnl_s - weighted_mean) ** 2).sum() / total_weight)
-    weighted_std = weighted_var ** 0.5
-    effective_n = float(total_weight ** 2 / (w_s ** 2).sum())  # Kish effective sample size
-
-    return {
-        "trade_count": raw_count,
-        "effective_trade_count": round(effective_n, 1),
-        "win_rate": round(win_weight / total_weight * 100, 2),
-        "avg_pnl_pct": round(weighted_mean, 2),
-        "pnl_std": round(weighted_std, 2),
-        "sharpe_like": round(weighted_mean / weighted_std, 3) if weighted_std > 0 else None,
-    }
+    cluster_weights = swingtrade.compute_cluster_weights(flat_trades)
+    combined_weights = [r * c for r, c in zip(recency_weights, cluster_weights)]
+    return swingtrade.summarize_trades_weighted(flat_trades, combined_weights)
 
 
-def build_objective(ticker_data: dict, market_data: pd.DataFrame, folds: list, end: pd.Timestamp, half_life_days: float):
+def build_objective(
+    ticker_data: dict, market_data: pd.DataFrame, folds: list, end: pd.Timestamp, half_life_days: float,
+    sector_lookup: dict[str, str],
+):
     def objective(trial: optuna.Trial) -> float:
         candidate = swingtrade.TradingConfig(**{
             **swingtrade.DEFAULT_CONFIG.to_dict(),
@@ -158,7 +155,7 @@ def build_objective(ticker_data: dict, market_data: pd.DataFrame, folds: list, e
             ),
         })
 
-        fold_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, candidate)
+        fold_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, candidate, sector_lookup=sector_lookup)
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
 
@@ -230,6 +227,7 @@ def main():
             print(f"[ERROR] Watchlist file not found: {WATCHLIST_FILE}", file=sys.stderr)
             sys.exit(1)
         tickers = read_tickers(WATCHLIST_FILE)
+    sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
 
     print(f"Fetching history for {len(tickers)} ticker(s) + {MARKET_INDEX_TICKER}, "
           f"{start.date()}..{end.date()} (once, reused across all {args.trials} trials)...")
@@ -259,7 +257,9 @@ def main():
         print("[ERROR] Date range too short for even one fold.", file=sys.stderr)
         sys.exit(1)
 
-    baseline_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG)
+    baseline_results = swingtrade.run_walk_forward(
+        ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, sector_lookup=sector_lookup
+    )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
         f"(recency-weighted, half-life={args.recency_half_life_days:.0f}d)"
@@ -271,7 +271,7 @@ def main():
     sampler = optuna.samplers.TPESampler(seed=args.seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
     study.optimize(
-        build_objective(ticker_data, market_data, folds, end, args.recency_half_life_days),
+        build_objective(ticker_data, market_data, folds, end, args.recency_half_life_days, sector_lookup),
         n_trials=args.trials, show_progress_bar=False,
     )
 

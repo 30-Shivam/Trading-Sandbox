@@ -11,6 +11,11 @@ set against years of history instantly, instead of waiting months for live
 Trade_Outcomes to accumulate -- see swingtrade/backtest.py's module
 docstring for the full walk-forward rationale.
 
+Also prints a correlation-adjusted summary alongside the raw aggregate:
+pooled trades aren't independent when many fire the same day in the same
+sector (a real, observed failure mode), so the raw trade_count/sharpe_like
+above can overstate confidence -- see swingtrade.compute_cluster_weights.
+
 Pass --with-catalyst to also fetch each ticker's historical earnings dates
 (yfinance's get_earnings_dates(limit=40), only the calendar date, never the
 EPS/Surprise columns -- see fetch_earnings_dates and swingtrade/backtest.py
@@ -36,7 +41,7 @@ import pandas as pd
 import yfinance as yf
 
 import swingtrade
-from watchlist import read_tickers
+from watchlist import read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -120,6 +125,7 @@ def main():
             print(f"[ERROR] Watchlist file not found: {WATCHLIST_FILE}", file=sys.stderr)
             sys.exit(1)
         tickers = read_tickers(WATCHLIST_FILE)
+    sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
 
     print(f"Backtesting {len(tickers)} ticker(s) over {start.date()} to {end.date()}")
 
@@ -168,16 +174,24 @@ def main():
         sys.exit(1)
 
     fold_results = swingtrade.run_walk_forward(
-        ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, earnings_data
+        ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, earnings_data, sector_lookup
     )
 
     print()
     print_fold_table(fold_results)
 
     all_oos_trades = [t for fr in fold_results for t in fr.out_sample_trades]
+    resolved_oos_trades = [t for t in all_oos_trades if t["status"] != "OPEN"]
     overall = swingtrade.summarize_trades(all_oos_trades)
     print()
     print(f"Aggregate out-of-sample performance across all {len(fold_results)} fold(s): {overall}")
+
+    cluster_weights = swingtrade.compute_cluster_weights(resolved_oos_trades)
+    cluster_adjusted = swingtrade.summarize_trades_weighted(resolved_oos_trades, cluster_weights)
+    print(f"Correlation-adjusted (same-day/same-sector trades counted once, not N times): {cluster_adjusted}")
+    if cluster_adjusted["effective_trade_count"] and overall["trade_count"]:
+        shrink_pct = (1 - cluster_adjusted["effective_trade_count"] / overall["trade_count"]) * 100
+        print(f"  -> raw trade_count is {shrink_pct:.0f}% inflated by same-day/same-sector correlation.")
 
     if args.with_catalyst:
         breakdown = swingtrade.summarize_by_catalyst(all_oos_trades)

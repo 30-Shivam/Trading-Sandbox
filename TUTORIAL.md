@@ -299,6 +299,19 @@ actually part of) has outsized influence on the winner, without corrupting
 the cross-candidate comparison. Pass `--recency-half-life-days 0` for the
 old uniform-pooling behavior.
 
+**Correlated trades aren't independent, and now the score knows it.** A
+real, observed failure mode: 30+ Technology signals firing the same day
+during one sector move used to get pooled as if they were 30 independent
+data points, wildly overstating both `trade_count` and confidence
+(`sharpe_like`). `optimize.py` now weights same-day/same-sector clusters
+down to a combined weight of 1.0 (`swingtrade.compute_cluster_weights`,
+combined with the recency weight above), so a candidate can't win by
+producing a pile of correlated trades that look like a big, trustworthy
+sample but are really one event repeated many times. `run_backtest.py` and
+`evaluate_config.py` print both the raw and correlation-adjusted numbers
+side by side so you can see how much of a config's apparent edge was
+inflated by clustering.
+
 ## 7. Validating one specific config by hand
 
 If you want to test a specific hand-picked value (e.g. capping something

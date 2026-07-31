@@ -32,8 +32,21 @@ from that static list introduces no look-ahead leakage even for a backtest
 day years in the past. Without `earnings_dates` passed in, Catalyst_Warning
 is always False (the old behavior) rather than raising -- callers that
 don't need catalyst simulation aren't forced to fetch it.
+
+Pooled trades are NOT independent samples, and summarize_trades()'s
+mean/std treats them as if they were. A real, observed failure mode: 30+
+correlated Technology signals firing the same day during one sector move
+aren't 30 independent bets, they're one correlated event counted 30 times,
+which understates the true variance of pooled pnl_pct and overstates
+sharpe_like's apparent confidence. compute_cluster_weights() (given a
+sector_lookup) gives each (entry_date, sector) cluster a combined weight of
+1.0 split evenly across its members -- a conservative correction (assumes
+perfect intra-cluster correlation, zero inter-cluster), not an exact one,
+but a real one. See optimize.py's summarize_weighted() for where this
+combines with the existing recency weighting.
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
 
 import pandas as pd
@@ -103,6 +116,7 @@ def simulate_signals(
     window_end,
     config: TradingConfig = DEFAULT_CONFIG,
     earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
 ) -> list[dict]:
     """Walk every trading day in [window_start, window_end) for one ticker,
     simulating a trade wherever swingtrade would fire a Strong Buy/Buy
@@ -116,6 +130,12 @@ def simulate_signals(
 
     `earnings_dates` (optional, tz-aware UTC, see run_backtest.fetch_earnings_dates)
     lets Catalyst_Warning be computed honestly instead of always False.
+
+    `sector` (optional, see watchlist.read_ticker_sectors) is tagged onto
+    every trade so compute_cluster_weights() can identify same-day,
+    same-sector clusters -- unknown/untagged tickers default to "Unknown"
+    and are never clustered with each other (no basis to assume they're
+    correlated).
     """
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
@@ -156,6 +176,7 @@ def simulate_signals(
         trades.append({
             "ticker": ticker,
             "entry_date": as_of.date(),
+            "sector": sector,
             "signal": scored["Signal"],
             "trade_score": float(scored["Trade_Score"]),
             "rsi": float(scored["RSI"]),
@@ -178,20 +199,24 @@ def run_backtest(
     window_end,
     config: TradingConfig = DEFAULT_CONFIG,
     earnings_data: dict[str, pd.DatetimeIndex] | None = None,
+    sector_lookup: dict[str, str] | None = None,
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
     history. Returns the combined trade list. `earnings_data` (optional,
     ticker -> tz-aware UTC DatetimeIndex, see run_backtest.fetch_earnings_dates)
     enables honest Catalyst_Warning simulation; without it every trade has
-    Catalyst_Warning=False."""
+    Catalyst_Warning=False. `sector_lookup` (optional, ticker -> sector, see
+    watchlist.read_ticker_sectors) tags each trade for compute_cluster_weights()."""
     earnings_data = earnings_data or {}
+    sector_lookup = sector_lookup or {}
     all_trades = []
     for ticker, ohlcv in ticker_data.items():
         all_trades.extend(
             simulate_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker),
+                sector=sector_lookup.get(ticker, "Unknown"),
             )
         )
     return all_trades
@@ -232,6 +257,71 @@ def summarize_trades(trades: list[dict]) -> dict:
     }
 
 
+def compute_cluster_weights(trades: list[dict]) -> list[float]:
+    """Per-trade weight correcting for same-day, same-sector correlation --
+    trades sharing (entry_date, sector) split a combined weight of 1.0
+    evenly, so one correlated event (e.g. 30 Technology signals firing the
+    same day during one sector move) counts as ONE effective observation
+    in aggregate, not 30 independent ones. Unknown-sector trades (no
+    sector_lookup entry at signal time) get weight 1.0 each -- there's no
+    basis to assume they're correlated with anything.
+
+    This assumes perfect correlation within a cluster and zero correlation
+    across clusters -- a conservative approximation, not a measured
+    correlation coefficient, but a real correction on the previous
+    behavior of treating every pooled trade as fully independent.
+
+    Returns weights in the same order as `trades`. Combine with
+    optimize.py's recency fold_weight (multiply the two) for a single
+    per-trade weight that accounts for both effects.
+    """
+    cluster_sizes: dict[tuple, int] = defaultdict(int)
+    keys = []
+    for t in trades:
+        sector = t.get("sector", "Unknown")
+        key = None if sector == "Unknown" else (t["entry_date"], sector)
+        keys.append(key)
+        if key is not None:
+            cluster_sizes[key] += 1
+
+    return [1.0 if key is None else 1.0 / cluster_sizes[key] for key in keys]
+
+
+def summarize_trades_weighted(trades: list[dict], weights: list[float]) -> dict:
+    """Like summarize_trades(), but with an arbitrary explicit per-trade
+    weight instead of pooling everything uniformly. `weights` must be the
+    same length as `trades`, already filtered to exclude OPEN trades.
+    compute_cluster_weights() is one source of weights (same-day/same-sector
+    correlation); optimize.py's fold_weight is another (fold recency) --
+    combine multiple sources by multiplying them elementwise before calling
+    this. Uses Kish's effective sample size instead of raw trade_count, so
+    heavy weighting can't let a large but low-weight pool fake a
+    trustworthy sample size."""
+    total_weight = sum(weights) if weights else 0.0
+    if not trades or total_weight <= 0:
+        return {
+            "trade_count": 0, "effective_trade_count": 0.0,
+            "win_rate": None, "avg_pnl_pct": None, "pnl_std": None, "sharpe_like": None,
+        }
+
+    pnl_s = pd.Series([t["pnl_pct"] for t in trades])
+    w_s = pd.Series(weights)
+    win_weight = sum(w for t, w in zip(trades, weights) if t["status"] == "WIN")
+    weighted_mean = float((pnl_s * w_s).sum() / total_weight)
+    weighted_var = float((w_s * (pnl_s - weighted_mean) ** 2).sum() / total_weight)
+    weighted_std = weighted_var ** 0.5
+    effective_n = float(total_weight ** 2 / (w_s ** 2).sum())  # Kish effective sample size
+
+    return {
+        "trade_count": len(trades),
+        "effective_trade_count": round(effective_n, 1),
+        "win_rate": round(win_weight / total_weight * 100, 2),
+        "avg_pnl_pct": round(weighted_mean, 2),
+        "pnl_std": round(weighted_std, 2),
+        "sharpe_like": round(weighted_mean / weighted_std, 3) if weighted_std > 0 else None,
+    }
+
+
 def summarize_by_catalyst(trades: list[dict]) -> dict:
     """Split summarize_trades() output by whether each trade carried a
     Catalyst_Warning at entry -- lets you actually see whether performance
@@ -262,18 +352,22 @@ def run_walk_forward(
     folds: list[Fold],
     config: TradingConfig = DEFAULT_CONFIG,
     earnings_data: dict[str, pd.DatetimeIndex] | None = None,
+    sector_lookup: dict[str, str] | None = None,
 ) -> list[FoldResult]:
     """Run the backtest across every fold, in-sample and out-of-sample
     separately. Optuna (Phase 5) evaluates a candidate config by scoring it
     across the aggregate of every fold's out_sample_metrics -- never a
-    single fold's in-sample fit."""
+    single fold's in-sample fit. `sector_lookup` (optional) tags trades for
+    compute_cluster_weights()."""
     results = []
     for fold in folds:
         in_trades = run_backtest(
-            ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config, earnings_data
+            ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config,
+            earnings_data, sector_lookup,
         )
         out_trades = run_backtest(
-            ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config, earnings_data
+            ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config,
+            earnings_data, sector_lookup,
         )
         results.append(FoldResult(
             fold=fold,
