@@ -78,43 +78,56 @@ max_holding_days or execution parameters. Worth fixing regardless of the
 win-rate mystery.
 
 ===============================================================================
-WATCHLIST SURVIVORSHIP BIAS -- UPDATE 2026-07-30: MEASURED, SMALLER THAN
-FEARED (CONFIRMED via check_survivorship_bias.py)
+WATCHLIST SURVIVORSHIP BIAS -- UPDATE 2026-07-30: MEASURED ACROSS 3 SEEDS,
+SMALL AND NOISY, NOT THE DOMINANT FACTOR (via check_survivorship_bias.py)
 ===============================================================================
 
 Original hypothesis (below, kept for the record): watchlist.txt's 100
 tickers were selected TODAY with hindsight, then every backtest ran that
 list all the way back to 2021-06-01, which should bias results optimistic.
 
-I found a real, MIT-licensed, point-in-time S&P 500 membership dataset
+Found a real, MIT-licensed, point-in-time S&P 500 membership dataset
 (github.com/hanshof/sp500_constituents, cached as
 sp500_historical_components.csv, covers 1996-01-02 through 2025-08-23) and
 built check_survivorship_bias.py to actually measure the effect: same
 active config, same walk-forward harness, same window (2021-06-01 to
 2025-08-23, 45 folds), run against two same-sized (30 ticker) random
 samples -- today's watchlist vs. the ACTUAL S&P 500 membership as of
-2021-06-01 (not cherry-picked with any hindsight).
+2021-06-01 (not cherry-picked with any hindsight). Ran 3 independent seeds
+after the first result (seed 42) turned out to be premature on its own:
 
-Result: the point-in-time sample performed SLIGHTLY BETTER, not worse --
-win_rate 70.74% vs. watchlist's 69.63%, sharpe_like 0.943 vs. 0.846. That's
-the opposite direction from the hypothesis. Conclusion: watchlist curation
-is NOT the dominant driver of the backtest-vs-live gap -- the strategy's
-backtested edge generalizes reasonably well across a broad, unbiased
-large-cap universe, not just today's hand-picked names.
+  Seed  Watchlist win%  Point-in-time win%  Delta (watchlist - PIT)
+  42    69.63           70.74               -1.11pp  (sharpe -0.097)
+  7     73.94           69.92               +4.02pp  (sharpe +0.085)
+  99    69.73           70.99               -1.26pp  (sharpe -0.070)
 
-One real residual caveat, not resolved by this test: 3 of the 30
-point-in-time tickers (ATVI, DISCK, BK) were NOT fetchable via yfinance
-today at all -- "possibly delisted; no timezone found." Those are exactly
-the "didn't make it" names survivorship bias is supposed to catch, and this
-test still couldn't include them, because their data simply isn't
-accessible through this data source. So some irreducible survivorship bias
-remains structurally baked into every backtest in this project -- it's just
-measurably smaller than I originally feared for the names that ARE still
-tradable.
+  Average: +0.55pp win rate, -0.027 sharpe_like -- both close to zero.
 
-Downgraded from "the single most likely reason" to "a real but apparently
-minor factor" -- the sector-concentration/narrow-window explanation above
-remains the dominant, confirmed cause of the original 63-trade gap.
+2 of 3 seeds (42, 99) show the point-in-time sample slightly AHEAD; seed 7
+is a clear outlier pulling the other way, and single-handedly responsible
+for the average not being negative. Honest conclusion: watchlist curation
+bias, if it exists at all, is SMALL relative to the sampling noise inherent
+in any 30-ticker random draw (deltas of 1-4pp win rate between seeds, on
+the same two universes, same window, same config) -- not confidently zero,
+but nowhere near large enough to be "the single most likely reason" for a
+40+ percentage-point backtest-vs-live gap. That explanation remains the
+sector-concentration/narrow-window finding above, unaffected by any of this.
+
+Process note, worth keeping: my first pass at this (seed 42 alone) called
+watchlist curation "measured, smaller than feared" after ONE run. That was
+premature -- the same mistake as trusting the small catalyst-warning sample
+earlier in this same investigation, just made a second time despite having
+already learned the lesson once. Three seeds pointing mostly the same
+direction, with the average near zero, is meaningfully more trustworthy
+than one seed that happened to look clean.
+
+One real residual caveat, unaffected by any of the above: across all three
+runs, 3 of 30 point-in-time tickers were consistently NOT fetchable via
+yfinance today (ATVI/DISCK/BK, or HFC/NLOK/K depending on the sample --
+"possibly delisted/renamed") -- genuinely failed/renamed companies remain a
+structural blind spot no amount of re-sampling fixes, since this data
+source simply can't test them. That's the one piece of this that stays
+unambiguous regardless of seed.
 
 --- Original hypothesis text, kept for context ---
 Every name on the watchlist is, by construction, one that's still large,
