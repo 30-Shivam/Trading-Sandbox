@@ -21,6 +21,15 @@ where the last row of fetched data IS "today"). Settling a trade started on
 decision against realized future prices is not look-ahead bias, it's just
 how you find out whether the trade won.
 
+Entry timing is realistic, not instantaneous: a signal computed from
+`as_of`'s close can't be acted on until the NEXT session at the earliest,
+so simulate_signals() no longer assumes entry on the same bar the signal
+fired. _find_entry_fill() walks forward looking for the resting limit order
+at Buy_Price to actually get touched (gap-aware, same rules as stop/target
+fills), within config.max_entry_wait_days -- a signal that's never touched
+produces no trade at all, which is the honest outcome for a limit order
+nobody would leave open forever.
+
 Catalyst awareness IS simulated, given an optional per-ticker
 `earnings_dates` (see run_backtest.fetch_earnings_dates): yfinance's
 get_earnings_dates(limit=40) returns roughly a decade of REPORTED earnings
@@ -108,6 +117,28 @@ def _next_earnings_date(earnings_dates: pd.DatetimeIndex | None, as_of: pd.Times
     return future.min() if len(future) > 0 else None
 
 
+def _find_entry_fill(buy_price: float, bars_after_signal: pd.DataFrame, max_wait_days: int):
+    """A signal fires using data through `as_of`'s close -- the earliest a
+    real limit order at `buy_price` could possibly fill is the NEXT
+    session, never the same bar. Walk forward from the first bar strictly
+    after the signal, same gap-aware logic already used for stops/targets:
+    a gap-down open through the limit fills at that (better, lower) Open; an
+    intraday touch (Low <= buy_price) fills at the limit exactly. Stops
+    searching after `max_wait_days` -- a resting order nobody would leave
+    open forever. Returns (fill_date, fill_price) or None if never filled
+    within the window (not a real trade -- correctly excluded, not forced)."""
+    for wait_days, (bar_date, bar) in enumerate(bars_after_signal.iterrows(), start=1):
+        if wait_days > max_wait_days:
+            break
+        open_ = float(bar["Open"])
+        low = float(bar["Low"])
+        if open_ <= buy_price:
+            return bar_date, open_
+        if low <= buy_price:
+            return bar_date, buy_price
+    return None
+
+
 def simulate_signals(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -120,9 +151,20 @@ def simulate_signals(
 ) -> list[dict]:
     """Walk every trading day in [window_start, window_end) for one ticker,
     simulating a trade wherever swingtrade would fire a Strong Buy/Buy
-    signal using only data available as of that day. Each simulated trade
-    is resolved with settle_trade() against the ticker's actual subsequent
-    price history (which may extend past window_end).
+    signal using only data available as of that day. A signal can only be
+    known AFTER the close it's computed from, so entry is NOT assumed on
+    that same bar -- _find_entry_fill() walks forward from the next session
+    looking for the resting limit order at Buy_Price to actually get
+    touched (gap-aware, same logic as stop/target fills), up to
+    config.max_entry_wait_days out. A signal that's never touched within
+    that window produces no trade at all -- correctly excluded, not forced.
+    Each trade dict carries both `signal_date` (when the signal fired) and
+    `entry_date` (when it actually filled, used for cluster-weighting --
+    see compute_cluster_weights); `buy_price` is the real fill price
+    (better than the signal's theoretical level on a gap), with the
+    original `signal_buy_price` kept for reference. Each filled trade is
+    then resolved with settle_trade() against the ticker's actual
+    subsequent price history (which may extend past window_end).
 
     `ohlcv` and `market_ohlcv` must each contain enough leading history
     before window_start to cover config.sma_trend_window -- see
@@ -164,27 +206,49 @@ def simulate_signals(
         if scored["Signal"] not in ENTRY_SIGNALS:
             continue
 
-        bars_since_entry = ohlcv[ohlcv.index > as_of]
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(scored["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue  # resting order never touched within the window -- not a real trade
+        entry_date, entry_price = fill
+
+        # Stop/target are risk-management levels relative to the ACTUAL entry
+        # price, not the original signal's theoretical Buy_Price -- matters
+        # when a gap-down fill gets a better (lower) entry than the signal
+        # anticipated. Leaving them anchored to the stale higher Buy_Price
+        # would put the stop ABOVE the real entry price on a gap fill,
+        # causing a near-instant fake stop-out on what was actually a good
+        # (better-than-limit) fill. Re-anchoring to entry_price keeps the
+        # stop below and the target above wherever you actually got in --
+        # identical to the original scored levels in the non-gap case, since
+        # entry_price == signal Buy_Price there.
+        atr = float(scored["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
         result = settle_trade(
-            buy_price=scored["Buy_Price"],
-            stop_loss=scored["Stop_Loss"],
-            sell_price=scored["Sell_Price"],
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
             bars_since_entry=bars_since_entry,
             config=config,
         )
 
         trades.append({
             "ticker": ticker,
-            "entry_date": as_of.date(),
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
             "sector": sector,
             "signal": scored["Signal"],
             "trade_score": float(scored["Trade_Score"]),
             "rsi": float(scored["RSI"]),
-            "atr": float(scored["ATR"]),
+            "atr": atr,
             "rrr": float(scored["RRR"]),
-            "buy_price": float(scored["Buy_Price"]),
-            "stop_loss": float(scored["Stop_Loss"]),
-            "sell_price": float(scored["Sell_Price"]),
+            "buy_price": entry_price,
+            "signal_buy_price": float(scored["Buy_Price"]),
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
             "catalyst_warning": bool(scored["Catalyst_Warning"]),
             **result,
         })

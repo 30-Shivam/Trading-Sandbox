@@ -312,6 +312,26 @@ sample but are really one event repeated many times. `run_backtest.py` and
 side by side so you can see how much of a config's apparent edge was
 inflated by clustering.
 
+**A signal can't fill on the bar it fires on.** `Buy_Price` is computed from
+a day's *close* — the earliest a real limit order could possibly touch it is
+the next session, and only if price actually comes back down to it.
+`simulate_signals` now walks forward from signal+1, filling gap-down
+through the limit at the real (better/lower) `Open`, or an intraday touch at
+exactly `Buy_Price`, within `config.max_entry_wait_days` (5 trading days by
+default) — if the limit is never touched in that window, the signal
+produces **no trade** rather than a phantom one anchored to a price that
+never happened. This mattered a lot in practice: re-scoring the active
+config (v3) under this corrected model dropped its walk-forward win rate
+from a previously-reported ~69% to ~27% (`sharpe_like` 0.94 → 0.10) on the
+same 15-ticker sample — the earlier number was substantially inflated by
+assuming instant, perfect fills. `avg_pnl_pct` stayed marginally positive,
+so the edge isn't necessarily gone, just far thinner and less "reliable"
+than it looked before. If you want a looser/tighter fill window, override
+`max_entry_wait_days` the same way you'd override any other `TradingConfig`
+field (`evaluate_config.py` doesn't currently expose a flag for it — add one
+the same way `--stop-loss-atr-multiplier` etc. are wired if you need to
+search over it).
+
 ## 7. Validating one specific config by hand
 
 If you want to test a specific hand-picked value (e.g. capping something

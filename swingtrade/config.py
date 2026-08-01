@@ -93,6 +93,15 @@ class TradingConfig:
                                             # US-equity brokers -- override if yours
                                             # charges per-share/flat fees
 
+    # Entry-fill timing realism (backtest only -- see swingtrade/backtest.py's
+    # simulate_signals). A signal can only be known AFTER the day's close it
+    # was computed from, so the earliest a real limit order could possibly
+    # fill is the NEXT session, not the same bar the signal fired on.
+    max_entry_wait_days: int = 5           # a resting limit order at Buy_Price
+                                            # is abandoned (no trade) if never
+                                            # touched within this many trading
+                                            # days after the signal
+
     def to_dict(self) -> dict:
         return asdict(self)
 
