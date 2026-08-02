@@ -389,6 +389,14 @@ def simulate_breakout_signals(
     so this is a clean test of whether breakout TIMING adds value, without
     also changing the exit model at the same time.
 
+    A breakout already at/above config.breakout_rsi_overbought_threshold is
+    skipped -- an over-extended/exhausted move is more likely to fail or
+    reverse than one fresh off a quiet consolidation. Default threshold
+    (100.0) is a practical no-op, since RSI essentially never reaches it;
+    this filter is a documented, unvalidated hypothesis until tested (see
+    improvements.txt) -- kept as a plain skip, not baked into the trigger
+    definition itself, so it stays a searchable/toggleable parameter.
+
     `ohlcv`/`market_ohlcv` need the same leading-history buffer as
     simulate_signals() -- see LOOKBACK_BUFFER_BARS.
     """
@@ -415,6 +423,9 @@ def simulate_breakout_signals(
             continue
 
         if not levels["Breakout_Signal"]:
+            continue
+        rsi = levels.get("RSI")
+        if rsi is not None and rsi >= config.breakout_rsi_overbought_threshold:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]

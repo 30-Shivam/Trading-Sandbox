@@ -113,6 +113,15 @@ class TradingConfig:
                                             # exceeds the highest High of the
                                             # PRIOR N trading days (excludes
                                             # today itself -- no look-ahead)
+    breakout_rsi_overbought_threshold: float = 100.0  # skip a breakout signal
+                                            # if RSI is already at/above this
+                                            # (over-extended/exhausted, more
+                                            # likely to fail or reverse than
+                                            # a breakout fresh off quiet
+                                            # consolidation). 100.0 is the
+                                            # practical "disabled" value --
+                                            # RSI essentially never reaches
+                                            # exactly 100
 
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion) or "breakout" (simulate_breakout_signals,

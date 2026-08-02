@@ -68,7 +68,21 @@ def add_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_C
     For breakout, Distance_to_Buy_Pct (see compute_breakout_levels) means
     "how far ABOVE the trigger has price already moved" -- smaller is a
     fresher, less-extended breakout, which is why the same "smaller distance
-    scores higher" formula as add_trade_score() applies unchanged."""
+    scores higher" formula as add_trade_score() applies unchanged.
+
+    Hard gate, not just a scoring input: a ticker whose Breakout_Signal is
+    False (hasn't actually broken out yet) gets Trade_Score=0/Ignore, full
+    stop -- NOT scored via the formula below. This matters because a ticker
+    still below its trigger has a NEGATIVE Distance_to_Buy_Pct, and clipping
+    that to 0 (as the formula does for a genuine fresh breakout) would
+    otherwise make "hasn't broken out" score identically to "just broke
+    out perfectly" -- a real bug caught before this shipped. Also gates out
+    breakouts already at/above config.breakout_rsi_overbought_threshold
+    (see simulate_breakout_signals -- kept in sync with the backtested
+    definition so live and backtested signals can never silently disagree).
+    Missing/NaN RSI (insufficient warmup) is treated as NOT overbought --
+    RSI is informational for breakout, not a reason to suppress a signal on
+    its own."""
     df = df.copy()
 
     rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
@@ -79,6 +93,11 @@ def add_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_C
     total_weight = config.rrr_score_weight + config.distance_score_weight
     rescale = (100 / total_weight) if total_weight > 0 else 0.0
 
-    df["Trade_Score"] = ((rrr_score + distance_score) * rescale).clip(lower=0).round(1)
+    raw_score = ((rrr_score + distance_score) * rescale).clip(lower=0)
+
+    not_overbought = df["RSI"].isna() | (df["RSI"] < config.breakout_rsi_overbought_threshold)
+    eligible = df["Breakout_Signal"] & not_overbought
+
+    df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
     return df

@@ -80,9 +80,10 @@ Strategy-agnostic since the breakout/trend-following signal was added
 showed RSI-oversold timing carries no real predictive value over random entry
 days). --strategy rsi (default) searches the original RSI/ATR/stop-loss/
 streak-penalty space; --strategy breakout searches breakout_lookback_days/
-atr_take_profit_multiplier/stop_loss_atr_multiplier instead -- everything
-above (WFO, recency weighting, correlation-adjustment, ticker-holdout,
-champion/challenger) applies identically to either.
+atr_take_profit_multiplier/stop_loss_atr_multiplier/
+breakout_rsi_overbought_threshold instead -- everything above (WFO, recency
+weighting, correlation-adjustment, ticker-holdout, champion/challenger)
+applies identically to either.
 
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
@@ -130,6 +131,12 @@ EXTENDED_DECLINE_PENALTY_CAP_RANGE = (0.0, 50.0)
 # on held-out tickers (see improvements.txt) -- this range lets a real WFO search
 # find the actual optimum instead of guessing between two hand-picked points.
 BREAKOUT_LOOKBACK_RANGE = (10, 80)
+# 100 = practical "disabled" (RSI essentially never reaches it); 50 is a fairly
+# restrictive cutoff. Lets Optuna find out whether skipping over-extended
+# breakouts (see simulate_breakout_signals) helps at all, and by how much,
+# rather than assuming a hand-picked threshold -- this is itself an unvalidated
+# hypothesis (improvements.txt item 7a) until a real search says otherwise.
+BREAKOUT_RSI_OVERBOUGHT_RANGE = (50.0, 100.0)
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -224,6 +231,9 @@ def build_objective(
                 "breakout_lookback_days": trial.suggest_int("breakout_lookback_days", *BREAKOUT_LOOKBACK_RANGE),
                 "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
                 "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+                "breakout_rsi_overbought_threshold": trial.suggest_float(
+                    "breakout_rsi_overbought_threshold", *BREAKOUT_RSI_OVERBOUGHT_RANGE
+                ),
             }
         candidate = swingtrade.TradingConfig(**{
             **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": strategy, **params,
