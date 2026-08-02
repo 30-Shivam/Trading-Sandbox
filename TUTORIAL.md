@@ -75,6 +75,7 @@ interactive app). Run from the repo root.
 | `py -3 confirm_fill.py` | List logged signals you haven't confirmed as real fills yet |
 | `py -3 confirm_fill.py --ticker INTC --date 2026-07-24 --price 89.60` | Mark a signal as an actual trade you made (price optional, defaults to the logged buy_price) |
 | `py -3 check_survivorship_bias.py` | Compare today's watchlist vs. a genuine point-in-time S&P 500 sample, same config/window |
+| `py -3 benchmark_random_entry.py` | Does the active config's RSI-oversold timing actually beat picking entry days at random? |
 
 Add `--help` to any script for its full flag list and a detailed docstring
 (e.g. `py -3 optimize.py --help`).
@@ -356,6 +357,26 @@ promoted. If you see a candidate whose tune-set score looks great, always
 check its `holdout_metrics` before promoting — a good tune score with a bad
 (or much worse than baseline) holdout score is a red flag, not a win.
 
+**Does RSI-oversold timing actually beat picking days at random?** After the
+findings above kept shrinking the apparent edge, the most basic remaining
+question is whether the entry TIMING itself carries any real information, or
+whether the returns are coming entirely from the stop/target payoff shape
+(tight stop, wide target) plus a generally-appreciating universe.
+`py -3 benchmark_random_entry.py` answers this directly: it runs the active
+config's real RSI-timed strategy, then `swingtrade.simulate_random_entries()`
+fires the exact same NUMBER of trades per ticker on randomly chosen days
+instead (identical macro/liquidity gates, identical entry-fill/stop/target
+mechanics — only which day differs), and reports both side by side, split by
+the same tune/holdout ticker split as `optimize.py`. A real full-watchlist
+run answered it: RSI-timed entries **lost** to random entries on every cut,
+worst on the 27 holdout tickers (`sharpe_like` 0.007 vs. 0.1 for random,
+`win_rate` 23.98% vs. 29.40%) — with huge, trustworthy sample sizes on both
+sides. That means the active config's RSI-oversold signal is not adding
+real predictive value over random timing; see `improvements.txt`'s
+STRATEGIC PIVOT section for what that implies about what to try next
+(momentum/trend-following and relative-strength now rank above simply
+adding more filters on top of RSI).
+
 ## 7. Validating one specific config by hand
 
 If you want to test a specific hand-picked value (e.g. capping something
@@ -423,6 +444,7 @@ the system" actually looks like right now:
 | `promote_config.py` | List / promote `System_Config` candidates |
 | `confirm_fill.py` | Mark a logged signal as a real, confirmed trade |
 | `check_survivorship_bias.py` | Cross-check today's watchlist vs. a point-in-time S&P 500 sample |
+| `benchmark_random_entry.py` | Does RSI-oversold timing beat picking entry days at random? |
 | `market_data.py` | All yfinance fetching, shared by the dashboard and `ingest.py` |
 | `config_loader.py` | Loads the active `TradingConfig` from Mongo, shared the same way |
 | `sp500_membership.py` | Point-in-time S&P 500 constituent lookup (cached CSV) |

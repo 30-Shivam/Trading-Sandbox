@@ -256,6 +256,97 @@ def simulate_signals(
     return trades
 
 
+def simulate_random_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Diagnostic benchmark, NOT a production strategy -- see
+    benchmark_random_entry.py. Identical universe gates (macro uptrend,
+    liquidity/history via compute_levels) and identical entry-fill/stop/
+    target mechanics as simulate_signals(), but the TRIGGER day is chosen
+    uniformly at random from every day that passed the gates, instead of
+    requiring an RSI-oversold Strong Buy/Buy signal. `n_trades` should be
+    the real strategy's signal count for this ticker/window (see
+    simulate_signals) so trade volume is matched -- isolates whether RSI
+    timing itself adds value over picking days at random with the exact
+    same underlying entry/exit structure and macro/liquidity filtering.
+    If RSI-timed entries don't meaningfully beat this, the RSI signal
+    carries little real predictive information."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+    lookback_bars = config.sma_trend_window + LOOKBACK_BUFFER_BARS
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    candidates = []  # (as_of, buy_price, atr) for every day that passed the same gates simulate_signals uses
+    for as_of in eligible_dates:
+        market_window = market_ohlcv.loc[:as_of].tail(lookback_bars)
+        try:
+            market_uptrend, _, _ = is_market_uptrend(market_window, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        price_window = ohlcv.loc[:as_of].tail(lookback_bars)
+        try:
+            levels = compute_levels(ticker, price_window, config)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, float(levels["Buy_Price"]), float(levels["ATR"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
 def run_backtest(
     ticker_data: dict[str, pd.DataFrame],
     market_data: pd.DataFrame,
