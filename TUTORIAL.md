@@ -69,6 +69,7 @@ interactive app). Run from the repo root.
 | `py -3 run_backtest.py --with-catalyst` | Same, plus a real (not always-False) Catalyst_Warning simulation and a catalyst-vs-non performance breakdown |
 | `py -3 optimize.py --trials 50 --start 2021-06-01 --end 2026-07-26` | Optuna search for better RSI/ATR/stop-loss/streak-penalty params (5D); writes a `candidate`, never touches `active` |
 | `py -3 optimize.py --trials 50 --recency-half-life-days 90` | Same, weighting recent conditions more heavily (0 = old uniform pooling) |
+| `py -3 optimize.py --strategy breakout --trials 30` | Same search, but for the breakout/trend-following signal (lookback + ATR multiples) instead of RSI |
 | `py -3 evaluate_config.py --tickers A,B,C --rsi-oversold-threshold 52 ...` | Backtest one specific hand-picked config before writing it as a candidate |
 | `py -3 promote_config.py` | List every `System_Config` version (status, metrics, notes) |
 | `py -3 promote_config.py --promote 4` | Promote version 4 to `active` (retires whatever was active) |
@@ -397,6 +398,26 @@ out-of-sample — promising, not proven (it's a single-window benchmark, not
 yet run through the full walk-forward + correlation + recency + holdout
 pipeline `optimize.py` provides), and the natural next step before
 considering any candidate write/promotion.
+
+**Optuna now searches the breakout strategy too.** `optimize.py --strategy
+breakout` (default `rsi`) searches `breakout_lookback_days` (10-80),
+`atr_take_profit_multiplier`, and `stop_loss_atr_multiplier` instead of
+RSI's 5D space — everything else (walk-forward folds, recency weighting,
+correlation-adjustment, ticker-holdout, champion/challenger) applies
+identically. A real 108-ticker/15-trial search found the best result of
+the whole investigation: `breakout_lookback_days≈59`,
+`atr_take_profit_multiplier≈2.08`, `stop_loss_atr_multiplier≈1.93` (a much
+wider stop than RSI ever used — sensible for trend-following) with
+`sharpe_like` 0.154 on tune tickers **and 0.167 on the 27 holdout
+tickers** — the first candidate all session where the improvement held up
+on tickers Optuna never saw instead of evaporating. Written as candidate
+v12 — **not yet safe to promote**, though: the live dashboard and
+`ingest.py` only generate RSI signals right now, so promoting a
+breakout-typed candidate today would silently break the live RSI path
+(wide ATR multiples meant for trend-following, paired with an untouched
+default RSI threshold) rather than actually switching the live signal
+type. Live breakout wiring is tracked in `improvements.txt` as a
+prerequisite before this (or any future breakout candidate) can go live.
 
 ## 7. Validating one specific config by hand
 

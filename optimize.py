@@ -75,10 +75,20 @@ before promoting can see whether the edge generalizes to unseen names or
 was quietly specific to the tuning watchlist. Pass --holdout-frac 0 to
 disable (old behavior: tune and "validate" on every ticker).
 
+Strategy-agnostic since the breakout/trend-following signal was added
+(improvements.txt's STRATEGIC PIVOT section, built after benchmark_random_entry.py
+showed RSI-oversold timing carries no real predictive value over random entry
+days). --strategy rsi (default) searches the original RSI/ATR/stop-loss/
+streak-penalty space; --strategy breakout searches breakout_lookback_days/
+atr_take_profit_multiplier/stop_loss_atr_multiplier instead -- everything
+above (WFO, recency weighting, correlation-adjustment, ticker-holdout,
+champion/challenger) applies identically to either.
+
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
     python optimize.py --trials 50 --recency-half-life-days 90   # weight recent regime more heavily
     python optimize.py --trials 50 --holdout-frac 0.3            # hold out 30% of tickers by sector
+    python optimize.py --trials 30 --strategy breakout           # search the breakout signal instead
 """
 
 import argparse
@@ -114,6 +124,12 @@ ATR_TAKE_PROFIT_RANGE = (1.0, 3.0)
 STOP_LOSS_ATR_RANGE = (0.25, 3.0)
 EXTENDED_DECLINE_PENALTY_PER_DAY_RANGE = (0.0, 4.0)
 EXTENDED_DECLINE_PENALTY_CAP_RANGE = (0.0, 50.0)
+
+# Breakout strategy's own search space. A single-window benchmark_random_entry.py
+# comparison already showed 20 has no value and 55 shows a real (if modest) edge
+# on held-out tickers (see improvements.txt) -- this range lets a real WFO search
+# find the actual optimum instead of guessing between two hand-picked points.
+BREAKOUT_LOOKBACK_RANGE = (10, 80)
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -188,23 +204,34 @@ def summarize_weighted(fold_results: list, end: pd.Timestamp, half_life_days: fl
 
 def build_objective(
     ticker_data: dict, market_data: pd.DataFrame, folds: list, end: pd.Timestamp, half_life_days: float,
-    sector_lookup: dict[str, str],
+    sector_lookup: dict[str, str], strategy: str = "rsi",
 ):
     def objective(trial: optuna.Trial) -> float:
+        if strategy == "rsi":
+            params = {
+                "rsi_oversold_threshold": trial.suggest_float("rsi_oversold_threshold", *RSI_OVERSOLD_RANGE),
+                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
+                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+                "extended_decline_penalty_per_day": trial.suggest_float(
+                    "extended_decline_penalty_per_day", *EXTENDED_DECLINE_PENALTY_PER_DAY_RANGE
+                ),
+                "extended_decline_penalty_cap": trial.suggest_float(
+                    "extended_decline_penalty_cap", *EXTENDED_DECLINE_PENALTY_CAP_RANGE
+                ),
+            }
+        else:
+            params = {
+                "breakout_lookback_days": trial.suggest_int("breakout_lookback_days", *BREAKOUT_LOOKBACK_RANGE),
+                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
+                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+            }
         candidate = swingtrade.TradingConfig(**{
-            **swingtrade.DEFAULT_CONFIG.to_dict(),
-            "rsi_oversold_threshold": trial.suggest_float("rsi_oversold_threshold", *RSI_OVERSOLD_RANGE),
-            "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
-            "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
-            "extended_decline_penalty_per_day": trial.suggest_float(
-                "extended_decline_penalty_per_day", *EXTENDED_DECLINE_PENALTY_PER_DAY_RANGE
-            ),
-            "extended_decline_penalty_cap": trial.suggest_float(
-                "extended_decline_penalty_cap", *EXTENDED_DECLINE_PENALTY_CAP_RANGE
-            ),
+            **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": strategy, **params,
         })
 
-        fold_results = swingtrade.run_walk_forward(ticker_data, market_data, folds, candidate, sector_lookup=sector_lookup)
+        fold_results = swingtrade.run_walk_forward(
+            ticker_data, market_data, folds, candidate, sector_lookup=sector_lookup, strategy=strategy
+        )
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
 
@@ -245,6 +272,8 @@ def report_live_outcomes_context() -> None:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--strategy", choices=["rsi", "breakout"], default="rsi",
+                         help="Which signal to search parameters for. Default: rsi.")
     parser.add_argument("--trials", type=int, default=50)
     parser.add_argument("--start", default=None, help="Backtest window start (YYYY-MM-DD). Default: 1y before --end.")
     parser.add_argument("--end", default=None, help="Backtest window end (YYYY-MM-DD). Default: today.")
@@ -329,21 +358,22 @@ def main():
         print("Ticker holdout validation disabled (--holdout-frac 0 or too few tickers) -- "
               "tuning and reporting on every ticker, old behavior.")
 
+    baseline_config = swingtrade.TradingConfig(**{**swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": args.strategy})
     baseline_results = swingtrade.run_walk_forward(
-        tune_ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, sector_lookup=sector_lookup
+        tune_ticker_data, market_data, folds, baseline_config, sector_lookup=sector_lookup, strategy=args.strategy
     )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
         f"(recency-weighted, half-life={args.recency_half_life_days:.0f}d)"
         if args.recency_half_life_days > 0 else "(uniform pooling)"
     )
-    print(f"\nBaseline (current DEFAULT_CONFIG) pooled out-of-sample metrics on TUNE tickers {weight_note}: {baseline_metrics}")
+    print(f"\nBaseline (DEFAULT_CONFIG, strategy={args.strategy}) pooled out-of-sample metrics on TUNE tickers {weight_note}: {baseline_metrics}")
     report_live_outcomes_context()
 
     sampler = optuna.samplers.TPESampler(seed=args.seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
     study.optimize(
-        build_objective(tune_ticker_data, market_data, folds, end, args.recency_half_life_days, sector_lookup),
+        build_objective(tune_ticker_data, market_data, folds, end, args.recency_half_life_days, sector_lookup, args.strategy),
         n_trials=args.trials, show_progress_bar=False,
     )
 
@@ -361,23 +391,25 @@ def main():
               "in-sample window.")
         return
 
-    candidate_config = swingtrade.TradingConfig(**{**swingtrade.DEFAULT_CONFIG.to_dict(), **best.params})
+    candidate_config = swingtrade.TradingConfig(**{
+        **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": args.strategy, **best.params,
+    })
 
     holdout_metrics = {}
     if holdout_ticker_data:
         holdout_baseline_results = swingtrade.run_walk_forward(
-            holdout_ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, sector_lookup=sector_lookup
+            holdout_ticker_data, market_data, folds, baseline_config, sector_lookup=sector_lookup, strategy=args.strategy
         )
         holdout_baseline_metrics = summarize_weighted(holdout_baseline_results, end, args.recency_half_life_days)
 
         holdout_candidate_results = swingtrade.run_walk_forward(
-            holdout_ticker_data, market_data, folds, candidate_config, sector_lookup=sector_lookup
+            holdout_ticker_data, market_data, folds, candidate_config, sector_lookup=sector_lookup, strategy=args.strategy
         )
         holdout_candidate_metrics = summarize_weighted(holdout_candidate_results, end, args.recency_half_life_days)
 
         print()
         print(f"=== Ticker-universe holdout validation ({len(holdout_tickers)} tickers Optuna never saw) ===")
-        print(f"  baseline (DEFAULT_CONFIG) on holdout: {holdout_baseline_metrics}")
+        print(f"  baseline (DEFAULT_CONFIG, strategy={args.strategy}) on holdout: {holdout_baseline_metrics}")
         print(f"  candidate (winning trial) on holdout: {holdout_candidate_metrics}")
         if (holdout_candidate_metrics.get("effective_trade_count") or 0) < MIN_TRADES_FOR_SCORE:
             print("  [WARN] Holdout effective_trade_count is thin -- treat this validation as a weak "
@@ -393,7 +425,7 @@ def main():
         }
 
     notes = (
-        f"Optuna search: {args.trials} trials, {start.date()}..{end.date()}, "
+        f"Optuna search (strategy={args.strategy}): {args.trials} trials, {start.date()}..{end.date()}, "
         f"{len(tune_ticker_data)} tune / {len(holdout_ticker_data)} holdout ticker(s), {len(folds)} fold(s), "
         f"recency_half_life_days={args.recency_half_life_days:.0f}. "
         f"Baseline sharpe_like={baseline_metrics.get('sharpe_like')}, best sharpe_like={best.value:.4f}."

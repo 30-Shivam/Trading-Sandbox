@@ -114,6 +114,15 @@ class TradingConfig:
                                             # PRIOR N trading days (excludes
                                             # today itself -- no look-ahead)
 
+    # Which signal this config represents -- "rsi" (simulate_signals,
+    # mean-reversion) or "breakout" (simulate_breakout_signals,
+    # trend-following). Purely a tag for downstream dispatch (optimize.py,
+    # run_backtest.py, eventually live signal generation); doesn't affect
+    # any calculation itself. Old configs written before this field existed
+    # default to "rsi" via from_dict(), which is correct -- every config
+    # before the breakout strategy was added WAS an RSI config.
+    strategy: str = "rsi"
+
     def to_dict(self) -> dict:
         return asdict(self)
 

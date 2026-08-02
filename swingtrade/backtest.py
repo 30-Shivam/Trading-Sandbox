@@ -549,25 +549,37 @@ def run_backtest(
     config: TradingConfig = DEFAULT_CONFIG,
     earnings_data: dict[str, pd.DatetimeIndex] | None = None,
     sector_lookup: dict[str, str] | None = None,
+    strategy: str = "rsi",
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
     history. Returns the combined trade list. `earnings_data` (optional,
     ticker -> tz-aware UTC DatetimeIndex, see run_backtest.fetch_earnings_dates)
-    enables honest Catalyst_Warning simulation; without it every trade has
-    Catalyst_Warning=False. `sector_lookup` (optional, ticker -> sector, see
-    watchlist.read_ticker_sectors) tags each trade for compute_cluster_weights()."""
+    enables honest Catalyst_Warning simulation for the "rsi" strategy;
+    without it every trade has Catalyst_Warning=False. `sector_lookup`
+    (optional, ticker -> sector, see watchlist.read_ticker_sectors) tags
+    each trade for compute_cluster_weights(). `strategy` selects which
+    signal to simulate -- "rsi" (simulate_signals, mean-reversion,
+    default) or "breakout" (simulate_breakout_signals, trend-following;
+    earnings_data is ignored for this strategy, it has no catalyst
+    concept)."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     all_trades = []
     for ticker, ohlcv in ticker_data.items():
-        all_trades.extend(
-            simulate_signals(
+        sector = sector_lookup.get(ticker, "Unknown")
+        if strategy == "rsi":
+            trades = simulate_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
-                earnings_dates=earnings_data.get(ticker),
-                sector=sector_lookup.get(ticker, "Unknown"),
+                earnings_dates=earnings_data.get(ticker), sector=sector,
             )
-        )
+        elif strategy == "breakout":
+            trades = simulate_breakout_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
+            )
+        else:
+            raise ValueError(f"unknown strategy: {strategy!r} (expected 'rsi' or 'breakout')")
+        all_trades.extend(trades)
     return all_trades
 
 
@@ -702,21 +714,23 @@ def run_walk_forward(
     config: TradingConfig = DEFAULT_CONFIG,
     earnings_data: dict[str, pd.DatetimeIndex] | None = None,
     sector_lookup: dict[str, str] | None = None,
+    strategy: str = "rsi",
 ) -> list[FoldResult]:
     """Run the backtest across every fold, in-sample and out-of-sample
     separately. Optuna (Phase 5) evaluates a candidate config by scoring it
     across the aggregate of every fold's out_sample_metrics -- never a
     single fold's in-sample fit. `sector_lookup` (optional) tags trades for
-    compute_cluster_weights()."""
+    compute_cluster_weights(). `strategy` (see run_backtest) selects "rsi"
+    (default) or "breakout"."""
     results = []
     for fold in folds:
         in_trades = run_backtest(
             ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config,
-            earnings_data, sector_lookup,
+            earnings_data, sector_lookup, strategy,
         )
         out_trades = run_backtest(
             ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config,
-            earnings_data, sector_lookup,
+            earnings_data, sector_lookup, strategy,
         )
         results.append(FoldResult(
             fold=fold,
