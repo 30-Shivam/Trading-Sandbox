@@ -56,14 +56,36 @@ Live Trade_Outcomes are still reported separately for context (how many
 exist, their aggregate performance) -- useful as a sanity check against what
 the backtest predicts, but not an input to the score.
 
+Ticker-universe holdout validation: walk-forward already holds out TIME
+rigorously (in-sample/out-of-sample folds), but until now every search also
+tuned AND "validated" on the exact same ticker universe -- a config could be
+quietly overfit to the specific names in the watchlist without anyone
+catching it (the walk-forward folds only ever ask "does this generalize to
+a later date for these same tickers," never "does this generalize to a
+ticker the search never saw at all"). split_tickers_holdout() partitions the
+fetched tickers into a TUNE set (all trials -- objective, baseline, Optuna
+search -- only ever see this) and a HOLDOUT set that Optuna never touches
+during the search, stratified by sector so neither set accidentally
+concentrates in one sector the way the original live-vs-backtest gap did.
+After the search picks a winner, that winning config (and DEFAULT_CONFIG,
+for reference) get re-run ONE extra time against the holdout tickers over
+the same folds -- reported alongside the tune-set numbers, and stored on
+the candidate doc as `holdout_metrics`, so whoever reviews the candidate
+before promoting can see whether the edge generalizes to unseen names or
+was quietly specific to the tuning watchlist. Pass --holdout-frac 0 to
+disable (old behavior: tune and "validate" on every ticker).
+
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
     python optimize.py --trials 50 --recency-half-life-days 90   # weight recent regime more heavily
+    python optimize.py --trials 50 --holdout-frac 0.3            # hold out 30% of tickers by sector
 """
 
 import argparse
+import random
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import optuna
@@ -96,6 +118,33 @@ EXTENDED_DECLINE_PENALTY_CAP_RANGE = (0.0, 50.0)
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
 # tune them would just teach it to zero out the very realism they exist to add.
+
+
+def split_tickers_holdout(
+    tickers: list[str], sector_lookup: dict[str, str], holdout_frac: float, seed: int
+) -> tuple[list[str], list[str]]:
+    """Partition `tickers` into (tune, holdout) sets, stratified by sector so
+    neither set accidentally over-concentrates in one sector (the exact
+    mechanism behind the original live-vs-backtest gap -- see
+    backtest_diagnostic.txt). Deterministic given the same seed. A sector
+    with only 1-2 tickers may contribute 0 to holdout (round() can floor to
+    0) -- expected, not a bug, with small watchlists or small sectors."""
+    if holdout_frac <= 0:
+        return list(tickers), []
+
+    rng = random.Random(seed)
+    by_sector: dict[str, list[str]] = defaultdict(list)
+    for t in tickers:
+        by_sector[sector_lookup.get(t, "Unknown")].append(t)
+
+    tune, holdout = [], []
+    for sector in sorted(by_sector):
+        group = sorted(by_sector[sector])
+        rng.shuffle(group)
+        n_holdout = round(len(group) * holdout_frac)
+        holdout.extend(group[:n_holdout])
+        tune.extend(group[n_holdout:])
+    return tune, holdout
 
 
 def fold_weight(fold: swingtrade.Fold, end: pd.Timestamp, half_life_days: float) -> float:
@@ -209,6 +258,16 @@ def main():
         help="Out-of-sample folds this many days before --end count half as much as the most "
              "recent fold (exponential decay). 0 disables weighting (uniform pooling).",
     )
+    parser.add_argument(
+        "--holdout-frac", type=float, default=0.25,
+        help="Fraction of tickers (stratified by sector) held out from tuning entirely, "
+             "then used once at the end to validate the winning config on names Optuna "
+             "never saw. 0 disables (tune and validate on every ticker, old behavior).",
+    )
+    parser.add_argument(
+        "--holdout-seed", type=int, default=42,
+        help="Seed for the ticker tune/holdout split, so the same split is reproducible run to run.",
+    )
     args = parser.parse_args()
 
     try:
@@ -257,21 +316,34 @@ def main():
         print("[ERROR] Date range too short for even one fold.", file=sys.stderr)
         sys.exit(1)
 
+    tune_tickers, holdout_tickers = split_tickers_holdout(
+        list(ticker_data.keys()), sector_lookup, args.holdout_frac, args.holdout_seed
+    )
+    tune_ticker_data = {t: ticker_data[t] for t in tune_tickers}
+    holdout_ticker_data = {t: ticker_data[t] for t in holdout_tickers}
+    if holdout_tickers:
+        print(f"Ticker holdout split (seed={args.holdout_seed}, frac={args.holdout_frac}): "
+              f"{len(tune_tickers)} tune / {len(holdout_tickers)} holdout. "
+              f"Holdout tickers never seen during tuning: {sorted(holdout_tickers)}")
+    else:
+        print("Ticker holdout validation disabled (--holdout-frac 0 or too few tickers) -- "
+              "tuning and reporting on every ticker, old behavior.")
+
     baseline_results = swingtrade.run_walk_forward(
-        ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, sector_lookup=sector_lookup
+        tune_ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, sector_lookup=sector_lookup
     )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
         f"(recency-weighted, half-life={args.recency_half_life_days:.0f}d)"
         if args.recency_half_life_days > 0 else "(uniform pooling)"
     )
-    print(f"\nBaseline (current DEFAULT_CONFIG) pooled out-of-sample metrics {weight_note}: {baseline_metrics}")
+    print(f"\nBaseline (current DEFAULT_CONFIG) pooled out-of-sample metrics on TUNE tickers {weight_note}: {baseline_metrics}")
     report_live_outcomes_context()
 
     sampler = optuna.samplers.TPESampler(seed=args.seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
     study.optimize(
-        build_objective(ticker_data, market_data, folds, end, args.recency_half_life_days, sector_lookup),
+        build_objective(tune_ticker_data, market_data, folds, end, args.recency_half_life_days, sector_lookup),
         n_trials=args.trials, show_progress_bar=False,
     )
 
@@ -280,7 +352,7 @@ def main():
     print()
     print(f"Best trial #{best.number}: score(sharpe_like or penalty)={best.value:.4f}")
     print(f"  params: {best.params}")
-    print(f"  metrics: {best_metrics}")
+    print(f"  metrics (TUNE tickers): {best_metrics}")
 
     if best.value <= UNDER_SAMPLED_PENALTY:
         print()
@@ -290,13 +362,51 @@ def main():
         return
 
     candidate_config = swingtrade.TradingConfig(**{**swingtrade.DEFAULT_CONFIG.to_dict(), **best.params})
+
+    holdout_metrics = {}
+    if holdout_ticker_data:
+        holdout_baseline_results = swingtrade.run_walk_forward(
+            holdout_ticker_data, market_data, folds, swingtrade.DEFAULT_CONFIG, sector_lookup=sector_lookup
+        )
+        holdout_baseline_metrics = summarize_weighted(holdout_baseline_results, end, args.recency_half_life_days)
+
+        holdout_candidate_results = swingtrade.run_walk_forward(
+            holdout_ticker_data, market_data, folds, candidate_config, sector_lookup=sector_lookup
+        )
+        holdout_candidate_metrics = summarize_weighted(holdout_candidate_results, end, args.recency_half_life_days)
+
+        print()
+        print(f"=== Ticker-universe holdout validation ({len(holdout_tickers)} tickers Optuna never saw) ===")
+        print(f"  baseline (DEFAULT_CONFIG) on holdout: {holdout_baseline_metrics}")
+        print(f"  candidate (winning trial) on holdout: {holdout_candidate_metrics}")
+        if (holdout_candidate_metrics.get("effective_trade_count") or 0) < MIN_TRADES_FOR_SCORE:
+            print("  [WARN] Holdout effective_trade_count is thin -- treat this validation as a weak "
+                  "signal, not proof either way. Consider a lower --holdout-frac or more tickers.")
+
+        holdout_metrics = {
+            "holdout_tickers": sorted(holdout_tickers),
+            "tune_tickers": sorted(tune_tickers),
+            "holdout_frac": args.holdout_frac,
+            "holdout_seed": args.holdout_seed,
+            "baseline": holdout_baseline_metrics,
+            "candidate": holdout_candidate_metrics,
+        }
+
     notes = (
         f"Optuna search: {args.trials} trials, {start.date()}..{end.date()}, "
-        f"{len(ticker_data)} ticker(s), {len(folds)} fold(s), "
+        f"{len(tune_ticker_data)} tune / {len(holdout_ticker_data)} holdout ticker(s), {len(folds)} fold(s), "
         f"recency_half_life_days={args.recency_half_life_days:.0f}. "
         f"Baseline sharpe_like={baseline_metrics.get('sharpe_like')}, best sharpe_like={best.value:.4f}."
     )
-    version = storage.write_candidate(candidate_config.to_dict(), notes=notes, metrics=best_metrics)
+    if holdout_metrics:
+        notes += (
+            f" Holdout ({len(holdout_tickers)} tickers): baseline sharpe_like="
+            f"{holdout_metrics['baseline'].get('sharpe_like')}, candidate sharpe_like="
+            f"{holdout_metrics['candidate'].get('sharpe_like')}."
+        )
+    version = storage.write_candidate(
+        candidate_config.to_dict(), notes=notes, metrics=best_metrics, holdout_metrics=holdout_metrics
+    )
 
     print()
     print(f"Wrote candidate System_Config version={version} (status=candidate, NOT active).")

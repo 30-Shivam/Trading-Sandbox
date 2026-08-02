@@ -332,6 +332,30 @@ field (`evaluate_config.py` doesn't currently expose a flag for it — add one
 the same way `--stop-loss-atr-multiplier` etc. are wired if you need to
 search over it).
 
+**Tuning on a ticker can quietly overfit to that ticker.** Walk-forward
+already holds out TIME rigorously (in-sample/out-of-sample folds), but until
+now every search also tuned *and* "validated" on the exact same watchlist —
+a config could look great without ever proving it generalizes to a name it
+wasn't fit against. `optimize.py` now splits fetched tickers into a TUNE set
+(everything the search sees) and a HOLDOUT set (stratified by sector, never
+touched during tuning) via `--holdout-frac` (default 0.25) / `--holdout-seed`
+(default 42, for a reproducible split) — after the search picks a winner,
+both it and `DEFAULT_CONFIG` get re-run once against the holdout tickers and
+printed side by side, plus stored on the candidate doc as `holdout_metrics`.
+Pass `--holdout-frac 0` for the old behavior (tune and "validate" on every
+ticker). **This needs a real ticker count to mean anything** — a 15-ticker
+watchlist at 25% holdout leaves a single ticker, too thin to trust (the code
+warns you when `effective_trade_count` on holdout is under 15). A real run
+against the full 108-ticker watchlist (73 tune / 27 holdout) caught exactly
+the failure mode this exists for: the winning trial beat `DEFAULT_CONFIG` on
+the tune tickers (`sharpe_like` 0.205 vs. 0.165) but did *worse* than
+`DEFAULT_CONFIG` on the 27 tickers it never saw (`sharpe_like` -0.128 vs.
+-0.041) — textbook ticker-level overfitting, with a comfortably-sized
+holdout sample (`effective_trade_count`=79.6). That candidate was **not**
+promoted. If you see a candidate whose tune-set score looks great, always
+check its `holdout_metrics` before promoting — a good tune score with a bad
+(or much worse than baseline) holdout score is a red flag, not a win.
+
 ## 7. Validating one specific config by hand
 
 If you want to test a specific hand-picked value (e.g. capping something

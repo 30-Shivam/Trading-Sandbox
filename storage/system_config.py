@@ -61,9 +61,14 @@ def get_next_version() -> int:
     return (doc["version"] + 1) if doc else 1
 
 
-def write_candidate(params: dict, notes: str = "", metrics: dict | None = None) -> int:
+def write_candidate(
+    params: dict, notes: str = "", metrics: dict | None = None, holdout_metrics: dict | None = None
+) -> int:
     """Insert a new candidate System_Config document. Never touches
-    `active` -- promotion is a separate, deliberate step."""
+    `active` -- promotion is a separate, deliberate step. `holdout_metrics`
+    is optional, separate from `metrics` (which stays the tune-set score
+    promote_config.py's table already reads) -- see optimize.py's
+    ticker-universe holdout validation."""
     db = get_db()
     version = get_next_version()
     doc = {
@@ -71,6 +76,7 @@ def write_candidate(params: dict, notes: str = "", metrics: dict | None = None) 
         "status": "candidate",
         "params": params,
         "metrics": metrics or {},
+        "holdout_metrics": holdout_metrics or {},
         "created_at": datetime.now(timezone.utc),
         "promoted_at": None,
         "notes": notes,
