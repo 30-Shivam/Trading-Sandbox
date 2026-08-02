@@ -76,6 +76,7 @@ interactive app). Run from the repo root.
 | `py -3 confirm_fill.py --ticker INTC --date 2026-07-24 --price 89.60` | Mark a signal as an actual trade you made (price optional, defaults to the logged buy_price) |
 | `py -3 check_survivorship_bias.py` | Compare today's watchlist vs. a genuine point-in-time S&P 500 sample, same config/window |
 | `py -3 benchmark_random_entry.py` | Does the active config's RSI-oversold timing actually beat picking entry days at random? |
+| `py -3 benchmark_random_entry.py --strategy breakout --breakout-lookback-days 55` | Same question for the breakout/trend-following signal instead of RSI |
 
 Add `--help` to any script for its full flag list and a detailed docstring
 (e.g. `py -3 optimize.py --help`).
@@ -376,6 +377,26 @@ real predictive value over random timing; see `improvements.txt`'s
 STRATEGIC PIVOT section for what that implies about what to try next
 (momentum/trend-following and relative-strength now rank above simply
 adding more filters on top of RSI).
+
+**A second, independent signal: breakout/trend-following.** Since RSI-oversold
+timing showed no value above, `swingtrade.simulate_breakout_signals()` buys
+STRENGTH instead of weakness — a new `config.breakout_lookback_days`-day
+CLOSING high in a confirmed uptrend, same macro/liquidity gates as the RSI
+signal, same ATR-based stop/target sizing, but entered via a resting
+stop-buy order (`_find_breakout_fill()`, the upside mirror of the RSI
+signal's downside limit-fill logic — a gap-up fills at the worse/higher real
+Open, an intraday touch fills at exactly the trigger). Run it the same way:
+`py -3 benchmark_random_entry.py --strategy breakout --breakout-lookback-days 55`
+(default lookback is 20 if you omit the flag). A real full-watchlist run at
+two lookbacks showed 20-day has no value over random (every cut within
+noise), but **55-day showed a real, if modest, positive edge on the 27
+holdout tickers** — `sharpe_like` 0.034 vs. random's -0.042, `win_rate`
+26.78% vs. 24.64%, with trustworthy sample sizes both sides. That's the
+first signal in this whole investigation to beat random timing
+out-of-sample — promising, not proven (it's a single-window benchmark, not
+yet run through the full walk-forward + correlation + recency + holdout
+pipeline `optimize.py` provides), and the natural next step before
+considering any candidate write/promotion.
 
 ## 7. Validating one specific config by hand
 

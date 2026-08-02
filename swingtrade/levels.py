@@ -145,6 +145,78 @@ def compute_levels(
     }
 
 
+def compute_breakout_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> dict:
+    """Compute breakout trigger/stop/target levels for one ticker's OHLCV
+    history -- the trend-following counterpart to compute_levels()'s
+    RSI-oversold mean-reversion logic. Same macro-uptrend and liquidity
+    gates (a breakout in a stock nobody can actually trade, or one that's
+    still in a macro downtrend, isn't a real opportunity either), but the
+    trigger is a new N-day CLOSING high instead of an RSI reading, and
+    Trigger_Price is a level price gets bought ABOVE, not below.
+
+    `Highest_High` uses `.shift(1)` -- the highest High of the PRIOR
+    `config.breakout_lookback_days` days, excluding today's own bar. Today's
+    Close is then compared against that prior-days-only level, so this stays
+    safe to call with `df` truncated at any `as_of` inside a backtest loop,
+    exactly like compute_levels().
+    """
+    df = df.copy()
+    df["SMA_TREND"] = df["Close"].rolling(window=config.sma_trend_window).mean()
+    df["ATR"] = ta.atr(df["High"], df["Low"], df["Close"], length=config.atr_window)
+    df["AvgVolume"] = df["Volume"].rolling(window=config.volume_lookback_days).mean()
+    df["Highest_High"] = df["High"].rolling(window=config.breakout_lookback_days).max().shift(1)
+
+    last_row = df.iloc[-1]
+    last_date = df.index[-1]
+    last_close, sma_trend, atr, avg_volume, highest_high = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"],
+        last_row["AvgVolume"], last_row["Highest_High"],
+    )
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+    if pd.isna(highest_high):
+        raise RuntimeError(f"insufficient history to compute {config.breakout_lookback_days}-day high")
+
+    last_close, sma_trend, atr, avg_volume, highest_high = (
+        float(last_close), float(sma_trend), float(atr), float(avg_volume), float(highest_high),
+    )
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    trigger_price = round(highest_high, 2)
+    breakout_signal = last_close > highest_high
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "ATR": round(atr, 2),
+        "Trigger_Price": trigger_price,
+        "Trigger_Basis": f"{config.breakout_lookback_days}-day high (prior days only)",
+        "Breakout_Signal": breakout_signal,
+    }
+
+
 def review_holding(
     ticker: str,
     df: pd.DataFrame,

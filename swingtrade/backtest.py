@@ -61,7 +61,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from .config import DEFAULT_CONFIG, TradingConfig
-from .levels import compute_levels, is_market_uptrend
+from .levels import compute_breakout_levels, compute_levels, is_market_uptrend
 from .scoring import add_trade_score
 from .settlement import settle_trade
 
@@ -136,6 +136,27 @@ def _find_entry_fill(buy_price: float, bars_after_signal: pd.DataFrame, max_wait
             return bar_date, open_
         if low <= buy_price:
             return bar_date, buy_price
+    return None
+
+
+def _find_breakout_fill(trigger_price: float, bars_after_signal: pd.DataFrame, max_wait_days: int):
+    """Mirror of _find_entry_fill(), but for a resting STOP-BUY order (fills
+    on an UPSIDE cross through `trigger_price`) instead of a resting LIMIT
+    order (fills on a downside touch) -- the breakout counterpart. Gap-aware
+    the same way stop-losses are in settlement.py: a gap-up open through the
+    trigger fills at that (worse, higher) real Open; an intraday touch
+    (High >= trigger_price) fills at exactly the trigger. Stops searching
+    after `max_wait_days`. Returns (fill_date, fill_price) or None if the
+    breakout was never confirmed within the window."""
+    for wait_days, (bar_date, bar) in enumerate(bars_after_signal.iterrows(), start=1):
+        if wait_days > max_wait_days:
+            break
+        open_ = float(bar["Open"])
+        high = float(bar["High"])
+        if open_ >= trigger_price:
+            return bar_date, open_
+        if high >= trigger_price:
+            return bar_date, trigger_price
     return None
 
 
@@ -338,6 +359,179 @@ def simulate_random_entries(
             "atr": atr,
             "buy_price": entry_price,
             "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
+def simulate_breakout_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Trend-following counterpart to simulate_signals() -- buys strength (a
+    new config.breakout_lookback_days-day closing high in a confirmed
+    uptrend) instead of RSI-oversold weakness. Same no-look-ahead discipline
+    (only data through `as_of` decides whether a signal fires), same
+    entry-timing realism (a signal known at `as_of`'s close can't be acted
+    on before the next session -- _find_breakout_fill() walks forward
+    looking for the resting stop-buy order to actually get touched, gap-aware,
+    within config.max_entry_wait_days), and the exact same ATR-multiple
+    stop/target sizing as simulate_signals() -- deliberately kept identical
+    so this is a clean test of whether breakout TIMING adds value, without
+    also changing the exit model at the same time.
+
+    `ohlcv`/`market_ohlcv` need the same leading-history buffer as
+    simulate_signals() -- see LOOKBACK_BUFFER_BARS.
+    """
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+    lookback_bars = config.sma_trend_window + LOOKBACK_BUFFER_BARS
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    for as_of in eligible_dates:
+        market_window = market_ohlcv.loc[:as_of].tail(lookback_bars)
+        try:
+            market_uptrend, _, _ = is_market_uptrend(market_window, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        price_window = ohlcv.loc[:as_of].tail(lookback_bars)
+        try:
+            levels = compute_breakout_levels(ticker, price_window, config)
+        except RuntimeError:
+            continue
+
+        if not levels["Breakout_Signal"]:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_breakout_fill(levels["Trigger_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Breakout",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Trigger_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_breakout_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_breakout_signals() -- same idea as
+    simulate_random_entries(), but using the breakout strategy's own gates
+    (macro uptrend, liquidity via compute_breakout_levels) and stop-buy fill
+    mechanics (_find_breakout_fill), so it isolates whether breakout-day
+    TIMING adds value over a random day using the identical trigger-price
+    formula (that day's own N-day high) and entry/exit structure. `n_trades`
+    should be simulate_breakout_signals()'s real signal count for this
+    ticker/window, so trade volume is matched."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+    lookback_bars = config.sma_trend_window + LOOKBACK_BUFFER_BARS
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    candidates = []  # (as_of, trigger_price, atr) for every day that passed the gates, breakout or not
+    for as_of in eligible_dates:
+        market_window = market_ohlcv.loc[:as_of].tail(lookback_bars)
+        try:
+            market_uptrend, _, _ = is_market_uptrend(market_window, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        price_window = ohlcv.loc[:as_of].tail(lookback_bars)
+        try:
+            levels = compute_breakout_levels(ticker, price_window, config)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Trigger_Price"], float(levels["ATR"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, trigger_price, atr in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_breakout_fill(trigger_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_Breakout",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": trigger_price,
             "stop_loss": stop_loss,
             "sell_price": sell_price,
             "catalyst_warning": False,

@@ -102,6 +102,18 @@ class TradingConfig:
                                             # touched within this many trading
                                             # days after the signal
 
+    # Breakout/trend-following strategy (swingtrade/levels.compute_breakout_levels,
+    # swingtrade/backtest.simulate_breakout_signals) -- a second, independent
+    # signal separate from the RSI-oversold mean-reversion one above. Buys
+    # strength (a new N-day closing high in a confirmed uptrend) instead of
+    # weakness. Built after benchmark_random_entry.py showed RSI-oversold
+    # TIMING carries no real predictive value over random entry days -- see
+    # improvements.txt's STRATEGIC PIVOT section.
+    breakout_lookback_days: int = 20       # signal fires when today's Close
+                                            # exceeds the highest High of the
+                                            # PRIOR N trading days (excludes
+                                            # today itself -- no look-ahead)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
