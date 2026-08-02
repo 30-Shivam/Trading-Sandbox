@@ -2,8 +2,13 @@
 Interactive Streamlit dashboard for a mechanical swing-trading watchlist scan.
 
 This app does NOT predict price direction and is NOT investment advice.
-It applies a fixed, deterministic rule set to historical price data to compute,
-for every scanned ticker:
+It applies a fixed, deterministic rule set to historical price data. Which
+rule set depends on the active System_Config's `strategy` field -- "rsi"
+(default, described below) or "breakout" (buys a new
+breakout_lookback_days-day CLOSING high in a confirmed uptrend instead of an
+oversold dip; same ATR-based stop/target math, own Trade_Score formula --
+see swingtrade.compute_breakout_levels/add_breakout_trade_score). Both
+compute, for every scanned ticker:
 
   1. A limit BUY price, defined as the structural support level: the lowest
      daily Low over the last support_lookback_days trading days (recent swing
@@ -151,11 +156,21 @@ REVIEW_COLORS = {
     "HOLD": "",
 }
 
-DISPLAY_COLUMNS = [
+DISPLAY_COLUMNS_RSI = [
     "Ticker", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
     "Sell_Price", "RRR", "RSI", "ATR", "Distance_to_Buy_Pct", "Shares_To_Buy",
     "Est_Cost", "Next_Earnings_Date", "Catalyst_Warning", "Oversold_Streak_Days",
     "Extended_Decline_Warning", "Top_Headline", "As_Of",
+]
+# Breakout signals have no Oversold_Streak_Days/Extended_Decline_Warning
+# equivalent (RSI-mean-reversion-specific concepts -- see
+# add_breakout_trade_score's docstring) -- dropped rather than shown as
+# always-empty columns. RSI is still shown (compute_breakout_levels
+# computes it informationally, e.g. to see how extended a breakout is).
+DISPLAY_COLUMNS_BREAKOUT = [
+    "Ticker", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
+    "Sell_Price", "RRR", "RSI", "ATR", "Distance_to_Buy_Pct", "Shares_To_Buy",
+    "Est_Cost", "Next_Earnings_Date", "Catalyst_Warning", "Top_Headline", "As_Of",
 ]
 
 # ---------------------------------------------------------------------------
@@ -250,13 +265,17 @@ def style_results(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
         "Shares_To_Buy": "{:.4f}",
         "Est_Cost": "{:.2f}",
     }
-    return (
+    styler = (
         df.style
         .format(formats, na_rep="-")
         .map(lambda v: SIGNAL_COLORS.get(v, ""), subset=["Signal"])
         .map(lambda v: CATALYST_WARNING_STYLE if v else "", subset=["Catalyst_Warning"])
-        .map(lambda v: EXTENDED_DECLINE_STYLE if v else "", subset=["Extended_Decline_Warning"])
     )
+    # Extended_Decline_Warning is RSI-only (see DISPLAY_COLUMNS_BREAKOUT) --
+    # guard rather than assume the column is always present.
+    if "Extended_Decline_Warning" in df.columns:
+        styler = styler.map(lambda v: EXTENDED_DECLINE_STYLE if v else "", subset=["Extended_Decline_Warning"])
+    return styler
 
 
 @st.cache_resource(show_spinner=False)
@@ -295,15 +314,26 @@ def main():
 
     with st.sidebar:
         st.header("Configuration")
-        st.caption(config_source)
+        st.caption(f"{config_source} (strategy: {config.strategy})")
         with st.expander("Active trading parameters"):
-            st.json({
-                "rsi_oversold_threshold": config.rsi_oversold_threshold,
-                "atr_take_profit_multiplier": config.atr_take_profit_multiplier,
-                "stop_loss_atr_multiplier": config.stop_loss_atr_multiplier,
-                "max_holding_days": config.max_holding_days,
-                "max_sector_allocation_pct": config.max_sector_allocation_pct,
-            })
+            if config.strategy == "breakout":
+                st.json({
+                    "strategy": config.strategy,
+                    "breakout_lookback_days": config.breakout_lookback_days,
+                    "atr_take_profit_multiplier": config.atr_take_profit_multiplier,
+                    "stop_loss_atr_multiplier": config.stop_loss_atr_multiplier,
+                    "max_holding_days": config.max_holding_days,
+                    "max_sector_allocation_pct": config.max_sector_allocation_pct,
+                })
+            else:
+                st.json({
+                    "strategy": config.strategy,
+                    "rsi_oversold_threshold": config.rsi_oversold_threshold,
+                    "atr_take_profit_multiplier": config.atr_take_profit_multiplier,
+                    "stop_loss_atr_multiplier": config.stop_loss_atr_multiplier,
+                    "max_holding_days": config.max_holding_days,
+                    "max_sector_allocation_pct": config.max_sector_allocation_pct,
+                })
         position_budget = st.number_input(
             "Position Budget ($)",
             min_value=1.0,
@@ -402,7 +432,10 @@ def main():
 
     results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
     results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
-    results_df = swingtrade.add_trade_score(results_df, config)
+    if config.strategy == "breakout":
+        results_df = swingtrade.add_breakout_trade_score(results_df, config)
+    else:
+        results_df = swingtrade.add_trade_score(results_df, config)
     results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
 
     # Log signals BEFORE the capital-allocation overlay: Trade_Signals should
@@ -498,7 +531,8 @@ def main():
                 st.dataframe(pd.DataFrame(review_skipped, columns=["Ticker", "Reason"]), hide_index=True)
 
     st.subheader("Scan Results")
-    st.dataframe(style_results(results_df[DISPLAY_COLUMNS]), width="stretch", hide_index=True)
+    display_columns = DISPLAY_COLUMNS_BREAKOUT if config.strategy == "breakout" else DISPLAY_COLUMNS_RSI
+    st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
 
     st.download_button(
         "Download full results as CSV",

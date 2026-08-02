@@ -21,7 +21,7 @@ from .backtest import (
 )
 from .config import DEFAULT_CONFIG, TradingConfig
 from .levels import compute_breakout_levels, compute_levels, is_market_uptrend, review_holding
-from .scoring import add_trade_score, signal_for_score
+from .scoring import add_breakout_trade_score, add_trade_score, signal_for_score
 from .settlement import settle_trade
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
     "is_market_uptrend",
     "review_holding",
     "add_trade_score",
+    "add_breakout_trade_score",
     "signal_for_score",
     "allocate_capital",
     "settle_trade",

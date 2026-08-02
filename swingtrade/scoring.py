@@ -47,3 +47,38 @@ def add_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) ->
     df["Trade_Score"] = (rrr_score + rsi_score + distance_score - streak_penalty).clip(lower=0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
     return df
+
+
+def add_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    """Trend-following counterpart to add_trade_score() -- blends RRR and
+    Distance_to_Buy_Pct into a 0-100 Trade_Score for rows produced by
+    compute_breakout_levels(), reusing signal_for_score()'s thresholds so a
+    breakout Trade_Score means the same thing on the same 0-100 scale as an
+    RSI one (comparable when both appear in the same allocate_capital() run).
+
+    No RSI component: "lower RSI is better" is RSI-oversold's whole premise,
+    and would be backwards here -- a fresh breakout WANTS elevated RSI, that's
+    what "buying strength" means. Rather than penalize strong breakouts for
+    looking like strong breakouts, the RSI dimension is dropped entirely and
+    rrr_score_weight/distance_score_weight are rescaled to still sum to 100,
+    preserving their relative emphasis from the active config. No streak
+    penalty either -- Oversold_Streak_Days is an RSI-mean-reversion concept
+    with no breakout equivalent.
+
+    For breakout, Distance_to_Buy_Pct (see compute_breakout_levels) means
+    "how far ABOVE the trigger has price already moved" -- smaller is a
+    fresher, less-extended breakout, which is why the same "smaller distance
+    scores higher" formula as add_trade_score() applies unchanged."""
+    df = df.copy()
+
+    rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+
+    distance_clipped = df["Distance_to_Buy_Pct"].clip(lower=0, upper=config.distance_score_cap_pct)
+    distance_score = (1 - distance_clipped / config.distance_score_cap_pct) * config.distance_score_weight
+
+    total_weight = config.rrr_score_weight + config.distance_score_weight
+    rescale = (100 / total_weight) if total_weight > 0 else 0.0
+
+    df["Trade_Score"] = ((rrr_score + distance_score) * rescale).clip(lower=0).round(1)
+    df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
+    return df

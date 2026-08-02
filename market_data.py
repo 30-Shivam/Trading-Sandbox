@@ -80,7 +80,11 @@ def scan_tickers(
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """Fetch data and compute levels for every ticker. The only network-heavy
     step; callers decide whether/how to cache it (Streamlit wraps this in
-    st.cache_data, ingest.py calls it once per process)."""
+    st.cache_data, ingest.py calls it once per process). Dispatches on
+    `config.strategy` -- "rsi" (default, compute_levels) or "breakout"
+    (compute_breakout_levels) -- so callers don't need to know which
+    strategy produced the active config; the returned dicts are
+    schema-compatible either way (see compute_breakout_levels' docstring)."""
     results = []
     skipped = []
     for i, ticker in enumerate(tickers):
@@ -93,9 +97,14 @@ def scan_tickers(
             next_earnings = get_next_earnings_date(ticker_obj, now_utc)
             headlines = get_recent_headlines(ticker_obj)
             top_headline = headlines[0] if headlines else ""
-            levels = swingtrade.compute_levels(
-                ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
-            )
+            if config.strategy == "breakout":
+                levels = swingtrade.compute_breakout_levels(
+                    ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
+                )
+            else:
+                levels = swingtrade.compute_levels(
+                    ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
+                )
             results.append(levels)
         except Exception as exc:
             skipped.append((ticker, str(exc)))

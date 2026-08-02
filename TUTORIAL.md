@@ -456,6 +456,20 @@ dashboard and `ingest.py` pick this up automatically on their next run/cache
 refresh — no restart needed for `ingest.py` (it's a one-shot process), and
 within `SCAN_CACHE_TTL_SEC` (15 min) for a running dashboard.
 
+**Promoting a breakout candidate now actually works.** Both entry points
+dispatch on the promoted config's `strategy` field — `"rsi"` (default) runs
+the mean-reversion scan described above, `"breakout"` runs the trend-following
+one (buys a new `breakout_lookback_days`-day closing high in a confirmed
+uptrend instead of a dip) via a completely separate scoring formula
+(`swingtrade.add_breakout_trade_score` — RRR + freshness only, no RSI
+component, since a breakout *wants* elevated RSI unlike a mean-reversion
+dip). Before this wiring existed, promoting a breakout-typed candidate would
+have silently broken the live RSI path (breakout-tuned ATR multiples with an
+untouched default RSI threshold) instead of switching strategies — that's
+fixed now. The Scan Results table adapts its columns automatically
+(`Oversold_Streak_Days`/`Extended_Decline_Warning` only make sense for RSI
+and are dropped for a breakout config, not shown as always-empty).
+
 ## 9. A realistic weekly loop, today
 
 Since Phase 8's scheduling automation isn't built yet, here's what "running

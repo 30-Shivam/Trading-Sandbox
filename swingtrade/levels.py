@@ -149,6 +149,8 @@ def compute_breakout_levels(
     ticker: str,
     df: pd.DataFrame,
     config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
 ) -> dict:
     """Compute breakout trigger/stop/target levels for one ticker's OHLCV
     history -- the trend-following counterpart to compute_levels()'s
@@ -163,18 +165,32 @@ def compute_breakout_levels(
     Close is then compared against that prior-days-only level, so this stays
     safe to call with `df` truncated at any `as_of` inside a backtest loop,
     exactly like compute_levels().
+
+    The returned dict is schema-compatible with compute_levels() (Buy_Price,
+    Sell_Price, Stop_Loss, RRR, Distance_to_Buy_Pct, Catalyst_Warning, etc.
+    all present) so live callers (market_data.scan_tickers, the dashboard,
+    storage) don't need to special-case which strategy produced a row --
+    only add_trade_score vs add_breakout_trade_score (swingtrade/scoring.py)
+    differ. RSI is computed here too even though breakout doesn't use it for
+    its own gating -- purely informational today (storage requires the
+    field, and it's a natural input for a future "skip overbought breakouts"
+    filter, see improvements.txt). `next_earnings_date`/`top_headline` are
+    optional and behave exactly as in compute_levels(); backtest callers
+    omit them (Catalyst_Warning stays False, matching simulate_signals'
+    same behavior when earnings_dates isn't supplied).
     """
     df = df.copy()
     df["SMA_TREND"] = df["Close"].rolling(window=config.sma_trend_window).mean()
+    df["RSI"] = ta.rsi(df["Close"], length=config.rsi_window)
     df["ATR"] = ta.atr(df["High"], df["Low"], df["Close"], length=config.atr_window)
     df["AvgVolume"] = df["Volume"].rolling(window=config.volume_lookback_days).mean()
     df["Highest_High"] = df["High"].rolling(window=config.breakout_lookback_days).max().shift(1)
 
     last_row = df.iloc[-1]
     last_date = df.index[-1]
-    last_close, sma_trend, atr, avg_volume, highest_high = (
+    last_close, sma_trend, atr, avg_volume, highest_high, rsi = (
         last_row["Close"], last_row["SMA_TREND"], last_row["ATR"],
-        last_row["AvgVolume"], last_row["Highest_High"],
+        last_row["AvgVolume"], last_row["Highest_High"], last_row["RSI"],
     )
     if pd.isna(last_close):
         raise RuntimeError("insufficient history: no Close price for the most recent bar")
@@ -186,6 +202,10 @@ def compute_breakout_levels(
         raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
     if pd.isna(highest_high):
         raise RuntimeError(f"insufficient history to compute {config.breakout_lookback_days}-day high")
+    # RSI is informational only for breakout (not used for gating/signal
+    # decisions) -- don't exclude a ticker just because its RSI warmup
+    # hasn't filled yet; leave it None rather than raising.
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
 
     last_close, sma_trend, atr, avg_volume, highest_high = (
         float(last_close), float(sma_trend), float(atr), float(avg_volume), float(highest_high),
@@ -206,14 +226,40 @@ def compute_breakout_levels(
     trigger_price = round(highest_high, 2)
     breakout_signal = last_close > highest_high
 
+    buy_price = trigger_price
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+    distance_to_buy_pct = ((last_close - buy_price) / buy_price) * 100
+
+    as_of = pd.Timestamp(last_date)
+    as_of = as_of.tz_localize("UTC") if as_of.tzinfo is None else as_of.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
     return {
         "Ticker": ticker,
         "As_Of": last_date.date(),
         "Last_Close": round(last_close, 2),
+        "RSI": rsi,
         "ATR": round(atr, 2),
         "Trigger_Price": trigger_price,
         "Trigger_Basis": f"{config.breakout_lookback_days}-day high (prior days only)",
         "Breakout_Signal": breakout_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": round(distance_to_buy_pct, 2),
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
     }
 
 

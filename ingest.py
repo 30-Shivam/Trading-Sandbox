@@ -51,7 +51,7 @@ def run(watchlist_path: Path, position_budget: float) -> int:
         return 1
 
     config, config_source = config_loader.load_active_config()
-    print(config_source)
+    print(f"{config_source} (strategy={config.strategy})")
 
     tickers = tuple(read_tickers(watchlist_path))
     if not tickers:
@@ -83,7 +83,10 @@ def run(watchlist_path: Path, position_budget: float) -> int:
     results_df = pd.DataFrame(results)
     results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
     results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
-    results_df = swingtrade.add_trade_score(results_df, config)
+    if config.strategy == "breakout":
+        results_df = swingtrade.add_breakout_trade_score(results_df, config)
+    else:
+        results_df = swingtrade.add_trade_score(results_df, config)
 
     logged_count = storage.log_trade_signals(results_df, config.to_dict())
     strong_buys = int((results_df["Signal"] == "Strong Buy").sum())
