@@ -404,6 +404,12 @@ def simulate_breakout_signals(
     ripping isn't the same as one genuinely beating the market. Default
     (-100.0) is a practical no-op.
 
+    A breakout whose Volume_Ratio (today's Volume over the PRIOR
+    volume_lookback_days average -- see compute_breakout_levels) is below
+    config.breakout_volume_ratio_min is also skipped -- a genuine breakout
+    on high volume vs. a low-volume drift above an old high are different
+    events. Default (0.0) is a practical no-op.
+
     `ohlcv`/`market_ohlcv` need the same leading-history buffer as
     simulate_signals() -- see LOOKBACK_BUFFER_BARS.
     """
@@ -436,6 +442,9 @@ def simulate_breakout_signals(
             continue
         rel_strength = levels.get("Relative_Strength")
         if rel_strength is not None and rel_strength < config.breakout_relative_strength_min:
+            continue
+        volume_ratio = levels.get("Volume_Ratio")
+        if volume_ratio is not None and volume_ratio < config.breakout_volume_ratio_min:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]

@@ -135,6 +135,19 @@ class TradingConfig:
                                             # "disabled" value -- relative
                                             # returns essentially never fall
                                             # that far
+    breakout_volume_ratio_min: float = 0.0  # skip a breakout signal unless
+                                            # today's Volume is at least this
+                                            # many times the PRIOR
+                                            # volume_lookback_days average
+                                            # (excludes today itself, same
+                                            # no-look-ahead convention as
+                                            # Highest_High) -- a genuine
+                                            # breakout on high volume vs. a
+                                            # low-volume drift above an old
+                                            # high are different events.
+                                            # 0.0 is the practical "disabled"
+                                            # value -- a real ratio is always
+                                            # >= 0
 
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion) or "breakout" (simulate_breakout_signals,

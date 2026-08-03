@@ -81,9 +81,10 @@ showed RSI-oversold timing carries no real predictive value over random entry
 days). --strategy rsi (default) searches the original RSI/ATR/stop-loss/
 streak-penalty space; --strategy breakout searches breakout_lookback_days/
 atr_take_profit_multiplier/stop_loss_atr_multiplier/
-breakout_rsi_overbought_threshold/breakout_relative_strength_min instead --
-everything above (WFO, recency weighting, correlation-adjustment,
-ticker-holdout, champion/challenger) applies identically to either.
+breakout_rsi_overbought_threshold/breakout_relative_strength_min/
+breakout_volume_ratio_min instead -- everything above (WFO, recency
+weighting, correlation-adjustment, ticker-holdout, champion/challenger)
+applies identically to either.
 
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
@@ -145,6 +146,11 @@ BREAKOUT_RSI_OVERBOUGHT_RANGE = (50.0, 100.0)
 # search decide" reasoning as the overbought threshold above
 # (improvements.txt item 5).
 BREAKOUT_RELATIVE_STRENGTH_RANGE = (-50.0, 15.0)
+# 0.0 = practical "disabled" (a real ratio is always >= 0); upper bound (3.0)
+# requires today's volume to be 3x the prior average -- a genuinely
+# demanding confirmation threshold. Same "let a real search decide"
+# reasoning as the other two breakout filters (improvements.txt item 6).
+BREAKOUT_VOLUME_RATIO_RANGE = (0.0, 3.0)
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -244,6 +250,9 @@ def build_objective(
                 ),
                 "breakout_relative_strength_min": trial.suggest_float(
                     "breakout_relative_strength_min", *BREAKOUT_RELATIVE_STRENGTH_RANGE
+                ),
+                "breakout_volume_ratio_min": trial.suggest_float(
+                    "breakout_volume_ratio_min", *BREAKOUT_VOLUME_RATIO_RANGE
                 ),
             }
         candidate = swingtrade.TradingConfig(**{

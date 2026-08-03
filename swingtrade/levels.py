@@ -210,19 +210,27 @@ def compute_breakout_levels(
     config.breakout_lookback_days minus the market's return over the same
     window, informational unless config.breakout_relative_strength_min is
     changed from its disabled default. None if market_df isn't supplied.
+
+    Volume_Ratio is today's Volume divided by the PRIOR (`.shift(1)`, same
+    no-look-ahead convention as Highest_High) volume_lookback_days average
+    -- a genuine breakout on high volume vs. a low-volume drift above an
+    old high are different events (see improvements.txt item 6). None if
+    there isn't enough history for the prior-average yet.
     """
     df = df.copy()
     df["SMA_TREND"] = df["Close"].rolling(window=config.sma_trend_window).mean()
     df["RSI"] = ta.rsi(df["Close"], length=config.rsi_window)
     df["ATR"] = ta.atr(df["High"], df["Low"], df["Close"], length=config.atr_window)
     df["AvgVolume"] = df["Volume"].rolling(window=config.volume_lookback_days).mean()
+    df["AvgVolume_Prior"] = df["AvgVolume"].shift(1)
     df["Highest_High"] = df["High"].rolling(window=config.breakout_lookback_days).max().shift(1)
 
     last_row = df.iloc[-1]
     last_date = df.index[-1]
-    last_close, sma_trend, atr, avg_volume, highest_high, rsi = (
+    last_close, sma_trend, atr, avg_volume, highest_high, rsi, last_volume, avg_volume_prior = (
         last_row["Close"], last_row["SMA_TREND"], last_row["ATR"],
         last_row["AvgVolume"], last_row["Highest_High"], last_row["RSI"],
+        last_row["Volume"], last_row["AvgVolume_Prior"],
     )
     if pd.isna(last_close):
         raise RuntimeError("insufficient history: no Close price for the most recent bar")
@@ -238,6 +246,11 @@ def compute_breakout_levels(
     # decisions) -- don't exclude a ticker just because its RSI warmup
     # hasn't filled yet; leave it None rather than raising.
     rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+    # Same informational treatment for the volume ratio.
+    if pd.isna(avg_volume_prior) or float(avg_volume_prior) == 0:
+        volume_ratio = None
+    else:
+        volume_ratio = round(float(last_volume) / float(avg_volume_prior), 3)
 
     last_close, sma_trend, atr, avg_volume, highest_high = (
         float(last_close), float(sma_trend), float(atr), float(avg_volume), float(highest_high),
@@ -291,6 +304,7 @@ def compute_breakout_levels(
         "Trigger_Basis": f"{config.breakout_lookback_days}-day high (prior days only)",
         "Breakout_Signal": breakout_signal,
         "Relative_Strength": relative_strength,
+        "Volume_Ratio": volume_ratio,
         "Buy_Price": buy_price,
         "Sell_Price": sell_price,
         "Stop_Loss": stop_loss,
