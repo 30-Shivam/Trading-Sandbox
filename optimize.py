@@ -94,6 +94,7 @@ Usage:
 """
 
 import argparse
+import os
 import random
 import sys
 import time
@@ -123,7 +124,14 @@ UNDER_SAMPLED_PENALTY = -10.0  # well below any realistic sharpe_like, but finit
 # (2.13 of 1.0-3.0) so it's untouched.
 RSI_OVERSOLD_RANGE = (15.0, 70.0)
 ATR_TAKE_PROFIT_RANGE = (1.0, 3.0)
-STOP_LOSS_ATR_RANGE = (0.25, 3.0)
+# Upper bound widened 3.0 -> 5.0: the breakout search has now pinned
+# stop_loss_atr_multiplier at exactly 3.0 in TWO separate searches
+# (candidates v14 and v16) -- two data points is a stronger signal than
+# one that the old ceiling was cutting off the true optimum, the same
+# boundary-pinning pattern that showed up earlier this session for RSI.
+# Shared between both strategies' search spaces; harmless for RSI (no
+# evidence it wants a wider stop than its already-interior ~2.18 optimum).
+STOP_LOSS_ATR_RANGE = (0.25, 5.0)
 EXTENDED_DECLINE_PENALTY_PER_DAY_RANGE = (0.0, 4.0)
 EXTENDED_DECLINE_PENALTY_CAP_RANGE = (0.0, 50.0)
 
@@ -225,7 +233,7 @@ def summarize_weighted(fold_results: list, end: pd.Timestamp, half_life_days: fl
 
 def build_objective(
     ticker_data: dict, market_data: pd.DataFrame, folds: list, end: pd.Timestamp, half_life_days: float,
-    sector_lookup: dict[str, str], strategy: str = "rsi",
+    sector_lookup: dict[str, str], strategy: str = "rsi", max_workers: int | None = None,
 ):
     def objective(trial: optuna.Trial) -> float:
         if strategy == "rsi":
@@ -260,7 +268,8 @@ def build_objective(
         })
 
         fold_results = swingtrade.run_walk_forward(
-            ticker_data, market_data, folds, candidate, sector_lookup=sector_lookup, strategy=strategy
+            ticker_data, market_data, folds, candidate, sector_lookup=sector_lookup, strategy=strategy,
+            max_workers=max_workers,
         )
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
@@ -327,6 +336,13 @@ def main():
         "--holdout-seed", type=int, default=42,
         help="Seed for the ticker tune/holdout split, so the same split is reproducible run to run.",
     )
+    parser.add_argument(
+        "--max-workers", type=int, default=max(1, (os.cpu_count() or 4) - 4),
+        help="CPU cores used to parallelize walk-forward folds (see swingtrade.run_walk_forward). "
+             "Defaults to cpu_count()-4 (leaves headroom for the OS/other apps and keeps sustained "
+             "thermal load down) rather than using every core -- pass a higher number (or your full "
+             "core count) for maximum speed, or 1 to fall back to the old sequential behavior.",
+    )
     args = parser.parse_args()
 
     try:
@@ -388,9 +404,13 @@ def main():
         print("Ticker holdout validation disabled (--holdout-frac 0 or too few tickers) -- "
               "tuning and reporting on every ticker, old behavior.")
 
+    print(f"Using up to {args.max_workers} CPU core(s) for walk-forward parallelization "
+          f"(--max-workers to change; {os.cpu_count()} available).")
+
     baseline_config = swingtrade.TradingConfig(**{**swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": args.strategy})
     baseline_results = swingtrade.run_walk_forward(
-        tune_ticker_data, market_data, folds, baseline_config, sector_lookup=sector_lookup, strategy=args.strategy
+        tune_ticker_data, market_data, folds, baseline_config, sector_lookup=sector_lookup, strategy=args.strategy,
+        max_workers=args.max_workers,
     )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
@@ -403,7 +423,10 @@ def main():
     sampler = optuna.samplers.TPESampler(seed=args.seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
     study.optimize(
-        build_objective(tune_ticker_data, market_data, folds, end, args.recency_half_life_days, sector_lookup, args.strategy),
+        build_objective(
+            tune_ticker_data, market_data, folds, end, args.recency_half_life_days, sector_lookup, args.strategy,
+            max_workers=args.max_workers,
+        ),
         n_trials=args.trials, show_progress_bar=False,
     )
 
@@ -428,12 +451,14 @@ def main():
     holdout_metrics = {}
     if holdout_ticker_data:
         holdout_baseline_results = swingtrade.run_walk_forward(
-            holdout_ticker_data, market_data, folds, baseline_config, sector_lookup=sector_lookup, strategy=args.strategy
+            holdout_ticker_data, market_data, folds, baseline_config, sector_lookup=sector_lookup,
+            strategy=args.strategy, max_workers=args.max_workers,
         )
         holdout_baseline_metrics = summarize_weighted(holdout_baseline_results, end, args.recency_half_life_days)
 
         holdout_candidate_results = swingtrade.run_walk_forward(
-            holdout_ticker_data, market_data, folds, candidate_config, sector_lookup=sector_lookup, strategy=args.strategy
+            holdout_ticker_data, market_data, folds, candidate_config, sector_lookup=sector_lookup,
+            strategy=args.strategy, max_workers=args.max_workers,
         )
         holdout_candidate_metrics = summarize_weighted(holdout_candidate_results, end, args.recency_half_life_days)
 

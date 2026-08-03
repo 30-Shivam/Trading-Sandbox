@@ -257,18 +257,26 @@ allocate real capital the way the dashboard's "Total Available Cash" does).
 py -3 optimize.py --trials 50 --start 2021-06-01 --end 2026-07-26
 ```
 
-**Runs across all your CPU cores by default now.** `swingtrade.run_walk_forward()`
+**Runs across multiple CPU cores by default now.** `swingtrade.run_walk_forward()`
 (the shared engine under every script here — `optimize.py`, `run_backtest.py`,
 `evaluate_config.py`, `check_survivorship_bias.py`) dispatches its
 walk-forward folds across a process pool instead of one at a time, since
 folds don't depend on each other. You'll see multiple `py.exe`/`python`
-processes and full CPU usage while a search runs — expected, not a bug.
+processes and elevated CPU usage while a search runs — expected, not a bug.
 Verified to produce byte-identical results to the old sequential behavior
 (diffed every fold's trades, not just summary stats) before shipping, with
-a real ~5x speedup measured and likely more at full watchlist scale. If
-you ever need the old one-at-a-time behavior (e.g. to isolate a timing
-issue), pass `parallel=False` to `run_walk_forward()` directly in a script
-— no CLI flag for it yet, since the default has no known downside.
+a real ~5x speedup measured and likely more at full watchlist scale.
+
+`optimize.py --max-workers N` controls how many cores it uses. Default is
+`cpu_count() - 4` (not every core) — sustained full-core usage measurably
+raises CPU temperature, so `run_walk_forward()` itself defaults to leaving
+some headroom rather than assuming exclusive use of the machine; this
+applies to every caller (`run_backtest.py`/`evaluate_config.py`/
+`check_survivorship_bias.py` included, even though only `optimize.py`
+exposes it as a flag — those three inherit the same gentler default
+automatically). Pass a higher number (up to your full `os.cpu_count()`)
+for maximum speed if that tradeoff is fine for your setup, or
+`--max-workers 1` to fall back to the old one-at-a-time behavior entirely.
 
 Searches `rsi_oversold_threshold` / `atr_take_profit_multiplier` /
 `stop_loss_atr_multiplier` / `extended_decline_penalty_per_day` /

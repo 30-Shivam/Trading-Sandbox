@@ -823,13 +823,22 @@ def run_walk_forward(
     `parallel=False` to force the old sequential behavior (e.g. for a
     direct correctness comparison, or if a single fold makes pool startup
     overhead not worth it -- also skipped automatically for <=1 fold).
-    `max_workers` defaults to os.cpu_count() (ProcessPoolExecutor's own
-    default) if not given."""
+
+    `max_workers` defaults to cpu_count()-4 (min 1), not the full core
+    count -- sustained all-core usage during a long search measurably
+    raises CPU temperature, and this leaves headroom for the OS/other apps
+    rather than assuming exclusive use of the machine. Pass an explicit
+    value (e.g. your full `os.cpu_count()`) for maximum speed if that
+    tradeoff is fine for your setup, or 1 for the gentlest possible
+    (though `parallel=False` is cheaper than a 1-worker pool for that)."""
     if not parallel or len(folds) <= 1:
         return [
             _run_fold_sequential(fold, ticker_data, market_data, config, earnings_data, sector_lookup, strategy)
             for fold in folds
         ]
+
+    if max_workers is None:
+        max_workers = max(1, (os.cpu_count() or 4) - 4)
 
     with ProcessPoolExecutor(
         max_workers=max_workers, initializer=_init_worker, initargs=(ticker_data, market_data),
