@@ -84,7 +84,20 @@ def scan_tickers(
     `config.strategy` -- "rsi" (default, compute_levels) or "breakout"
     (compute_breakout_levels) -- so callers don't need to know which
     strategy produced the active config; the returned dicts are
-    schema-compatible either way (see compute_breakout_levels' docstring)."""
+    schema-compatible either way (see compute_breakout_levels' docstring).
+
+    For "breakout", also fetches the market index ONCE (not per ticker) to
+    enable Relative_Strength -- see compute_relative_strength(). Failure to
+    fetch it degrades gracefully (Relative_Strength stays None, informational
+    only unless config.breakout_relative_strength_min is enabled) rather than
+    failing the whole scan over a single extra data point."""
+    market_df = None
+    if config.strategy == "breakout":
+        try:
+            market_df = fetch_data(MARKET_INDEX_TICKER)
+        except Exception:
+            market_df = None
+
     results = []
     skipped = []
     for i, ticker in enumerate(tickers):
@@ -99,7 +112,8 @@ def scan_tickers(
             top_headline = headlines[0] if headlines else ""
             if config.strategy == "breakout":
                 levels = swingtrade.compute_breakout_levels(
-                    ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
+                    ticker, df, config, next_earnings_date=next_earnings,
+                    top_headline=top_headline, market_df=market_df,
                 )
             else:
                 levels = swingtrade.compute_levels(

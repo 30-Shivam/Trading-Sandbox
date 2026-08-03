@@ -81,9 +81,9 @@ showed RSI-oversold timing carries no real predictive value over random entry
 days). --strategy rsi (default) searches the original RSI/ATR/stop-loss/
 streak-penalty space; --strategy breakout searches breakout_lookback_days/
 atr_take_profit_multiplier/stop_loss_atr_multiplier/
-breakout_rsi_overbought_threshold instead -- everything above (WFO, recency
-weighting, correlation-adjustment, ticker-holdout, champion/challenger)
-applies identically to either.
+breakout_rsi_overbought_threshold/breakout_relative_strength_min instead --
+everything above (WFO, recency weighting, correlation-adjustment,
+ticker-holdout, champion/challenger) applies identically to either.
 
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
@@ -137,6 +137,14 @@ BREAKOUT_LOOKBACK_RANGE = (10, 80)
 # rather than assuming a hand-picked threshold -- this is itself an unvalidated
 # hypothesis (improvements.txt item 7a) until a real search says otherwise.
 BREAKOUT_RSI_OVERBOUGHT_RANGE = (50.0, 100.0)
+# -100 = practical "disabled"; 0 requires the ticker to at least match the
+# market over the breakout window, positive values require genuine
+# outperformance. Lower bound (-50) is intentionally permissive so the
+# search can effectively find "no meaningful filtering" if that's actually
+# best, rather than being forced to always filter -- same "let a real
+# search decide" reasoning as the overbought threshold above
+# (improvements.txt item 5).
+BREAKOUT_RELATIVE_STRENGTH_RANGE = (-50.0, 15.0)
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -233,6 +241,9 @@ def build_objective(
                 "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
                 "breakout_rsi_overbought_threshold": trial.suggest_float(
                     "breakout_rsi_overbought_threshold", *BREAKOUT_RSI_OVERBOUGHT_RANGE
+                ),
+                "breakout_relative_strength_min": trial.suggest_float(
+                    "breakout_relative_strength_min", *BREAKOUT_RELATIVE_STRENGTH_RANGE
                 ),
             }
         candidate = swingtrade.TradingConfig(**{

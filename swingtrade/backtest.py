@@ -397,6 +397,13 @@ def simulate_breakout_signals(
     improvements.txt) -- kept as a plain skip, not baked into the trigger
     definition itself, so it stays a searchable/toggleable parameter.
 
+    A breakout whose Relative_Strength (ticker return minus market return
+    over the same breakout_lookback_days window -- see
+    compute_relative_strength) is below config.breakout_relative_strength_min
+    is also skipped -- a stock breaking out only because the whole market is
+    ripping isn't the same as one genuinely beating the market. Default
+    (-100.0) is a practical no-op.
+
     `ohlcv`/`market_ohlcv` need the same leading-history buffer as
     simulate_signals() -- see LOOKBACK_BUFFER_BARS.
     """
@@ -418,7 +425,7 @@ def simulate_breakout_signals(
 
         price_window = ohlcv.loc[:as_of].tail(lookback_bars)
         try:
-            levels = compute_breakout_levels(ticker, price_window, config)
+            levels = compute_breakout_levels(ticker, price_window, config, market_df=market_window)
         except RuntimeError:
             continue
 
@@ -426,6 +433,9 @@ def simulate_breakout_signals(
             continue
         rsi = levels.get("RSI")
         if rsi is not None and rsi >= config.breakout_rsi_overbought_threshold:
+            continue
+        rel_strength = levels.get("Relative_Strength")
+        if rel_strength is not None and rel_strength < config.breakout_relative_strength_min:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]

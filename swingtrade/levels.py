@@ -145,12 +145,38 @@ def compute_levels(
     }
 
 
+def compute_relative_strength(
+    ticker_df: pd.DataFrame, market_df: pd.DataFrame, lookback_days: int
+) -> float | None:
+    """Ticker's total return over the trailing `lookback_days`, minus the
+    market's (e.g. SPY) return over the identical window -- a simple
+    additive relative-strength measure. Positive means the ticker beat the
+    market over that window, negative means it lagged. Both `ticker_df` and
+    `market_df` should already be truncated at `as_of` by the caller (no
+    look-ahead) and are read via `.iloc[-(lookback_days + 1)]` /
+    `.iloc[-1]`, so this is safe to call anywhere compute_breakout_levels()
+    is. Returns None if either series doesn't have enough history yet --
+    informational, not a reason to exclude a ticker on its own."""
+    if len(ticker_df) <= lookback_days or len(market_df) <= lookback_days:
+        return None
+    ticker_start = float(ticker_df["Close"].iloc[-(lookback_days + 1)])
+    ticker_end = float(ticker_df["Close"].iloc[-1])
+    market_start = float(market_df["Close"].iloc[-(lookback_days + 1)])
+    market_end = float(market_df["Close"].iloc[-1])
+    if ticker_start == 0 or market_start == 0:
+        return None
+    ticker_return = (ticker_end - ticker_start) / ticker_start
+    market_return = (market_end - market_start) / market_start
+    return ticker_return - market_return
+
+
 def compute_breakout_levels(
     ticker: str,
     df: pd.DataFrame,
     config: TradingConfig = DEFAULT_CONFIG,
     next_earnings_date=None,
     top_headline: str = "",
+    market_df: pd.DataFrame | None = None,
 ) -> dict:
     """Compute breakout trigger/stop/target levels for one ticker's OHLCV
     history -- the trend-following counterpart to compute_levels()'s
@@ -178,6 +204,12 @@ def compute_breakout_levels(
     optional and behave exactly as in compute_levels(); backtest callers
     omit them (Catalyst_Warning stays False, matching simulate_signals'
     same behavior when earnings_dates isn't supplied).
+
+    `market_df` (optional) enables Relative_Strength (see
+    compute_relative_strength()) -- the ticker's return over
+    config.breakout_lookback_days minus the market's return over the same
+    window, informational unless config.breakout_relative_strength_min is
+    changed from its disabled default. None if market_df isn't supplied.
     """
     df = df.copy()
     df["SMA_TREND"] = df["Close"].rolling(window=config.sma_trend_window).mean()
@@ -243,6 +275,12 @@ def compute_breakout_levels(
         catalyst_warning = False
         next_earnings_date_out = None
 
+    relative_strength = None
+    if market_df is not None:
+        relative_strength = compute_relative_strength(df, market_df, config.breakout_lookback_days)
+        if relative_strength is not None:
+            relative_strength = round(relative_strength, 4)
+
     return {
         "Ticker": ticker,
         "As_Of": last_date.date(),
@@ -252,6 +290,7 @@ def compute_breakout_levels(
         "Trigger_Price": trigger_price,
         "Trigger_Basis": f"{config.breakout_lookback_days}-day high (prior days only)",
         "Breakout_Signal": breakout_signal,
+        "Relative_Strength": relative_strength,
         "Buy_Price": buy_price,
         "Sell_Price": sell_price,
         "Stop_Loss": stop_loss,

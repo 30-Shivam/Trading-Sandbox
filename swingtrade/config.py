@@ -122,6 +122,19 @@ class TradingConfig:
                                             # practical "disabled" value --
                                             # RSI essentially never reaches
                                             # exactly 100
+    breakout_relative_strength_min: float = -100.0  # skip a breakout signal
+                                            # if the ticker's return over the
+                                            # trailing breakout_lookback_days
+                                            # window, minus SPY's return over
+                                            # the same window, is below this
+                                            # (a stock breaking out only
+                                            # because the whole market is
+                                            # ripping isn't the same as one
+                                            # genuinely beating the market).
+                                            # -100.0 is the practical
+                                            # "disabled" value -- relative
+                                            # returns essentially never fall
+                                            # that far
 
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion) or "breakout" (simulate_breakout_signals,
