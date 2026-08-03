@@ -5,6 +5,7 @@ venv/
 .env
 swing_orders.csv
 ARCHITECTURE_PLAN.md
+SESSION_SUMMARY.txt
 
 #Ruflo
 .agents
