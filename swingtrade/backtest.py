@@ -55,7 +55,9 @@ but a real one. See optimize.py's summarize_weighted() for where this
 combines with the existing recency weighting.
 """
 
+import os
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
 import pandas as pd
@@ -737,6 +739,60 @@ class FoldResult:
     out_sample_metrics: dict
 
 
+def _run_fold_sequential(
+    fold: Fold, ticker_data: dict[str, pd.DataFrame], market_data: pd.DataFrame,
+    config: TradingConfig, earnings_data: dict, sector_lookup: dict, strategy: str,
+) -> FoldResult:
+    """The actual per-fold work, shared by both the sequential and
+    parallel paths of run_walk_forward() -- one fold's in-sample and
+    out-of-sample backtest, for every ticker. Kept as a plain module-level
+    function (not a closure) so it's picklable for ProcessPoolExecutor."""
+    in_trades = run_backtest(
+        ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config,
+        earnings_data, sector_lookup, strategy,
+    )
+    out_trades = run_backtest(
+        ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config,
+        earnings_data, sector_lookup, strategy,
+    )
+    return FoldResult(
+        fold=fold,
+        in_sample_trades=in_trades,
+        out_sample_trades=out_trades,
+        in_sample_metrics=summarize_trades(in_trades),
+        out_sample_metrics=summarize_trades(out_trades),
+    )
+
+
+# Populated once per worker process by _init_worker() -- module-level so
+# _run_fold_worker() (which only receives small per-task arguments, not the
+# full ticker_data/market_data) can reach it without re-sending the whole
+# OHLCV universe over IPC for every one of the 56+ folds. Each worker process
+# gets its own copy via the ProcessPoolExecutor initializer, set ONCE when
+# the pool starts, not once per fold.
+_worker_ticker_data: dict[str, pd.DataFrame] | None = None
+_worker_market_data: pd.DataFrame | None = None
+
+
+def _init_worker(ticker_data: dict[str, pd.DataFrame], market_data: pd.DataFrame) -> None:
+    global _worker_ticker_data, _worker_market_data
+    _worker_ticker_data = ticker_data
+    _worker_market_data = market_data
+
+
+def _run_fold_worker(
+    fold: Fold, config: TradingConfig, earnings_data: dict, sector_lookup: dict, strategy: str,
+) -> FoldResult:
+    """Same work as _run_fold_sequential(), but reads ticker_data/market_data
+    from this worker process's own module-level copy (set once by
+    _init_worker()) instead of taking them as arguments -- only `fold` and
+    `config` (small, cheap to pickle) actually cross the process boundary
+    per task."""
+    return _run_fold_sequential(
+        fold, _worker_ticker_data, _worker_market_data, config, earnings_data, sector_lookup, strategy,
+    )
+
+
 def run_walk_forward(
     ticker_data: dict[str, pd.DataFrame],
     market_data: pd.DataFrame,
@@ -745,28 +801,41 @@ def run_walk_forward(
     earnings_data: dict[str, pd.DatetimeIndex] | None = None,
     sector_lookup: dict[str, str] | None = None,
     strategy: str = "rsi",
+    parallel: bool = True,
+    max_workers: int | None = None,
 ) -> list[FoldResult]:
     """Run the backtest across every fold, in-sample and out-of-sample
     separately. Optuna (Phase 5) evaluates a candidate config by scoring it
     across the aggregate of every fold's out_sample_metrics -- never a
     single fold's in-sample fit. `sector_lookup` (optional) tags trades for
     compute_cluster_weights(). `strategy` (see run_backtest) selects "rsi"
-    (default) or "breakout"."""
-    results = []
-    for fold in folds:
-        in_trades = run_backtest(
-            ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config,
-            earnings_data, sector_lookup, strategy,
-        )
-        out_trades = run_backtest(
-            ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config,
-            earnings_data, sector_lookup, strategy,
-        )
-        results.append(FoldResult(
-            fold=fold,
-            in_sample_trades=in_trades,
-            out_sample_trades=out_trades,
-            in_sample_metrics=summarize_trades(in_trades),
-            out_sample_metrics=summarize_trades(out_trades),
-        ))
-    return results
+    (default) or "breakout".
+
+    Folds are fully independent (no shared state, no data dependency
+    between them), so by default (`parallel=True`) this dispatches them
+    across a process pool instead of looping sequentially -- this was the
+    dominant cost of every Optuna search this session (each trial walks
+    every fold, for every ticker, day by day). The pool's initializer loads
+    ticker_data/market_data into each worker ONCE when the pool starts, not
+    once per fold, so only the lightweight per-fold Fold/config objects
+    actually cross the process boundary on each task. Results are returned
+    in the same order as `folds` regardless of completion order. Pass
+    `parallel=False` to force the old sequential behavior (e.g. for a
+    direct correctness comparison, or if a single fold makes pool startup
+    overhead not worth it -- also skipped automatically for <=1 fold).
+    `max_workers` defaults to os.cpu_count() (ProcessPoolExecutor's own
+    default) if not given."""
+    if not parallel or len(folds) <= 1:
+        return [
+            _run_fold_sequential(fold, ticker_data, market_data, config, earnings_data, sector_lookup, strategy)
+            for fold in folds
+        ]
+
+    with ProcessPoolExecutor(
+        max_workers=max_workers, initializer=_init_worker, initargs=(ticker_data, market_data),
+    ) as executor:
+        futures = [
+            executor.submit(_run_fold_worker, fold, config, earnings_data, sector_lookup, strategy)
+            for fold in folds
+        ]
+        return [f.result() for f in futures]
