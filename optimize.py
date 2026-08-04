@@ -115,6 +115,9 @@ REQUEST_DELAY_SEC = 0.5
 
 MIN_TRADES_FOR_SCORE = 15    # penalize candidates with too few pooled trades to trust
 UNDER_SAMPLED_PENALTY = -10.0  # well below any realistic sharpe_like, but finite (no inf/NaN into Optuna)
+UNDER_SAMPLED_DRAWDOWN_PENALTY = 100.0  # --multi-objective only: worst-possible (100%) drawdown for an
+                                         # under-sampled trial, so it's dominated on both axes rather than
+                                         # accidentally looking "safe" by having no trades to draw down from
 
 # Search space bounds for the tunables this study is allowed to move.
 # A prior run pinned rsi_oversold_threshold at 54.9/55 and stop_loss_atr_multiplier
@@ -248,8 +251,21 @@ def summarize_weighted(fold_results: list, end: pd.Timestamp, half_life_days: fl
 def build_objective(
     ticker_data: dict, market_data: pd.DataFrame, folds: list, end: pd.Timestamp, half_life_days: float,
     sector_lookup: dict[str, str], strategy: str = "rsi", max_workers: int | None = None,
+    multi_objective: bool = False,
 ):
-    def objective(trial: optuna.Trial) -> float:
+    """`multi_objective=False` (default) is byte-for-byte the original
+    single-scalar-objective behavior -- unchanged, so every existing script/
+    workflow that assumes a single-objective study (study.best_trial, the
+    candidate-writing flow in main()) keeps working exactly as before.
+
+    `multi_objective=True` makes the objective return a 2-tuple instead:
+    (sharpe_like, max_drawdown) -- see swingtrade.compute_max_drawdown()'s
+    docstring for why sharpe_like alone is blind to tail risk. Optuna then
+    searches for the Pareto front (configs where no other trial is BOTH a
+    higher sharpe_like AND a lower drawdown) instead of a single winner --
+    see main()'s post-search handling for how one candidate still gets
+    selected from that front to actually write to System_Config."""
+    def objective(trial: optuna.Trial):
         if strategy == "rsi":
             params = {
                 "rsi_oversold_threshold": trial.suggest_float("rsi_oversold_threshold", *RSI_OVERSOLD_RANGE),
@@ -295,9 +311,16 @@ def build_objective(
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
 
-        if metrics["effective_trade_count"] < MIN_TRADES_FOR_SCORE or metrics["sharpe_like"] is None:
-            return UNDER_SAMPLED_PENALTY
-        return metrics["sharpe_like"]
+        under_sampled = metrics["effective_trade_count"] < MIN_TRADES_FOR_SCORE or metrics["sharpe_like"] is None
+
+        if not multi_objective:
+            return UNDER_SAMPLED_PENALTY if under_sampled else metrics["sharpe_like"]
+
+        max_dd = swingtrade.compute_max_drawdown(swingtrade.flatten_out_sample_trades(fold_results))
+        trial.set_user_attr("max_drawdown", max_dd)
+        if under_sampled:
+            return UNDER_SAMPLED_PENALTY, UNDER_SAMPLED_DRAWDOWN_PENALTY
+        return metrics["sharpe_like"], (max_dd if max_dd is not None else UNDER_SAMPLED_DRAWDOWN_PENALTY)
 
     return objective
 
@@ -374,6 +397,15 @@ def main():
              "thermal load down) rather than using every core -- pass a higher number (or your full "
              "core count) for maximum speed, or 1 to fall back to the old sequential behavior.",
     )
+    parser.add_argument(
+        "--multi-objective", action="store_true",
+        help="Also optimize for max_drawdown (see swingtrade.compute_max_drawdown), not just "
+             "sharpe_like -- finds the Pareto front (configs where no trial is both a higher "
+             "sharpe_like AND a lower drawdown) instead of a single scalar winner, then picks "
+             "the highest-sharpe_like trial on that front (still clearing MIN_TRADES_FOR_SCORE) "
+             "to actually write as a candidate. Off by default -- the original single-objective "
+             "search is unchanged unless you pass this.",
+    )
     args = parser.parse_args()
 
     try:
@@ -449,31 +481,65 @@ def main():
         if args.recency_half_life_days > 0 else "(uniform pooling)"
     )
     print(f"\nBaseline (DEFAULT_CONFIG, strategy={args.strategy}) pooled out-of-sample metrics on TUNE tickers {weight_note}: {baseline_metrics}")
+    if args.multi_objective:
+        baseline_drawdown = swingtrade.compute_max_drawdown(swingtrade.flatten_out_sample_trades(baseline_results))
+        print(f"  Baseline max_drawdown: {baseline_drawdown}%")
     report_live_outcomes_context()
 
     sampler = optuna.samplers.TPESampler(seed=args.seed)
-    study = optuna.create_study(direction="maximize", sampler=sampler)
+    if args.multi_objective:
+        study = optuna.create_study(directions=["maximize", "minimize"], sampler=sampler)
+    else:
+        study = optuna.create_study(direction="maximize", sampler=sampler)
     study.optimize(
         build_objective(
             tune_ticker_data, market_data, folds, end, args.recency_half_life_days, sector_lookup, args.strategy,
-            max_workers=args.max_workers,
+            max_workers=args.max_workers, multi_objective=args.multi_objective,
         ),
         n_trials=args.trials, show_progress_bar=False,
     )
 
-    best = study.best_trial
-    best_metrics = best.user_attrs.get("metrics", {})
-    print()
-    print(f"Best trial #{best.number}: score(sharpe_like or penalty)={best.value:.4f}")
-    print(f"  params: {best.params}")
-    print(f"  metrics (TUNE tickers): {best_metrics}")
-
-    if best.value <= UNDER_SAMPLED_PENALTY:
+    if args.multi_objective:
+        pareto = study.best_trials
         print()
-        print("[WARN] Even the best trial was under-sampled or had no valid sharpe_like -- "
-              "not writing a candidate. Try a wider date range, more tickers, or a longer "
-              "in-sample window.")
-        return
+        print(f"Pareto front: {len(pareto)} non-dominated trial(s) (sharpe_like, max_drawdown%)")
+        for t in sorted(pareto, key=lambda t: -t.values[0]):
+            print(f"  Trial #{t.number}: sharpe_like={t.values[0]:.4f}, max_drawdown={t.values[1]:.2f}%  params={t.params}")
+
+        eligible = [t for t in pareto if t.values[0] > UNDER_SAMPLED_PENALTY]
+        if not eligible:
+            print()
+            print("[WARN] No Pareto-optimal trial cleared the under-sampled floor -- not writing "
+                  "a candidate. Try a wider date range, more tickers, or a longer in-sample window.")
+            return
+        # Selection heuristic, stated plainly: highest sharpe_like among the
+        # Pareto-optimal trials (i.e. among configs where no OTHER trial beat
+        # them on both axes simultaneously) -- keeps the existing "one
+        # candidate gets written" champion/challenger flow intact rather than
+        # asking a human to pick blindly, while the full front (printed
+        # above) still shows what was traded off to get there.
+        best = max(eligible, key=lambda t: t.values[0])
+        best_metrics = best.user_attrs.get("metrics", {})
+        best_drawdown = best.user_attrs.get("max_drawdown")
+        print()
+        print(f"Selected from Pareto front, trial #{best.number}: sharpe_like={best.values[0]:.4f}, max_drawdown={best.values[1]:.2f}%")
+        print(f"  params: {best.params}")
+        print(f"  metrics (TUNE tickers): {best_metrics}")
+    else:
+        best = study.best_trial
+        best_metrics = best.user_attrs.get("metrics", {})
+        best_drawdown = None
+        print()
+        print(f"Best trial #{best.number}: score(sharpe_like or penalty)={best.value:.4f}")
+        print(f"  params: {best.params}")
+        print(f"  metrics (TUNE tickers): {best_metrics}")
+
+        if best.value <= UNDER_SAMPLED_PENALTY:
+            print()
+            print("[WARN] Even the best trial was under-sampled or had no valid sharpe_like -- "
+                  "not writing a candidate. Try a wider date range, more tickers, or a longer "
+                  "in-sample window.")
+            return
 
     candidate_config = swingtrade.TradingConfig(**{
         **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": args.strategy, **best.params,
@@ -497,6 +563,11 @@ def main():
         print(f"=== Ticker-universe holdout validation ({len(holdout_tickers)} tickers Optuna never saw) ===")
         print(f"  baseline (DEFAULT_CONFIG, strategy={args.strategy}) on holdout: {holdout_baseline_metrics}")
         print(f"  candidate (winning trial) on holdout: {holdout_candidate_metrics}")
+        if args.multi_objective:
+            holdout_baseline_dd = swingtrade.compute_max_drawdown(swingtrade.flatten_out_sample_trades(holdout_baseline_results))
+            holdout_candidate_dd = swingtrade.compute_max_drawdown(swingtrade.flatten_out_sample_trades(holdout_candidate_results))
+            print(f"  baseline max_drawdown on holdout: {holdout_baseline_dd}%")
+            print(f"  candidate max_drawdown on holdout: {holdout_candidate_dd}%")
         if (holdout_candidate_metrics.get("effective_trade_count") or 0) < MIN_TRADES_FOR_SCORE:
             print("  [WARN] Holdout effective_trade_count is thin -- treat this validation as a weak "
                   "signal, not proof either way. Consider a lower --holdout-frac or more tickers.")
@@ -509,13 +580,20 @@ def main():
             "baseline": holdout_baseline_metrics,
             "candidate": holdout_candidate_metrics,
         }
+        if args.multi_objective:
+            holdout_metrics["baseline_max_drawdown"] = holdout_baseline_dd
+            holdout_metrics["candidate_max_drawdown"] = holdout_candidate_dd
 
+    best_sharpe = best.values[0] if args.multi_objective else best.value
     notes = (
-        f"Optuna search (strategy={args.strategy}): {args.trials} trials, {start.date()}..{end.date()}, "
+        f"Optuna search (strategy={args.strategy}{'  multi-objective' if args.multi_objective else ''}): "
+        f"{args.trials} trials, {start.date()}..{end.date()}, "
         f"{len(tune_ticker_data)} tune / {len(holdout_ticker_data)} holdout ticker(s), {len(folds)} fold(s), "
         f"recency_half_life_days={args.recency_half_life_days:.0f}. "
-        f"Baseline sharpe_like={baseline_metrics.get('sharpe_like')}, best sharpe_like={best.value:.4f}."
+        f"Baseline sharpe_like={baseline_metrics.get('sharpe_like')}, best sharpe_like={best_sharpe:.4f}."
     )
+    if args.multi_objective:
+        notes += f" Selected trial max_drawdown={best_drawdown}% (Pareto front had {len(pareto)} trial(s))."
     if holdout_metrics:
         notes += (
             f" Holdout ({len(holdout_tickers)} tickers): baseline sharpe_like="

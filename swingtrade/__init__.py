@@ -8,6 +8,8 @@ from .backtest import (
     Fold,
     FoldResult,
     compute_cluster_weights,
+    compute_max_drawdown,
+    flatten_out_sample_trades,
     generate_folds,
     run_backtest,
     run_walk_forward,
@@ -49,5 +51,7 @@ __all__ = [
     "summarize_trades_weighted",
     "summarize_by_catalyst",
     "compute_cluster_weights",
+    "compute_max_drawdown",
+    "flatten_out_sample_trades",
     "run_walk_forward",
 ]

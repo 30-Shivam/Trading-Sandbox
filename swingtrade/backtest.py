@@ -770,6 +770,50 @@ def summarize_by_catalyst(trades: list[dict]) -> dict:
     }
 
 
+def compute_max_drawdown(trades: list[dict]) -> float | None:
+    """Max peak-to-trough decline (%) of a SEQUENTIAL equity curve built by
+    compounding resolved trades in chronological (entry_date) order --
+    optimize.py's default single-objective search only ever optimizes
+    sharpe_like (mean/stdev), which is blind to tail risk: a config can
+    "win" by juicing consistency while quietly tolerating a nastier
+    worst-case drawdown. This gives Optuna's optional multi-objective mode
+    (see optimize.py --multi-objective) a second axis to actually see that.
+
+    Deliberately a simplification, not a precise portfolio simulation: this
+    engine doesn't track concurrent-position capital allocation (multiple
+    tickers' trades can genuinely overlap in real calendar time), so this
+    treats the pooled trade list as if positions were taken one at a time,
+    compounding sequentially. That's a standard, defensible proxy for how
+    much LOSS-CLUSTERING a config produces -- not a literal "what would my
+    account balance have done" claim. Returns None if there are no
+    resolved (non-OPEN) trades."""
+    resolved = [t for t in trades if t["status"] != "OPEN"]
+    if not resolved:
+        return None
+    ordered = sorted(resolved, key=lambda t: t["entry_date"])
+    equity = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    for t in ordered:
+        equity *= (1 + t["pnl_pct"] / 100)
+        peak = max(peak, equity)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - equity) / peak)
+    return round(max_dd * 100, 2)
+
+
+def flatten_out_sample_trades(fold_results: list) -> list[dict]:
+    """All resolved (non-OPEN) out-of-sample trades across every fold,
+    pooled WITHOUT weighting -- unlike summarize_weighted() (which needs
+    each trade's originating fold to apply a recency weight), this is just
+    a plain chronological trade list, which is what compute_max_drawdown()
+    needs."""
+    trades = []
+    for fr in fold_results:
+        trades.extend(t for t in fr.out_sample_trades if t["status"] != "OPEN")
+    return trades
+
+
 @dataclass
 class FoldResult:
     fold: Fold
