@@ -4,7 +4,18 @@ Document shape (one per ticker per trading day):
     {
         "ticker": str,
         "signal_date": str,          # ISO date, matches compute_levels' As_Of
-        "signal": "Strong Buy" | "Buy",
+        "signal": "Strong Buy" | "Buy" | "Watch",
+        "tier": "actionable" | "research",  # "actionable" = Strong Buy/Buy
+                                      # (real capital-allocation-eligible);
+                                      # "research" = Watch, logged/settled
+                                      # purely to accumulate live outcome
+                                      # data faster than actionable-only
+                                      # signals allow, WITHOUT touching real
+                                      # capital -- see improvements.txt. A
+                                      # missing tier field (pre-existing
+                                      # documents written before this field
+                                      # existed) means "actionable" -- every
+                                      # signal logged before this was one.
         "trade_score": float,
         "buy_price": float, "sell_price": float, "stop_loss": float,
         "rrr": float, "rsi": float, "atr": float,
@@ -21,11 +32,26 @@ Document shape (one per ticker per trading day):
         "created_at": datetime, "updated_at": datetime,
     }
 
-Signals are logged for the *pre-allocation* Signal (Strong Buy / Buy as
-scored by swingtrade.add_trade_score), not the capital-allocator's overlay --
-"Insufficient Funds" reflects a personal cash constraint on a given day, not
-a change in the underlying technical signal, and the learning loop (Phase 5)
-needs to judge the signal itself independent of that.
+Signals are logged for the *pre-allocation* Signal (Strong Buy / Buy / Watch
+as scored by swingtrade.add_trade_score/add_breakout_trade_score), not the
+capital-allocator's overlay -- "Insufficient Funds" reflects a personal cash
+constraint on a given day, not a change in the underlying technical signal,
+and the learning loop (Phase 5) needs to judge the signal itself independent
+of that. allocate_capital() only ever acts on Strong Buy/Buy rows (skips
+everything else including Watch unconditionally), so logging the research
+tier here can never leak into a real capital-allocation decision.
+
+Research-tier (Watch) logging exists specifically because live outcome-data
+volume was bottlenecked -- not by trading capacity (settle_trades.py already
+grades every logged signal against real subsequent price action whether or
+not you traded it, confirmed_filled is purely a reporting split, see
+settle_trades.py), but by how selective the active config is: only Strong
+Buy/Buy ever got logged, and a selective config like v19 fires rarely. Watch
+(one tier below actionable) is a natural next slice: still meaningfully
+scored, far more frequent, and directly useful for checking whether the
+Trade_Score/Signal thresholds themselves are well-calibrated (do outcomes
+actually improve as score rises through Watch -> Buy -> Strong Buy, the way
+the score implies they should).
 
 confirmed_filled deliberately does NOT appear in _build_document's $set:
 log_trade_signal() re-runs every time the scanner re-scans (same ticker,
@@ -43,7 +69,13 @@ import pandas as pd
 from .mongo import get_db
 
 COLLECTION_NAME = "Trade_Signals"
-LOGGABLE_SIGNALS = ("Strong Buy", "Buy")
+ACTIONABLE_SIGNALS = ("Strong Buy", "Buy")
+RESEARCH_SIGNALS = ("Watch",)
+LOGGABLE_SIGNALS = ACTIONABLE_SIGNALS + RESEARCH_SIGNALS
+
+
+def _tier_for_signal(signal: str) -> str:
+    return "actionable" if signal in ACTIONABLE_SIGNALS else "research"
 
 
 def ensure_indexes() -> None:
@@ -68,6 +100,7 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime) -> dict:
         "ticker": _native(row["Ticker"]),
         "signal_date": str(row["As_Of"]),
         "signal": _native(row["Signal"]),
+        "tier": _tier_for_signal(row["Signal"]),
         "trade_score": _native(row["Trade_Score"]),
         "buy_price": _native(row["Buy_Price"]),
         "sell_price": _native(row["Sell_Price"]),
@@ -103,13 +136,16 @@ def log_trade_signal(row: dict, config_snapshot: dict) -> None:
     )
 
 
-def log_trade_signals(df: pd.DataFrame, config_snapshot: dict) -> int:
-    """Log every Strong Buy / Buy row in df (expects pre-allocation Signal
-    values). Returns the number of signals written."""
+def log_trade_signals(df: pd.DataFrame, config_snapshot: dict) -> dict[str, int]:
+    """Log every Strong Buy / Buy / Watch row in df (expects pre-allocation
+    Signal values) -- Strong Buy/Buy tagged tier="actionable", Watch tagged
+    tier="research" (see module docstring for why). Returns
+    {"actionable": n, "research": m}."""
     eligible = df[df["Signal"].isin(LOGGABLE_SIGNALS)]
     for _, row in eligible.iterrows():
         log_trade_signal(row.to_dict(), config_snapshot)
-    return len(eligible)
+    actionable_count = int(eligible["Signal"].isin(ACTIONABLE_SIGNALS).sum())
+    return {"actionable": actionable_count, "research": len(eligible) - actionable_count}
 
 
 def get_unsettled_signals() -> list[dict]:
@@ -156,11 +192,13 @@ def unconfirm_fill(ticker: str, signal_date: str) -> None:
 
 
 def get_signals_pending_confirmation() -> list[dict]:
-    """Loggable (Strong Buy/Buy) signals not yet marked confirmed_filled,
-    most recent first -- for a human to review and confirm or ignore."""
+    """Actionable (Strong Buy/Buy) signals not yet marked confirmed_filled,
+    most recent first -- for a human to review and confirm or ignore.
+    Deliberately excludes the research tier (Watch) -- those were never
+    meant to be traded/confirmed, only tracked for outcome data."""
     db = get_db()
     return list(
         db[COLLECTION_NAME]
-        .find({"signal": {"$in": list(LOGGABLE_SIGNALS)}, "confirmed_filled": {"$ne": True}})
+        .find({"signal": {"$in": list(ACTIONABLE_SIGNALS)}, "confirmed_filled": {"$ne": True}})
         .sort("signal_date", -1)
     )

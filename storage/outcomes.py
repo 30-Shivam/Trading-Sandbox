@@ -18,6 +18,11 @@ history using swingtrade.settle_trade(). Document shape:
                                   # doc -- most outcomes are mechanical
                                   # what-ifs, not real trades; this is how
                                   # you separate the two in reporting
+        "tier": "actionable" | "research",  # carried over from the source
+                                  # Trade_Signals doc (see storage/signals.py)
+                                  # -- lets reporting separate "signals I'd
+                                  # actually trade" from the broader
+                                  # research-only sample
         "settled_at": datetime,  # UTC, when this document was written
     }
 
@@ -39,7 +44,8 @@ def ensure_indexes() -> None:
 
 
 def log_trade_outcome(
-    ticker: str, signal_date: str, entry_price: float, result: dict, confirmed_filled: bool = False
+    ticker: str, signal_date: str, entry_price: float, result: dict,
+    confirmed_filled: bool = False, tier: str = "actionable",
 ) -> None:
     """Upsert a Trade_Outcomes document for a resolved trade. `result` is
     the dict returned by swingtrade.settle_trade() for a terminal status
@@ -59,6 +65,7 @@ def log_trade_outcome(
         "holding_days": int(result["holding_days"]),
         "exit_date": str(result["exit_date"]),
         "confirmed_filled": bool(confirmed_filled),
+        "tier": tier,
         "settled_at": datetime.now(timezone.utc),
     }
     db[COLLECTION_NAME].update_one(

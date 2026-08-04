@@ -66,6 +66,7 @@ def settle_one(signal: dict) -> str:
 
     config = swingtrade.TradingConfig.from_dict(signal["config_snapshot"])
     confirmed = bool(signal.get("confirmed_filled", False))
+    tier = signal.get("tier", "actionable")  # pre-existing docs predate this field -- they were all actionable
     entry_price = signal.get("fill_price") or signal["buy_price"]
     result = swingtrade.settle_trade(
         buy_price=entry_price,
@@ -78,7 +79,7 @@ def settle_one(signal: dict) -> str:
     if result["status"] == "OPEN":
         return "OPEN (still open)"
 
-    storage.log_trade_outcome(ticker, signal_date, entry_price, result, confirmed_filled=confirmed)
+    storage.log_trade_outcome(ticker, signal_date, entry_price, result, confirmed_filled=confirmed, tier=tier)
     storage.mark_settled(ticker, signal_date)
     tag = "CONFIRMED" if confirmed else "unconfirmed"
     return (
@@ -120,15 +121,20 @@ def main():
 
     db = storage.get_db()
     all_outcomes = list(db["Trade_Outcomes"].find({}))
+    actionable_outcomes = [o for o in all_outcomes if o.get("tier", "actionable") == "actionable"]
+    research_outcomes = [o for o in all_outcomes if o.get("tier") == "research"]
     confirmed_outcomes = [o for o in all_outcomes if o.get("confirmed_filled")]
-    all_trades = [{"status": o["status"], "pnl_pct": o["pnl_pct"]} for o in all_outcomes]
-    confirmed_trades = [{"status": o["status"], "pnl_pct": o["pnl_pct"]} for o in confirmed_outcomes]
+    as_trades = lambda outs: [{"status": o["status"], "pnl_pct": o["pnl_pct"]} for o in outs]  # noqa: E731
     print()
-    print(f"All-time, every mechanical signal ({len(all_trades)} settled): "
-          f"{swingtrade.summarize_trades(all_trades)}")
-    print(f"All-time, CONFIRMED fills only ({len(confirmed_trades)} settled): "
-          f"{swingtrade.summarize_trades(confirmed_trades)}")
-    if not confirmed_trades:
+    print(f"All-time, every mechanical signal ({len(all_outcomes)} settled): "
+          f"{swingtrade.summarize_trades(as_trades(all_outcomes))}")
+    print(f"  Actionable tier (Strong Buy/Buy) only ({len(actionable_outcomes)} settled): "
+          f"{swingtrade.summarize_trades(as_trades(actionable_outcomes))}")
+    print(f"    ...of which CONFIRMED real fills ({len(confirmed_outcomes)} settled): "
+          f"{swingtrade.summarize_trades(as_trades(confirmed_outcomes))}")
+    print(f"  Research tier (Watch, never traded/tradeable) ({len(research_outcomes)} settled): "
+          f"{swingtrade.summarize_trades(as_trades(research_outcomes))}")
+    if not confirmed_outcomes:
         print("No confirmed fills yet -- see confirm_fill.py to mark real trades as you make them.")
 
 

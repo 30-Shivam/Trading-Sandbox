@@ -307,8 +307,11 @@ def report_live_outcomes_context() -> None:
     kept out of the per-trial score itself (recency-weighting is the
     mechanism that lets the score respond to what's working lately). Splits
     out confirmed fills (see confirm_fill.py) from every mechanical signal's
-    hypothetical outcome -- most logged signals were never actually traded,
-    so the pooled-everything number overstates the sample of real trades."""
+    hypothetical outcome, AND splits actionable (Strong Buy/Buy) from
+    research (Watch) tier (see storage/signals.py) -- most logged signals
+    were never actually traded, and the research tier specifically was
+    never meant to be, so the pooled-everything number overstates both the
+    sample of real trades and the sample of signals you'd actually act on."""
     try:
         db = storage.get_db()
     except storage.MongoNotConfigured:
@@ -317,17 +320,24 @@ def report_live_outcomes_context() -> None:
     if not docs:
         print("Live Trade_Outcomes so far: 0 (too early to factor into scoring).")
         return
-    trades = [{"status": d["status"], "pnl_pct": d["pnl_pct"]} for d in docs]
-    metrics = swingtrade.summarize_trades(trades)
-    print(f"Live Trade_Outcomes so far (every signal): {len(docs)} -- pooled metrics: {metrics}")
+    as_trades = lambda ds: [{"status": d["status"], "pnl_pct": d["pnl_pct"]} for d in ds]  # noqa: E731
+    print(f"Live Trade_Outcomes so far (every signal, all tiers): {len(docs)} -- "
+          f"pooled metrics: {swingtrade.summarize_trades(as_trades(docs))}")
 
-    confirmed_docs = [d for d in docs if d.get("confirmed_filled")]
+    actionable_docs = [d for d in docs if d.get("tier", "actionable") == "actionable"]
+    research_docs = [d for d in docs if d.get("tier") == "research"]
+    print(f"  Actionable tier (Strong Buy/Buy) only: {len(actionable_docs)} -- "
+          f"pooled metrics: {swingtrade.summarize_trades(as_trades(actionable_docs))}")
+
+    confirmed_docs = [d for d in actionable_docs if d.get("confirmed_filled")]
     if confirmed_docs:
-        confirmed_trades = [{"status": d["status"], "pnl_pct": d["pnl_pct"]} for d in confirmed_docs]
-        confirmed_metrics = swingtrade.summarize_trades(confirmed_trades)
-        print(f"  ...of which CONFIRMED real fills: {len(confirmed_docs)} -- pooled metrics: {confirmed_metrics}")
+        print(f"    ...of which CONFIRMED real fills: {len(confirmed_docs)} -- "
+              f"pooled metrics: {swingtrade.summarize_trades(as_trades(confirmed_docs))}")
     else:
-        print("  ...of which CONFIRMED real fills: 0 -- see confirm_fill.py.")
+        print("    ...of which CONFIRMED real fills: 0 -- see confirm_fill.py.")
+
+    print(f"  Research tier (Watch, never traded/tradeable) only: {len(research_docs)} -- "
+          f"pooled metrics: {swingtrade.summarize_trades(as_trades(research_docs))}")
 
 
 def main():

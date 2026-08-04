@@ -1,0 +1,39 @@
+name: Daily ingest + settle
+
+# Runs daily_run.py (ingest.py then settle_trades.py) on GitHub's own
+# runners instead of a local machine, specifically so this doesn't depend
+# on a personal PC being powered on at the scheduled time -- see
+# improvements.txt/TUTORIAL.md section 9 for the local Task Scheduler
+# alternative this supersedes for anyone who wants "runs no matter what."
+
+on:
+  schedule:
+    # 21:35 UTC = 5:35 PM EDT / 4:35 PM EST -- safely after the US market's
+    # 4:00 PM ET close in either daylight-saving state (cron here is
+    # UTC-only and does not shift for DST on its own). A non-round minute
+    # (not :00) is deliberate -- GitHub's own docs note scheduled runs can
+    # queue up and get delayed right at the top of the hour under load.
+    - cron: "35 21 * * 1-5"
+  workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab, e.g. to test this
+
+jobs:
+  daily-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python daily_run.py
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # Only needed if your Mongo setup uses a non-default database name
+          # (the default is "swingtrade" -- see storage/mongo.py). If you add
+          # a MONGODB_DB_NAME repo secret, uncomment the line below to pass
+          # it through -- leaving it commented keeps the codebase's own
+          # default active rather than accidentally overriding it with an
+          # empty string if the secret doesn't exist.
+          # MONGODB_DB_NAME: ${{ secrets.MONGODB_DB_NAME }}

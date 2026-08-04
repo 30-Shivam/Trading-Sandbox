@@ -96,11 +96,12 @@ def run(
     else:
         results_df = swingtrade.add_trade_score(results_df, config)
 
-    logged_count = storage.log_trade_signals(results_df, config.to_dict())
+    logged = storage.log_trade_signals(results_df, config.to_dict())
     strong_buys = int((results_df["Signal"] == "Strong Buy").sum())
     buys = int((results_df["Signal"] == "Buy").sum())
-    print(f"Analyzed {len(results_df)}/{len(tickers)} ticker(s): {strong_buys} Strong Buy, {buys} Buy.")
-    print(f"Logged {logged_count} signal(s) to MongoDB.")
+    watches = int((results_df["Signal"] == "Watch").sum())
+    print(f"Analyzed {len(results_df)}/{len(tickers)} ticker(s): {strong_buys} Strong Buy, {buys} Buy, {watches} Watch.")
+    print(f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB.")
 
     if with_ai_context:
         if not ai_context.is_available():

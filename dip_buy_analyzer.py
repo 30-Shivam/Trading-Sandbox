@@ -493,8 +493,10 @@ def main():
     storage_ok, storage_message = init_storage()
     if storage_ok:
         try:
-            logged_count = storage.log_trade_signals(results_df, config.to_dict())
-            st.sidebar.caption(f"Logged {logged_count} signal(s) to MongoDB.")
+            logged = storage.log_trade_signals(results_df, config.to_dict())
+            st.sidebar.caption(
+                f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB."
+            )
         except Exception as exc:
             st.sidebar.warning(f"Signal logging failed: {exc}")
     else:

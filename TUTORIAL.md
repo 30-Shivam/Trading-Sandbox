@@ -41,6 +41,7 @@ Create a `.env` file in the repo root (never committed — it's gitignored):
 ```
 MONGODB_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/
 MONGODB_DB_NAME=<your db name>
+DISCORD_WEBHOOK_URL=<optional -- only needed for daily_run.py's run reports, see section 9>
 ```
 
 Use a free MongoDB Atlas M0 cluster if you don't already have one. Every
@@ -160,6 +161,17 @@ lets reporting (`settle_trades.py`'s summary, `optimize.py`'s live-outcomes
 context) separate "every mechanical signal's hypothetical outcome" from
 "what actually happened to trades you made" — run `confirm_fill.py` with no
 arguments any time to see what's still unconfirmed.
+
+**You don't need to trade more to grow this data faster.** Every logged
+signal already gets graded against real subsequent price action whether or
+not you actually bought it — `confirmed_filled` only affects reporting, not
+whether outcome data gets collected. What was actually throttling growth is
+that only Strong Buy/Buy ever got logged at all, and a selective config
+fires those rarely. `Watch`-tier signals are now also logged and settled
+automatically (tagged `tier: "research"` in Mongo, vs. `"actionable"` for
+Strong Buy/Buy) — a much larger, faster-growing sample purely for measuring
+whether the score itself is well-calibrated. They're never eligible for
+capital allocation or `confirm_fill.py` — see `improvements.txt` item 20.
 
 **Step 4 — Each following trading day, settle.**
 
@@ -525,11 +537,13 @@ and are dropped for a breakout config, not shown as always-empty).
 
 ## 9. A realistic weekly loop, today
 
-Since Phase 8's scheduling automation isn't built yet, here's what "running
-the system" actually looks like right now:
+Here's what "running the system" actually looks like:
 
-1. Once a day (manually, or via a Task Scheduler job you set up):
-   `py -3 ingest.py` then `py -3 settle_trades.py`.
+1. Once a day, either manually (`py -3 ingest.py` then `py -3
+   settle_trades.py`) or automatically via `py -3 daily_run.py`, which runs
+   both back-to-back and posts a Discord report (status line + full output
+   attached) either way — see "Automating the daily run" below to have this
+   fire on its own every weekday.
 2. Open the dashboard (`streamlit run dip_buy_analyzer.py`) whenever you want
    to actually look at today's picks and size a real position.
 3. Whenever you actually place an order: `py -3 confirm_fill.py --ticker X
@@ -539,6 +553,95 @@ the system" actually looks like right now:
    against history: `py -3 optimize.py --trials 50 ...`, review with
    `promote_config.py`, promote if it looks like a genuine improvement (not
    just a boundary-pinned artifact — see section 6).
+
+### Automating the daily run
+
+`daily_run.py` does the work; it just doesn't run itself on a schedule until
+you register it somewhere. Two options — they're not mutually exclusive,
+but pick based on what you actually need:
+
+- **GitHub Actions** (recommended if you want this to run no matter what):
+  runs on GitHub's own servers, completely independent of whether your PC
+  is even turned on. Free (public repos: unlimited; private repos: ~2000
+  free minutes/month, and this job uses ~5 min/day). See "GitHub Actions"
+  below.
+- **Local Task Scheduler**: simpler, no secrets leave your machine, but
+  genuinely won't run if your PC is off (or, without extra config, asleep)
+  at the scheduled time. See "Local Task Scheduler" below.
+
+#### GitHub Actions
+
+The workflow file (`.github/workflows/daily_run.yml`) is already in the
+repo — it just needs your secrets configured before it can actually
+connect to Mongo/Discord. On GitHub: your repo → Settings → Secrets and
+variables → Actions → "New repository secret", and add:
+
+- `MONGODB_URI` — same connection string as your local `.env`.
+- `DISCORD_WEBHOOK_URL` — same webhook URL as your local `.env` (optional,
+  but without it you won't get paged on failure — same as the local case).
+
+(If your Mongo setup uses a non-default database name, also add
+`MONGODB_DB_NAME` as a secret and uncomment the corresponding line in the
+workflow file — left commented by default so an unset secret can't
+accidentally override the codebase's own "swingtrade" default with an
+empty string.)
+
+Once those secrets exist, the workflow fires automatically on its own
+schedule (weekdays, 21:35 UTC — safely after the 4:00 PM ET market close in
+either daylight-saving state; edit the `cron:` line in the workflow file to
+change it). Test it immediately without waiting for the schedule: repo →
+Actions tab → "Daily ingest + settle" → "Run workflow". Failed scheduled
+runs also trigger GitHub's own default email notification to you, as a
+free backup on top of the Discord webhook.
+
+#### Local Task Scheduler
+
+On Windows, via Task Scheduler — open PowerShell and run:
+
+```powershell
+$Action = New-ScheduledTaskAction -Execute "C:\Users\ks303\AppData\Local\Programs\Python\Python313\python.exe" `
+    -Argument "daily_run.py" -WorkingDirectory "D:\Trading-Sandbox"
+$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At 5:00PM
+$Settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
+Register-ScheduledTask -TaskName "TradingSandbox-DailyRun" -Action $Action -Trigger $Trigger -Settings $Settings `
+    -Description "Runs ingest.py + settle_trades.py daily on weekdays after US market close."
+```
+
+Adjust the `-Execute` path if your Python install lives elsewhere (`py -3 -c
+"import sys; print(sys.executable)"` prints the exact path in use), and
+`-At 5:00PM` to whenever you want it to fire (after US market close, so the
+day's final bar is available). `-StartWhenAvailable` means a missed run
+(PC off at 5 PM) fires as soon as the machine is next on, instead of being
+skipped entirely. This registers the task under your own user account —
+it'll run when you're logged in around that time; for "run even when logged
+off," use Task Scheduler's GUI (right-click the task → Properties → General
+→ "Run whether user is logged on or not").
+
+Test it fired correctly without waiting for 5 PM: `Start-ScheduledTask
+-TaskName "TradingSandbox-DailyRun"`, then check `Get-ScheduledTaskInfo
+-TaskName "TradingSandbox-DailyRun"` for `LastTaskResult` (0 = success).
+
+Set `DISCORD_WEBHOOK_URL` in your `.env` file (Discord: Server Settings →
+Integrations → Webhooks → New Webhook → Copy Webhook URL) to actually get
+notified — **every run posts a message**, not just failed ones: a short OK/
+FAILED status line, plus the full combined output of both steps attached
+as a `.txt` file (not truncated — this is specifically how you get full
+visibility into what happened when running via local Task Scheduler, which
+otherwise captures no output anywhere). Without a webhook configured,
+`daily_run.py` still runs and still exits nonzero on failure, it just can't
+post anything, only print a warning to its own (otherwise unattended)
+output.
+
+**Known gap, stated plainly (local Task Scheduler only)**: this can only
+report a failure from within a run that actually started. If Task
+Scheduler itself never fires (task disabled, PC off/asleep at the
+scheduled time), nothing here detects that — check Task Scheduler's
+History tab, or use an external dead-man's-switch service (e.g.
+healthchecks.io's free tier) if you want that gap closed. GitHub Actions
+above doesn't have this specific gap (it runs on GitHub's infrastructure,
+not yours), but trades it for a different one — if GitHub Actions itself
+has an outage, or the repo's Actions are disabled, that's outside this
+project's control either way.
 
 ## 10. File map (what lives where)
 
@@ -552,6 +655,9 @@ the system" actually looks like right now:
 | `evaluate_config.py` | Validate one manual config before promoting |
 | `promote_config.py` | List / promote `System_Config` candidates |
 | `confirm_fill.py` | Mark a logged signal as a real, confirmed trade |
+| `daily_run.py` | Runs `ingest.py` + `settle_trades.py` back-to-back; scheduled via GitHub Actions or local Task Scheduler (section 9) |
+| `notifications.py` | Discord webhook run reports (status + full output attachment) for `daily_run.py` |
+| `.github/workflows/daily_run.yml` | GitHub Actions workflow running `daily_run.py` on a schedule, independent of your local machine's power state |
 | `check_survivorship_bias.py` | Cross-check today's watchlist vs. a point-in-time S&P 500 sample |
 | `benchmark_random_entry.py` | Does RSI-oversold timing beat picking entry days at random? |
 | `market_data.py` | All yfinance fetching, shared by the dashboard and `ingest.py` |
@@ -563,8 +669,10 @@ the system" actually looks like right now:
 
 ## 11. What's not here yet
 
-Phase 8 (Docker + Kubernetes) hasn't been built: there's no container image,
-no `docker-compose.yml`, no CronJob manifests. Everything above is a plain
-local script — genuinely fine for a personal, ~60-ticker watchlist scanned a
-few times a day, but it does mean scheduling is on you (Task Scheduler/cron)
-until that phase lands.
+Full Phase 8 (Docker + Kubernetes) hasn't been built: there's no container
+image, no `docker-compose.yml`, no CronJob manifests. Everything above is a
+plain local script — genuinely fine for a personal watchlist scanned once a
+day. The scheduling gap itself is closed without needing any of that —
+`daily_run.py` + Task Scheduler (section 9) — so containerization is now
+purely about deployment portability, not a blocker to running this
+unattended.
