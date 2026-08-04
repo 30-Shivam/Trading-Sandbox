@@ -265,7 +265,11 @@ def precompute_breakout_frame(
     an approximation, for every column here: SMA_TREND/AvgVolume/
     AvgVolume_Prior/Highest_High are all plain fixed-window rolling
     functions, and Relative_Strength is a fixed-lag pct_change, none of
-    which carry RSI/ATR's Wilder-smoothing warmup subtlety).
+    which carry RSI/ATR's Wilder-smoothing warmup subtlety). ADX is also
+    Wilder-smoothed (like RSI/ATR) -- same reasoning applies: the ~260-day
+    trailing buffer this codebase always keeps is far more than enough for
+    its exponential decay to converge to the same value a fresh truncated
+    recompute would have produced.
 
     `market_df`, if given, should be the market index's OHLCV over the same
     (or a superset) date range -- Relative_Strength is computed via
@@ -280,6 +284,7 @@ def precompute_breakout_frame(
     df["AvgVolume"] = df["Volume"].rolling(window=config.volume_lookback_days).mean()
     df["AvgVolume_Prior"] = df["AvgVolume"].shift(1)
     df["Highest_High"] = df["High"].rolling(window=config.breakout_lookback_days).max().shift(1)
+    df["ADX"] = ta.adx(df["High"], df["Low"], df["Close"], length=config.adx_window)[f"ADX_{config.adx_window}"]
 
     if market_df is not None:
         ticker_return = df["Close"].pct_change(periods=config.breakout_lookback_days)
@@ -304,10 +309,10 @@ def breakout_levels_from_frame(
     """
     last_row = frame.loc[as_of]
     last_date = as_of
-    last_close, sma_trend, atr, avg_volume, highest_high, rsi, last_volume, avg_volume_prior = (
+    last_close, sma_trend, atr, avg_volume, highest_high, rsi, last_volume, avg_volume_prior, adx = (
         last_row["Close"], last_row["SMA_TREND"], last_row["ATR"],
         last_row["AvgVolume"], last_row["Highest_High"], last_row["RSI"],
-        last_row["Volume"], last_row["AvgVolume_Prior"],
+        last_row["Volume"], last_row["AvgVolume_Prior"], last_row["ADX"],
     )
     if pd.isna(last_close):
         raise RuntimeError("insufficient history: no Close price for the most recent bar")
@@ -328,6 +333,10 @@ def breakout_levels_from_frame(
         volume_ratio = None
     else:
         volume_ratio = round(float(last_volume) / float(avg_volume_prior), 3)
+    # Same informational treatment for ADX -- missing/warming-up shouldn't
+    # exclude a ticker on its own, only the breakout_adx_min gate (applied
+    # downstream in simulate_breakout_signals/add_breakout_trade_score) does.
+    adx = None if pd.isna(adx) else round(float(adx), 2)
 
     last_close, sma_trend, atr, avg_volume, highest_high = (
         float(last_close), float(sma_trend), float(atr), float(avg_volume), float(highest_high),
@@ -382,6 +391,7 @@ def breakout_levels_from_frame(
         "Breakout_Signal": breakout_signal,
         "Relative_Strength": relative_strength,
         "Volume_Ratio": volume_ratio,
+        "ADX": adx,
         "Buy_Price": buy_price,
         "Sell_Price": sell_price,
         "Stop_Loss": stop_loss,
@@ -439,6 +449,14 @@ def compute_breakout_levels(
     -- a genuine breakout on high volume vs. a low-volume drift above an
     old high are different events (see improvements.txt item 6). None if
     there isn't enough history for the prior-average yet.
+
+    ADX (config.adx_window, default 14) measures the STRENGTH of the
+    current trend, independent of direction -- a different dimension than
+    RSI (momentum level) or Relative_Strength (direction vs. market). A
+    breakout during a weak/choppy trend and one during a genuinely strong
+    trend look identical to every other field here, but aren't the same
+    event; informational unless config.breakout_adx_min is changed from
+    its disabled default (see improvements.txt).
 
     Thin wrapper over precompute_breakout_frame()/breakout_levels_from_frame()
     -- kept as a single-call convenience for the live dashboard/ingest.py so

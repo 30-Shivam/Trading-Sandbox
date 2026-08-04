@@ -421,6 +421,12 @@ def simulate_breakout_signals(
     on high volume vs. a low-volume drift above an old high are different
     events. Default (0.0) is a practical no-op.
 
+    A breakout whose ADX (trend strength, independent of direction -- see
+    compute_breakout_levels) is below config.breakout_adx_min is also
+    skipped -- a breakout during a weak/choppy trend and one during a
+    genuinely strong trend look identical to every other filter here, but
+    aren't the same event. Default (0.0) is a practical no-op.
+
     `ohlcv`/`market_ohlcv` need the same leading-history buffer as
     simulate_signals() -- see LOOKBACK_BUFFER_BARS.
     """
@@ -456,6 +462,9 @@ def simulate_breakout_signals(
             continue
         volume_ratio = levels.get("Volume_Ratio")
         if volume_ratio is not None and volume_ratio < config.breakout_volume_ratio_min:
+            continue
+        adx = levels.get("ADX")
+        if adx is not None and adx < config.breakout_adx_min:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]

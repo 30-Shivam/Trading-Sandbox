@@ -87,11 +87,12 @@ def add_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_C
     there's insufficient history): not a reason to suppress on its own.
     Also gates out breakouts whose Relative_Strength (ticker return minus
     market return over the same breakout_lookback_days window) is below
-    config.breakout_relative_strength_min, and whose Volume_Ratio (today's
+    config.breakout_relative_strength_min, whose Volume_Ratio (today's
     Volume over the PRIOR volume_lookback_days average) is below
-    config.breakout_volume_ratio_min -- both kept in sync with
-    simulate_breakout_signals so live and backtested definitions can't
-    silently disagree."""
+    config.breakout_volume_ratio_min, and whose ADX (trend strength,
+    independent of direction) is below config.breakout_adx_min -- all
+    three kept in sync with simulate_breakout_signals so live and
+    backtested definitions can't silently disagree."""
     df = df.copy()
 
     rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
@@ -107,7 +108,8 @@ def add_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_C
     not_overbought = df["RSI"].isna() | (df["RSI"] < config.breakout_rsi_overbought_threshold)
     strong_enough = df["Relative_Strength"].isna() | (df["Relative_Strength"] >= config.breakout_relative_strength_min)
     enough_volume = df["Volume_Ratio"].isna() | (df["Volume_Ratio"] >= config.breakout_volume_ratio_min)
-    eligible = df["Breakout_Signal"] & not_overbought & strong_enough & enough_volume
+    strong_trend = df["ADX"].isna() | (df["ADX"] >= config.breakout_adx_min)
+    eligible = df["Breakout_Signal"] & not_overbought & strong_enough & enough_volume & strong_trend
 
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))

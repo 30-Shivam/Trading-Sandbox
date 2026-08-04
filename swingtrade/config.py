@@ -148,6 +148,24 @@ class TradingConfig:
                                             # 0.0 is the practical "disabled"
                                             # value -- a real ratio is always
                                             # >= 0
+    adx_window: int = 14                   # ADX (trend-strength) lookback
+                                            # (trading days)
+    breakout_adx_min: float = 0.0          # skip a breakout signal unless
+                                            # ADX is at least this. ADX
+                                            # measures how STRONG the
+                                            # current trend is, independent
+                                            # of direction -- a different
+                                            # dimension than RSI (momentum
+                                            # level) or Relative_Strength
+                                            # (direction vs. market). A
+                                            # breakout during a weak/choppy
+                                            # trend and one during a
+                                            # genuinely strong trend look
+                                            # identical to every other
+                                            # filter in this system, but
+                                            # aren't the same event. 0.0 is
+                                            # the practical "disabled" value
+                                            # -- ADX is always >= 0
 
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion) or "breakout" (simulate_breakout_signals,

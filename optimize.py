@@ -159,6 +159,13 @@ BREAKOUT_RELATIVE_STRENGTH_RANGE = (-50.0, 15.0)
 # demanding confirmation threshold. Same "let a real search decide"
 # reasoning as the other two breakout filters (improvements.txt item 6).
 BREAKOUT_VOLUME_RATIO_RANGE = (0.0, 3.0)
+# 0.0 = practical "disabled" (ADX is always >= 0); upper bound (40.0) is
+# already a demanding bar in classical TA terms (ADX > 25 is commonly read
+# as "trending", > 40 "strong trend"). ADX measures trend STRENGTH,
+# independent of direction -- a different dimension than RSI/Relative_Strength/
+# Volume_Ratio. Same "let a real search decide" reasoning as the other
+# breakout filters (improvements.txt item 15/16).
+BREAKOUT_ADX_MIN_RANGE = (0.0, 40.0)
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -262,6 +269,7 @@ def build_objective(
                 "breakout_volume_ratio_min": trial.suggest_float(
                     "breakout_volume_ratio_min", *BREAKOUT_VOLUME_RATIO_RANGE
                 ),
+                "breakout_adx_min": trial.suggest_float("breakout_adx_min", *BREAKOUT_ADX_MIN_RANGE),
             }
         candidate = swingtrade.TradingConfig(**{
             **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": strategy, **params,
