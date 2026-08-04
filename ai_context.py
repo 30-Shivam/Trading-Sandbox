@@ -20,27 +20,29 @@ any of this was built:
      would need the same kind of validation before being trusted as a
      score input, and that bar hasn't been cleared (or attempted) here.
 
-Degrades to unavailable (never raises) if ANTHROPIC_API_KEY isn't set or
-the anthropic package isn't installed -- same fallback philosophy this
-repo already uses for MongoDB connectivity.
+Uses Google Gemini's free tier (not Anthropic -- deliberate choice so this
+feature costs nothing to run) via the `google-genai` package. Degrades to
+unavailable (never raises) if GEMINI_API_KEY isn't set or the package isn't
+installed -- same fallback philosophy this repo already uses for MongoDB
+connectivity.
 """
 
 import os
 
-MODEL = "claude-haiku-4-5-20251001"
+MODEL = "gemini-2.5-flash"
 MAX_HEADLINES = 5
-MAX_TOKENS = 220
+MAX_OUTPUT_TOKENS = 300
 
 
 def is_available() -> bool:
     """True if a live call to summarize_ticker_context() stands a chance of
-    working -- an API key is configured and the anthropic package is
+    working -- an API key is configured and the google-genai package is
     installed. Callers should gate the feature (e.g. a sidebar checkbox) on
     this rather than discovering unavailability via a failed call."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not os.environ.get("GEMINI_API_KEY"):
         return False
     try:
-        import anthropic  # noqa: F401
+        import google.genai  # noqa: F401
     except ImportError:
         return False
     return True
@@ -58,12 +60,13 @@ def summarize_ticker_context(ticker: str, signal: str, headlines: list[str]) -> 
     if not headlines:
         return None
     try:
-        import anthropic
+        from google import genai
+        from google.genai import types
     except ImportError:
         return None
 
     try:
-        client = anthropic.Anthropic()
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         trimmed = headlines[:MAX_HEADLINES]
         headline_block = "\n".join(f"- {h}" for h in trimmed)
         prompt = (
@@ -77,12 +80,12 @@ def summarize_ticker_context(ticker: str, signal: str, headlines: list[str]) -> 
             "the headlines actually say -- just give the context a human would want "
             "before looking at the chart themselves."
         )
-        response = client.messages.create(
+        response = client.models.generate_content(
             model=MODEL,
-            max_tokens=MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
+            contents=prompt,
+            config=types.GenerateContentConfig(max_output_tokens=MAX_OUTPUT_TOKENS),
         )
-        text = "".join(getattr(block, "text", "") for block in response.content).strip()
+        text = (response.text or "").strip()
         return text or None
     except Exception:
         return None

@@ -54,6 +54,14 @@ plain text (one ticker per line) or the JSON form already in the repo
 (`{"watchlist": [{"ticker": "NVDA", ...}, ...]}` — the extra fields like
 `sector`/`strategy` are just notes for you, not read by any code).
 
+Optionally set `GEMINI_API_KEY` (free tier from Google AI Studio) to enable
+the AI news-context feature — a short, human-readable summary of each Strong
+Buy/Buy ticker's recent headlines, shown alongside the signal for you to
+read. Purely informational (see `ai_context.py`'s docstring for why it's
+deliberately kept out of `Trade_Score`) and off by default — a sidebar
+checkbox in the dashboard, or `--with-ai-context` for `ingest.py`. Degrades
+gracefully with no warning-free crash if the key isn't set.
+
 ## 3. Command cheat sheet
 
 Everything below is `py -3 <script>.py` (or `streamlit run` for the one

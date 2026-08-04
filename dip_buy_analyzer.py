@@ -396,11 +396,11 @@ def main():
             "Generate AI context for Strong Buy/Buy signals",
             value=False,
             disabled=not ai_context_available,
-            help="Summarizes each Strong Buy/Buy ticker's recent news headlines via the "
-                 "Anthropic API -- informational only, purely for you to read. Never feeds "
-                 "back into Trade_Score, Signal, or position sizing (see ai_context.py). "
-                 "Uses your ANTHROPIC_API_KEY and costs a small amount per signal." +
-                 ("" if ai_context_available else " Unavailable: set ANTHROPIC_API_KEY to enable."),
+            help="Summarizes each Strong Buy/Buy ticker's recent news headlines via Google "
+                 "Gemini's free tier -- informational only, purely for you to read. Never "
+                 "feeds back into Trade_Score, Signal, or position sizing (see ai_context.py). "
+                 "Uses your GEMINI_API_KEY (free tier)." +
+                 ("" if ai_context_available else " Unavailable: set GEMINI_API_KEY to enable."),
         )
 
         default_ticker_text = "\n".join(read_tickers(WATCHLIST_FILE)) if WATCHLIST_FILE.exists() else ""

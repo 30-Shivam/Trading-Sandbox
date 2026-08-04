@@ -97,7 +97,7 @@ def run(watchlist_path: Path, position_budget: float, with_ai_context: bool = Fa
 
     if with_ai_context:
         if not ai_context.is_available():
-            print("[WARN] --with-ai-context requested but unavailable (set ANTHROPIC_API_KEY).", file=sys.stderr)
+            print("[WARN] --with-ai-context requested but unavailable (set GEMINI_API_KEY).", file=sys.stderr)
         else:
             signal_rows = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])]
             for _, row in signal_rows.iterrows():
@@ -121,8 +121,8 @@ def main():
     parser.add_argument(
         "--with-ai-context", action="store_true",
         help="Print an AI-generated news summary (informational only, not a rating) for each "
-             "Strong Buy/Buy signal found. Requires ANTHROPIC_API_KEY; degrades to a warning "
-             "if unavailable rather than failing the scan.",
+             "Strong Buy/Buy signal found. Requires GEMINI_API_KEY (free tier); degrades to a "
+             "warning if unavailable rather than failing the scan.",
     )
     args = parser.parse_args()
     sys.exit(run(args.watchlist, args.position_budget, args.with_ai_context))
