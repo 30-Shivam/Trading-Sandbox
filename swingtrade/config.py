@@ -166,6 +166,69 @@ class TradingConfig:
                                             # aren't the same event. 0.0 is
                                             # the practical "disabled" value
                                             # -- ADX is always >= 0
+    obv_window: int = 20                   # rolling window for On-Balance
+                                            # Volume's own z-score baseline
+                                            # (trading days)
+    breakout_obv_zscore_min: float = -100.0  # skip a breakout signal
+                                            # unless On-Balance Volume's
+                                            # z-score against its own
+                                            # trailing obv_window
+                                            # mean/stdev is at least this.
+                                            # OBV (cumulative signed volume
+                                            # -- up days add Volume, down
+                                            # days subtract it) rising
+                                            # relative to its own recent
+                                            # baseline reflects sustained
+                                            # buying pressure BUILDING UP
+                                            # over time, a deeper signal
+                                            # than Volume_Ratio's single-day
+                                            # spike check. Z-scored (not
+                                            # used raw) because OBV's
+                                            # absolute magnitude is
+                                            # arbitrary -- it depends on how
+                                            # much leading history precedes
+                                            # the window -- but the z-score
+                                            # is NOT: OBV and its rolling
+                                            # mean shift by the same
+                                            # constant for any amount of
+                                            # extra leading history, so
+                                            # their difference (and this
+                                            # z-score) is invariant to it.
+                                            # -100.0 is the practical
+                                            # "disabled" value -- a real
+                                            # z-score essentially never
+                                            # gets that extreme
+    bb_window: int = 20                    # window for the raw
+                                            # price-volatility measure
+                                            # feeding the squeeze z-score
+                                            # (rolling stdev/mean of
+                                            # Close, trading days)
+    bb_squeeze_window: int = 60            # window over which that
+                                            # volatility measure is itself
+                                            # z-scored, to find "is
+                                            # volatility unusually
+                                            # CONTRACTED relative to its
+                                            # own recent history" (trading
+                                            # days)
+    breakout_squeeze_zscore_max: float = 100.0  # skip a breakout signal
+                                            # unless the PRIOR day's
+                                            # (.shift(1) -- so today's own
+                                            # breakout move doesn't
+                                            # contaminate the reading)
+                                            # volatility z-score was at/below
+                                            # this. Classic "squeeze"
+                                            # pattern: a breakout emerging
+                                            # from a period of volatility
+                                            # CONTRACTION ("coiled spring")
+                                            # is a different, often more
+                                            # reliable event than one that
+                                            # isn't -- a volatility-regime
+                                            # signal, distinct from every
+                                            # other filter here. 100.0 is
+                                            # the practical "disabled"
+                                            # value -- a real z-score
+                                            # essentially never gets that
+                                            # extreme
 
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion) or "breakout" (simulate_breakout_signals,

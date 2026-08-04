@@ -427,6 +427,19 @@ def simulate_breakout_signals(
     genuinely strong trend look identical to every other filter here, but
     aren't the same event. Default (0.0) is a practical no-op.
 
+    A breakout whose OBV_Zscore (On-Balance Volume z-scored against its
+    own recent baseline -- see compute_breakout_levels) is below
+    config.breakout_obv_zscore_min is also skipped -- sustained buying
+    pressure building up over weeks is a deeper signal than a single day's
+    volume spike. Default (-100.0) is a practical no-op.
+
+    A breakout whose Squeeze_Zscore (prior-day volatility z-scored against
+    its own recent baseline -- see compute_breakout_levels) is above
+    config.breakout_squeeze_zscore_max is also skipped -- a breakout
+    emerging from a period of volatility contraction ("coiled spring") is
+    a different, often more reliable event than one that isn't. Default
+    (100.0) is a practical no-op.
+
     `ohlcv`/`market_ohlcv` need the same leading-history buffer as
     simulate_signals() -- see LOOKBACK_BUFFER_BARS.
     """
@@ -465,6 +478,12 @@ def simulate_breakout_signals(
             continue
         adx = levels.get("ADX")
         if adx is not None and adx < config.breakout_adx_min:
+            continue
+        obv_zscore = levels.get("OBV_Zscore")
+        if obv_zscore is not None and obv_zscore < config.breakout_obv_zscore_min:
+            continue
+        squeeze_zscore = levels.get("Squeeze_Zscore")
+        if squeeze_zscore is not None and squeeze_zscore > config.breakout_squeeze_zscore_max:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]

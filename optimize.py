@@ -164,8 +164,15 @@ BREAKOUT_VOLUME_RATIO_RANGE = (0.0, 3.0)
 # as "trending", > 40 "strong trend"). ADX measures trend STRENGTH,
 # independent of direction -- a different dimension than RSI/Relative_Strength/
 # Volume_Ratio. Same "let a real search decide" reasoning as the other
-# breakout filters (improvements.txt item 15/16).
+# breakout filters (improvements.txt item 17).
 BREAKOUT_ADX_MIN_RANGE = (0.0, 40.0)
+# Both OBV_Zscore and Squeeze_Zscore (see levels.precompute_breakout_frame)
+# are genuine z-scores -- realistically span roughly -3 to +3, so that range
+# covers everywhere from "essentially always passes" to "essentially always
+# blocks" at either end, same "let a real search decide" reasoning as every
+# other breakout filter (improvements.txt item 18).
+BREAKOUT_OBV_ZSCORE_MIN_RANGE = (-3.0, 3.0)
+BREAKOUT_SQUEEZE_ZSCORE_MAX_RANGE = (-3.0, 3.0)
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -270,6 +277,12 @@ def build_objective(
                     "breakout_volume_ratio_min", *BREAKOUT_VOLUME_RATIO_RANGE
                 ),
                 "breakout_adx_min": trial.suggest_float("breakout_adx_min", *BREAKOUT_ADX_MIN_RANGE),
+                "breakout_obv_zscore_min": trial.suggest_float(
+                    "breakout_obv_zscore_min", *BREAKOUT_OBV_ZSCORE_MIN_RANGE
+                ),
+                "breakout_squeeze_zscore_max": trial.suggest_float(
+                    "breakout_squeeze_zscore_max", *BREAKOUT_SQUEEZE_ZSCORE_MAX_RANGE
+                ),
             }
         candidate = swingtrade.TradingConfig(**{
             **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": strategy, **params,

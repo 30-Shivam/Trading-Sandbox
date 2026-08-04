@@ -4,6 +4,7 @@ plain dicts/tuples out. Safe to call from Streamlit, the settlement job, or a
 backtest loop replaying years of historical bars.
 """
 
+import numpy as np
 import pandas as pd
 import pandas_ta as ta
 
@@ -269,7 +270,10 @@ def precompute_breakout_frame(
     Wilder-smoothed (like RSI/ATR) -- same reasoning applies: the ~260-day
     trailing buffer this codebase always keeps is far more than enough for
     its exponential decay to converge to the same value a fresh truncated
-    recompute would have produced.
+    recompute would have produced. OBV_Zscore and Squeeze_Zscore are both
+    genuinely exact (not just converged) regardless of leading history --
+    see each one's inline comment below for the specific invariance
+    argument.
 
     `market_df`, if given, should be the market index's OHLCV over the same
     (or a superset) date range -- Relative_Strength is computed via
@@ -285,6 +289,31 @@ def precompute_breakout_frame(
     df["AvgVolume_Prior"] = df["AvgVolume"].shift(1)
     df["Highest_High"] = df["High"].rolling(window=config.breakout_lookback_days).max().shift(1)
     df["ADX"] = ta.adx(df["High"], df["Low"], df["Close"], length=config.adx_window)[f"ADX_{config.adx_window}"]
+
+    # On-Balance Volume, z-scored against its own trailing obv_window
+    # mean/stdev -- OBV's raw cumulative magnitude is arbitrary (depends on
+    # how much leading history precedes the window), but this z-score is
+    # NOT: OBV and its rolling mean shift by the same constant offset for
+    # any amount of extra leading history, so their difference (and this
+    # z-score) is invariant to it.
+    signed_volume = np.sign(df["Close"].diff()).fillna(0) * df["Volume"]
+    obv = signed_volume.cumsum()
+    obv_mean = obv.rolling(window=config.obv_window).mean()
+    obv_std = obv.rolling(window=config.obv_window).std()
+    df["OBV_Zscore"] = (obv - obv_mean) / obv_std
+
+    # Bollinger-style volatility squeeze: raw normalized volatility
+    # (stdev/mean of Close -- deliberately NOT multiplied by a band-width
+    # constant like the classic "2 std" convention, since any constant
+    # multiplier cancels out of the z-score below anyway), z-scored
+    # against its own trailing bb_squeeze_window history, then shift(1) so
+    # TODAY's own breakout move (which would itself add volatility) can't
+    # contaminate the "was this a quiet coil beforehand" reading -- the
+    # same no-look-ahead-into-today convention Highest_High uses.
+    bb_vol = df["Close"].rolling(window=config.bb_window).std() / df["Close"].rolling(window=config.bb_window).mean()
+    bb_vol_mean = bb_vol.rolling(window=config.bb_squeeze_window).mean()
+    bb_vol_std = bb_vol.rolling(window=config.bb_squeeze_window).std()
+    df["Squeeze_Zscore"] = ((bb_vol - bb_vol_mean) / bb_vol_std).shift(1)
 
     if market_df is not None:
         ticker_return = df["Close"].pct_change(periods=config.breakout_lookback_days)
@@ -314,6 +343,7 @@ def breakout_levels_from_frame(
         last_row["AvgVolume"], last_row["Highest_High"], last_row["RSI"],
         last_row["Volume"], last_row["AvgVolume_Prior"], last_row["ADX"],
     )
+    obv_zscore, squeeze_zscore = last_row["OBV_Zscore"], last_row["Squeeze_Zscore"]
     if pd.isna(last_close):
         raise RuntimeError("insufficient history: no Close price for the most recent bar")
     if pd.isna(sma_trend):
@@ -337,6 +367,9 @@ def breakout_levels_from_frame(
     # exclude a ticker on its own, only the breakout_adx_min gate (applied
     # downstream in simulate_breakout_signals/add_breakout_trade_score) does.
     adx = None if pd.isna(adx) else round(float(adx), 2)
+    # Same informational treatment for OBV/squeeze z-scores.
+    obv_zscore = None if pd.isna(obv_zscore) else round(float(obv_zscore), 3)
+    squeeze_zscore = None if pd.isna(squeeze_zscore) else round(float(squeeze_zscore), 3)
 
     last_close, sma_trend, atr, avg_volume, highest_high = (
         float(last_close), float(sma_trend), float(atr), float(avg_volume), float(highest_high),
@@ -392,6 +425,8 @@ def breakout_levels_from_frame(
         "Relative_Strength": relative_strength,
         "Volume_Ratio": volume_ratio,
         "ADX": adx,
+        "OBV_Zscore": obv_zscore,
+        "Squeeze_Zscore": squeeze_zscore,
         "Buy_Price": buy_price,
         "Sell_Price": sell_price,
         "Stop_Loss": stop_loss,
@@ -457,6 +492,21 @@ def compute_breakout_levels(
     trend look identical to every other field here, but aren't the same
     event; informational unless config.breakout_adx_min is changed from
     its disabled default (see improvements.txt).
+
+    OBV_Zscore is On-Balance Volume (cumulative signed volume) z-scored
+    against its own trailing obv_window mean/stdev -- rising relative to
+    its own recent baseline reflects sustained buying pressure building up
+    over WEEKS, a deeper signal than Volume_Ratio's single-day spike;
+    informational unless config.breakout_obv_zscore_min is changed from
+    its disabled default.
+
+    Squeeze_Zscore is a volatility (stdev/mean of Close) z-score against
+    its own trailing bb_squeeze_window history, read as of the PRIOR day
+    (`.shift(1)`, so today's own breakout move can't contaminate it) --
+    classic "coiled spring" pattern, a breakout emerging from unusually
+    contracted volatility is a different event than one that isn't;
+    informational unless config.breakout_squeeze_zscore_max is changed
+    from its disabled default.
 
     Thin wrapper over precompute_breakout_frame()/breakout_levels_from_frame()
     -- kept as a single-call convenience for the live dashboard/ingest.py so
