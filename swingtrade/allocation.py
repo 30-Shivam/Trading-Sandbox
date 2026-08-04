@@ -5,6 +5,29 @@ with Signal/Est_Cost columns already populated -- no fetching, no UI.
 import pandas as pd
 
 
+def size_by_risk(
+    buy_price: pd.Series, stop_loss: pd.Series, risk_amount: float, fractional_share_decimals: int
+) -> pd.Series:
+    """Position size such that shares * (buy_price - stop_loss) is
+    approximately risk_amount -- the dollar amount you're willing to lose
+    if the stop is hit, held roughly constant across every trade regardless
+    of the ticker's own volatility, instead of spending the same flat
+    dollar amount on every trade (a calm blue-chip and a violently volatile
+    name getting the same $250 position size under flat sizing risk very
+    different amounts per trade, since their stop distances differ).
+
+    0 shares (not inf/NaN) for the degenerate case where risk_per_share
+    isn't positive (ATR rounds to 0, flat price action) -- the same guard
+    RRR already applies to the identical situation.
+
+    This is a personal risk-management choice, not a signal property --
+    never called from swingtrade/backtest.py or optimize.py, same reasoning
+    as allocate_capital()'s max_sector_allocation_pct."""
+    risk_per_share = buy_price - stop_loss
+    shares = (risk_amount / risk_per_share).where(risk_per_share > 0, 0.0)
+    return shares.round(fractional_share_decimals)
+
+
 def allocate_capital(
     df: pd.DataFrame,
     total_cash: float,

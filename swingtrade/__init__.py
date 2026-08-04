@@ -3,7 +3,7 @@ Streamlit dashboard, the nightly settlement job, the backtester, and the
 Optuna learning engine so they all score trades identically.
 """
 
-from .allocation import allocate_capital
+from .allocation import allocate_capital, size_by_risk
 from .backtest import (
     Fold,
     FoldResult,
@@ -35,6 +35,7 @@ __all__ = [
     "add_breakout_trade_score",
     "signal_for_score",
     "allocate_capital",
+    "size_by_risk",
     "settle_trade",
     "Fold",
     "FoldResult",

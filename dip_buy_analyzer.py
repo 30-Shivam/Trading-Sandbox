@@ -59,9 +59,16 @@ compute, for every scanned ticker:
       extended_decline_warning_days (default 5) -- purely informational,
       does NOT affect Trade_Score/Signal.
 
-  7. Shares_To_Buy = position_budget / buy_price, rounded to
-     fractional_share_decimals places -- a fixed-dollar-budget position size,
-     recalculated live from the sidebar "Position Budget" input. Capital is
+  7. Shares_To_Buy, one of two sidebar-selectable modes:
+       - Flat: position_budget / buy_price -- the same $ position size on
+         every trade regardless of the ticker's own stop distance.
+       - Risk-based: risk_amount / (buy_price - stop_loss) -- sized so the
+         $ amount you'd actually lose if the stop is hit is held roughly
+         constant across every trade instead, so a violently volatile
+         ticker (wide stop) gets fewer shares than a calm one (tight stop)
+         for the same dollar risk. See swingtrade.size_by_risk.
+     Both rounded to fractional_share_decimals places, recalculated live
+     from the sidebar. Capital is
      then allocated greedily down the Trade_Score-ranked list against "Total
      Available Cash": a trade that no longer fits the remaining cash is
      marked Insufficient Funds, and (if watchlist.txt's JSON form supplies a
@@ -135,7 +142,8 @@ from watchlist import parse_ticker_text, read_ticker_sectors, read_tickers
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 
-DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for position sizing
+DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for flat position sizing
+DEFAULT_RISK_AMOUNT = 25         # default $ sidebar value for risk-based position sizing
 DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash
 
 SCAN_CACHE_TTL_SEC = 900         # how long a scan result stays cached (15 min)
@@ -335,13 +343,36 @@ def main():
                     "max_holding_days": config.max_holding_days,
                     "max_sector_allocation_pct": config.max_sector_allocation_pct,
                 })
-        position_budget = st.number_input(
-            "Position Budget ($)",
-            min_value=1.0,
-            value=float(DEFAULT_POSITION_BUDGET),
-            step=10.0,
-            help="Max $ allocated per trade; drives the fractional Shares_To_Buy column below.",
+        sizing_mode = st.radio(
+            "Position sizing mode",
+            ["Flat $ per trade", "Risk-based ($ risked per trade)"],
+            help="Flat: every trade gets the same $ position size, regardless of the "
+                 "ticker's own stop distance. Risk-based: position size is scaled so "
+                 "shares x (Buy_Price - Stop_Loss) is roughly the same $ amount across "
+                 "every trade -- a violently volatile ticker (wide stop) gets fewer shares "
+                 "than a calm one (tight stop) for the same dollar risk, instead of the "
+                 "same flat position size for both. See swingtrade.size_by_risk.",
         )
+        if sizing_mode == "Risk-based ($ risked per trade)":
+            risk_amount = st.number_input(
+                "Risk per Trade ($)",
+                min_value=1.0,
+                value=float(DEFAULT_RISK_AMOUNT),
+                step=5.0,
+                help="Dollars you're willing to lose if the stop is hit; drives the "
+                     "fractional Shares_To_Buy column below as risk_amount / "
+                     "(Buy_Price - Stop_Loss) instead of a flat position_budget / Buy_Price.",
+            )
+            position_budget = None
+        else:
+            position_budget = st.number_input(
+                "Position Budget ($)",
+                min_value=1.0,
+                value=float(DEFAULT_POSITION_BUDGET),
+                step=10.0,
+                help="Max $ allocated per trade; drives the fractional Shares_To_Buy column below.",
+            )
+            risk_amount = None
         total_cash = st.number_input(
             "Total Available Cash ($)",
             min_value=0.0,
@@ -443,7 +474,12 @@ def main():
                 st.dataframe(pd.DataFrame(skipped, columns=["Ticker", "Reason"]), hide_index=True)
         st.stop()
 
-    results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
+    if risk_amount:
+        results_df["Shares_To_Buy"] = swingtrade.size_by_risk(
+            results_df["Buy_Price"], results_df["Stop_Loss"], risk_amount, config.fractional_share_decimals
+        )
+    else:
+        results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
     results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
     if config.strategy == "breakout":
         results_df = swingtrade.add_breakout_trade_score(results_df, config)

@@ -198,6 +198,15 @@ pool (greedily allocated down the ranked signal list). Every Strong Buy/Buy
 it computes gets logged to Mongo automatically, same as the headless path
 below.
 
+**Two position-sizing modes**, picked via a sidebar radio: "Flat $ per
+trade" (the default — every trade gets the same $ position size) or
+"Risk-based ($ risked per trade)" — sizes each trade so the $ amount you'd
+actually lose if the stop is hit is held roughly constant instead, meaning
+a violently volatile ticker (wide stop) gets fewer shares than a calm one
+(tight stop) for the same dollar risk. See `swingtrade.size_by_risk()`.
+`ingest.py --risk-amount <dollars>` is the headless equivalent (falls back
+to `--position-budget`'s flat behavior if omitted).
+
 Allocation also caps concentration per sector (`max_sector_allocation_pct`,
 default 40%, read from `watchlist.txt`'s JSON `sector` field — see the
 "Capital allocated by sector" expander on the page). Without this, a day

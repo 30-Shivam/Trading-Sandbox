@@ -44,7 +44,9 @@ DEFAULT_WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 DEFAULT_POSITION_BUDGET = 250.0
 
 
-def run(watchlist_path: Path, position_budget: float, with_ai_context: bool = False) -> int:
+def run(
+    watchlist_path: Path, position_budget: float, with_ai_context: bool = False, risk_amount: float | None = None,
+) -> int:
     try:
         storage.ensure_indexes()
     except storage.MongoNotConfigured as exc:
@@ -82,7 +84,12 @@ def run(watchlist_path: Path, position_budget: float, with_ai_context: bool = Fa
         return 1
 
     results_df = pd.DataFrame(results)
-    results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
+    if risk_amount:
+        results_df["Shares_To_Buy"] = swingtrade.size_by_risk(
+            results_df["Buy_Price"], results_df["Stop_Loss"], risk_amount, config.fractional_share_decimals
+        )
+    else:
+        results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
     results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
     if config.strategy == "breakout":
         results_df = swingtrade.add_breakout_trade_score(results_df, config)
@@ -117,7 +124,15 @@ def run(watchlist_path: Path, position_budget: float, with_ai_context: bool = Fa
 def main():
     parser = argparse.ArgumentParser(description="Scan the watchlist and log Strong Buy/Buy signals to MongoDB.")
     parser.add_argument("--watchlist", type=Path, default=DEFAULT_WATCHLIST_FILE)
-    parser.add_argument("--position-budget", type=float, default=DEFAULT_POSITION_BUDGET)
+    parser.add_argument("--position-budget", type=float, default=DEFAULT_POSITION_BUDGET,
+                         help="Flat $ position size per trade (ignored if --risk-amount is given).")
+    parser.add_argument(
+        "--risk-amount", type=float, default=None,
+        help="Dollars you're willing to lose if the stop is hit -- sizes Shares_To_Buy as "
+             "risk_amount / (Buy_Price - Stop_Loss) instead of the flat --position-budget / "
+             "Buy_Price, so a wide-stop (volatile) ticker gets fewer shares than a tight-stop "
+             "(calm) one for the same dollar risk. See swingtrade.size_by_risk.",
+    )
     parser.add_argument(
         "--with-ai-context", action="store_true",
         help="Print an AI-generated news summary (informational only, not a rating) for each "
@@ -125,7 +140,7 @@ def main():
              "warning if unavailable rather than failing the scan.",
     )
     args = parser.parse_args()
-    sys.exit(run(args.watchlist, args.position_budget, args.with_ai_context))
+    sys.exit(run(args.watchlist, args.position_budget, args.with_ai_context, args.risk_amount))
 
 
 if __name__ == "__main__":
