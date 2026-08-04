@@ -278,6 +278,21 @@ automatically). Pass a higher number (up to your full `os.cpu_count()`)
 for maximum speed if that tradeoff is fine for your setup, or
 `--max-workers 1` to fall back to the old one-at-a-time behavior entirely.
 
+**Indicator computation is also vectorized now**, compounding with the
+parallelization above rather than competing with it. Previously,
+`compute_levels()`/`compute_breakout_levels()` recomputed RSI/ATR/SMA/
+volume/highest-high from scratch on every single simulated day (a ~260-day
+rolling recompute to learn about 1 new row, repeated for every day of every
+fold). `swingtrade/levels.py` now precomputes each ticker's full indicator
+frame ONCE per fold-window instead — the live dashboard/`ingest.py` are
+unaffected (they only ever evaluate "today", so `compute_levels()`/
+`compute_breakout_levels()` keep their exact old signatures and behavior,
+just implemented as thin wrappers now). Verified against the pre-change
+code with an exact trade-by-trade diff (not just summary stats) across both
+strategies and the random-entry benchmarks — one real off-by-one bug in the
+streak-counting vectorization was caught and fixed this way. Measured ~2x
+speedup from vectorization alone on top of the ~5x from parallelization.
+
 Searches `rsi_oversold_threshold` / `atr_take_profit_multiplier` /
 `stop_loss_atr_multiplier` / `extended_decline_penalty_per_day` /
 `extended_decline_penalty_cap` via Bayesian optimization, scoring each trial

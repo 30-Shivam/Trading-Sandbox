@@ -63,7 +63,13 @@ from dataclasses import dataclass
 import pandas as pd
 
 from .config import DEFAULT_CONFIG, TradingConfig
-from .levels import compute_breakout_levels, compute_levels, is_market_uptrend
+from .levels import (
+    breakout_levels_from_frame,
+    levels_from_rsi_frame,
+    market_uptrend_from_frame,
+    precompute_breakout_frame,
+    precompute_rsi_frame,
+)
 from .scoring import add_trade_score
 from .settlement import settle_trade
 
@@ -204,24 +210,27 @@ def simulate_signals(
     """
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
-    lookback_bars = config.sma_trend_window + LOOKBACK_BUFFER_BARS
 
     trades = []
     eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
 
+    # Precomputed ONCE per ticker/fold instead of being recomputed from
+    # scratch at every as_of -- see levels.precompute_rsi_frame's docstring
+    # for why this is an exact equivalence, not an approximation.
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_rsi_frame(ohlcv, config)
+
     for as_of in eligible_dates:
-        market_window = market_ohlcv.loc[:as_of].tail(lookback_bars)
         try:
-            market_uptrend, _, _ = is_market_uptrend(market_window, config)
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
         except RuntimeError:
             continue  # insufficient market history yet
         if not market_uptrend:
             continue
 
-        price_window = ohlcv.loc[:as_of].tail(lookback_bars)
         next_earnings = _next_earnings_date(earnings_dates, as_of)
         try:
-            levels = compute_levels(ticker, price_window, config, next_earnings_date=next_earnings)
+            levels = levels_from_rsi_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
         except RuntimeError:
             continue  # insufficient history / macro downtrend / illiquid that day
 
@@ -304,23 +313,23 @@ def simulate_random_entries(
     carries little real predictive information."""
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
-    lookback_bars = config.sma_trend_window + LOOKBACK_BUFFER_BARS
 
     eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
 
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_rsi_frame(ohlcv, config)
+
     candidates = []  # (as_of, buy_price, atr) for every day that passed the same gates simulate_signals uses
     for as_of in eligible_dates:
-        market_window = market_ohlcv.loc[:as_of].tail(lookback_bars)
         try:
-            market_uptrend, _, _ = is_market_uptrend(market_window, config)
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
         except RuntimeError:
             continue
         if not market_uptrend:
             continue
 
-        price_window = ohlcv.loc[:as_of].tail(lookback_bars)
         try:
-            levels = compute_levels(ticker, price_window, config)
+            levels = levels_from_rsi_frame(ticker, frame, as_of, config)
         except RuntimeError:
             continue
 
@@ -417,23 +426,23 @@ def simulate_breakout_signals(
     """
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
-    lookback_bars = config.sma_trend_window + LOOKBACK_BUFFER_BARS
 
     trades = []
     eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
 
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_breakout_frame(ohlcv, config, market_df=market_ohlcv)
+
     for as_of in eligible_dates:
-        market_window = market_ohlcv.loc[:as_of].tail(lookback_bars)
         try:
-            market_uptrend, _, _ = is_market_uptrend(market_window, config)
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
         except RuntimeError:
             continue
         if not market_uptrend:
             continue
 
-        price_window = ohlcv.loc[:as_of].tail(lookback_bars)
         try:
-            levels = compute_breakout_levels(ticker, price_window, config, market_df=market_window)
+            levels = breakout_levels_from_frame(ticker, frame, as_of, config)
         except RuntimeError:
             continue
 
@@ -507,23 +516,26 @@ def simulate_random_breakout_entries(
     ticker/window, so trade volume is matched."""
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
-    lookback_bars = config.sma_trend_window + LOOKBACK_BUFFER_BARS
 
     eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
 
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    # No market_df here -- matches the original's deliberate omission (the
+    # random-entry benchmark never applies the relative-strength/volume/
+    # overbought filters, only the shared macro-uptrend/liquidity gates).
+    frame = precompute_breakout_frame(ohlcv, config)
+
     candidates = []  # (as_of, trigger_price, atr) for every day that passed the gates, breakout or not
     for as_of in eligible_dates:
-        market_window = market_ohlcv.loc[:as_of].tail(lookback_bars)
         try:
-            market_uptrend, _, _ = is_market_uptrend(market_window, config)
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
         except RuntimeError:
             continue
         if not market_uptrend:
             continue
 
-        price_window = ohlcv.loc[:as_of].tail(lookback_bars)
         try:
-            levels = compute_breakout_levels(ticker, price_window, config)
+            levels = breakout_levels_from_frame(ticker, frame, as_of, config)
         except RuntimeError:
             continue
 

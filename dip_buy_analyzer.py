@@ -123,6 +123,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+import ai_context
 import config_loader
 import market_data
 import storage
@@ -390,6 +391,18 @@ def main():
                  "purposes (Position Review below is unaffected either way).",
         )
 
+        ai_context_available = ai_context.is_available()
+        generate_ai_context = st.checkbox(
+            "Generate AI context for Strong Buy/Buy signals",
+            value=False,
+            disabled=not ai_context_available,
+            help="Summarizes each Strong Buy/Buy ticker's recent news headlines via the "
+                 "Anthropic API -- informational only, purely for you to read. Never feeds "
+                 "back into Trade_Score, Signal, or position sizing (see ai_context.py). "
+                 "Uses your ANTHROPIC_API_KEY and costs a small amount per signal." +
+                 ("" if ai_context_available else " Unavailable: set ANTHROPIC_API_KEY to enable."),
+        )
+
         default_ticker_text = "\n".join(read_tickers(WATCHLIST_FILE)) if WATCHLIST_FILE.exists() else ""
         ticker_text = st.text_area(
             "Watchlist (one ticker per line, or comma-separated)",
@@ -533,6 +546,33 @@ def main():
     st.subheader("Scan Results")
     display_columns = DISPLAY_COLUMNS_BREAKOUT if config.strategy == "breakout" else DISPLAY_COLUMNS_RSI
     st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
+
+    if generate_ai_context:
+        signal_tickers = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])]["Ticker"].tolist()
+        if not signal_tickers:
+            st.caption("AI context: no Strong Buy/Buy signals today, nothing to summarize.")
+        else:
+            st.subheader("AI Context (Strong Buy / Buy signals)")
+            st.caption(
+                "Informational only -- summarizes each ticker's recent headlines for you to "
+                "read. Not a rating, not a recommendation, and never fed back into Trade_Score "
+                "or Signal. See ai_context.py for the full reasoning behind keeping this scoped "
+                "this narrowly."
+            )
+            for ticker in signal_tickers:
+                signal = results_df.loc[results_df["Ticker"] == ticker, "Signal"].iloc[0]
+                with st.expander(f"{ticker} ({signal})"):
+                    with st.spinner(f"Summarizing recent news for {ticker}..."):
+                        headlines = market_data.get_multi_headlines(ticker)
+                        summary = ai_context.summarize_ticker_context(ticker, signal, headlines)
+                    if summary:
+                        st.write(summary)
+                    elif headlines:
+                        st.caption("AI summary unavailable -- raw headlines:")
+                        for h in headlines:
+                            st.write(f"- {h}")
+                    else:
+                        st.caption("No recent headlines found for this ticker.")
 
     st.download_button(
         "Download full results as CSV",

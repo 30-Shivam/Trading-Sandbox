@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import ai_context
 import config_loader
 import market_data
 import storage
@@ -43,7 +44,7 @@ DEFAULT_WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 DEFAULT_POSITION_BUDGET = 250.0
 
 
-def run(watchlist_path: Path, position_budget: float) -> int:
+def run(watchlist_path: Path, position_budget: float, with_ai_context: bool = False) -> int:
     try:
         storage.ensure_indexes()
     except storage.MongoNotConfigured as exc:
@@ -94,6 +95,17 @@ def run(watchlist_path: Path, position_budget: float) -> int:
     print(f"Analyzed {len(results_df)}/{len(tickers)} ticker(s): {strong_buys} Strong Buy, {buys} Buy.")
     print(f"Logged {logged_count} signal(s) to MongoDB.")
 
+    if with_ai_context:
+        if not ai_context.is_available():
+            print("[WARN] --with-ai-context requested but unavailable (set ANTHROPIC_API_KEY).", file=sys.stderr)
+        else:
+            signal_rows = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])]
+            for _, row in signal_rows.iterrows():
+                headlines = market_data.get_multi_headlines(row["Ticker"])
+                summary = ai_context.summarize_ticker_context(row["Ticker"], row["Signal"], headlines)
+                if summary:
+                    print(f"\n[{row['Ticker']} ({row['Signal']})] {summary}")
+
     if skipped:
         print(f"Skipped {len(skipped)} ticker(s):")
         for ticker, reason in skipped:
@@ -106,8 +118,14 @@ def main():
     parser = argparse.ArgumentParser(description="Scan the watchlist and log Strong Buy/Buy signals to MongoDB.")
     parser.add_argument("--watchlist", type=Path, default=DEFAULT_WATCHLIST_FILE)
     parser.add_argument("--position-budget", type=float, default=DEFAULT_POSITION_BUDGET)
+    parser.add_argument(
+        "--with-ai-context", action="store_true",
+        help="Print an AI-generated news summary (informational only, not a rating) for each "
+             "Strong Buy/Buy signal found. Requires ANTHROPIC_API_KEY; degrades to a warning "
+             "if unavailable rather than failing the scan.",
+    )
     args = parser.parse_args()
-    sys.exit(run(args.watchlist, args.position_budget))
+    sys.exit(run(args.watchlist, args.position_budget, args.with_ai_context))
 
 
 if __name__ == "__main__":

@@ -67,6 +67,20 @@ def get_recent_headlines(ticker_obj: yf.Ticker, count: int = NEWS_HEADLINE_COUNT
     return titles
 
 
+def get_multi_headlines(ticker: str, count: int = NEWS_HEADLINE_COUNT) -> list[str]:
+    """Fetch up to `count` recent headlines for `ticker` on demand -- a thin
+    wrapper around get_recent_headlines() for callers (e.g. ai_context.py
+    via the dashboard) that want more than the single Top_Headline already
+    carried on a scan_tickers() result, without re-fetching OHLCV or paying
+    the cost of storing every ticker's full headline list during the main
+    scan. Returns [] on any fetch failure -- informational only, never
+    worth failing a scan over."""
+    try:
+        return get_recent_headlines(yf.Ticker(ticker), count=count)
+    except Exception:
+        return []
+
+
 def check_market_uptrend(
     config: swingtrade.TradingConfig, index_ticker: str = MARKET_INDEX_TICKER
 ) -> tuple[bool, float, float]:
