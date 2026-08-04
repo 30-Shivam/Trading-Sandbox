@@ -27,6 +27,18 @@ def fetch_data(ticker: str) -> pd.DataFrame:
         raise RuntimeError(f"no data returned for ticker '{ticker}'")
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+    # yfinance/Yahoo occasionally publishes a trailing row for the most
+    # recent session with a real Volume but a NaN Close (the day's data
+    # isn't fully finalized yet at fetch time) -- a NaN anywhere in the
+    # window NaNs out every rolling indicator computed through that row
+    # (SMA/RSI/ATR), which otherwise surfaces as a confusing "insufficient
+    # history" error despite having a full year of real data behind it.
+    # Drop any such trailing rows so the newest bar used downstream is
+    # always a genuinely complete one, not a same-day placeholder.
+    while len(df) and pd.isna(df["Close"].iloc[-1]):
+        df = df.iloc[:-1]
+    if df.empty:
+        raise RuntimeError(f"no usable (non-NaN Close) data returned for ticker '{ticker}'")
     return df
 
 
