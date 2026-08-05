@@ -53,7 +53,10 @@ wired up — you just won't get logging/learning until it is.
 Edit `watchlist.txt` to control which tickers get scanned. It accepts either
 plain text (one ticker per line) or the JSON form already in the repo
 (`{"watchlist": [{"ticker": "NVDA", ...}, ...]}` — the extra fields like
-`sector`/`strategy` are just notes for you, not read by any code).
+`sector`/`strategy` are just notes for you, not read by any code). The
+repo's default list currently carries 253 tickers across 11 sectors, sized
+to give the (fairly selective) breakout strategy more daily opportunities
+to find a real signal.
 
 Optionally set `GEMINI_API_KEY` (free tier from Google AI Studio) to enable
 the AI news-context feature — a short, human-readable summary of each Strong
@@ -218,6 +221,15 @@ a violently volatile ticker (wide stop) gets fewer shares than a calm one
 (tight stop) for the same dollar risk. See `swingtrade.size_by_risk()`.
 `ingest.py --risk-amount <dollars>` is the headless equivalent (falls back
 to `--position-budget`'s flat behavior if omitted).
+
+**"Loosened Filters View"** (breakout configs only) appears right below the
+normal Scan Results table — re-scores the same scan with the active
+config's extra sharpening filters (overbought, relative-strength, volume,
+ADX, OBV, squeeze) reset to disabled, so you can see what would have
+scored a signal under just the base breakout strategy on days the real,
+selective table above is empty or thin. Informational only — never touches
+capital allocation, never gets logged to Mongo. See
+`swingtrade.loosened_breakout_config()`.
 
 Allocation also caps concentration per sector (`max_sector_allocation_pct`,
 default 40%, read from `watchlist.txt`'s JSON `sector` field — see the

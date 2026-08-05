@@ -585,6 +585,28 @@ def main():
     display_columns = DISPLAY_COLUMNS_BREAKOUT if config.strategy == "breakout" else DISPLAY_COLUMNS_RSI
     st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
 
+    if config.strategy == "breakout":
+        st.subheader("Loosened Filters View (research/informational only)")
+        st.caption(
+            "Same underlying scan, re-scored with the six 'sharpening' filters (overbought, "
+            "relative-strength, volume-ratio, ADX, OBV, squeeze) reset to disabled -- shows what "
+            "would score a signal under just the base breakout+ATR strategy, without the extra "
+            "selectivity that's WHY the active config is validated to be this selective (see "
+            "improvements.txt items 17/18/23). The core trigger (breakout_lookback_days) and "
+            "ATR stop/target levels are unchanged -- only the extra gates are loosened. "
+            "**Never used for capital allocation, never logged to MongoDB** -- purely a wider "
+            "net to look at on days the Scan Results table above is empty or thin."
+        )
+        loosened_config = swingtrade.loosened_breakout_config(config)
+        loosened_df = swingtrade.add_breakout_trade_score(results_df.copy(), loosened_config)
+        loosened_df = loosened_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
+        shown = loosened_df[loosened_df["Signal"] != "Ignore"]
+        if shown.empty:
+            st.caption("Nothing scores above Ignore even with the extra filters disabled -- "
+                       "genuinely no breakout activity anywhere in the watchlist today.")
+        else:
+            st.dataframe(style_results(shown[display_columns]), width="stretch", hide_index=True)
+
     if generate_ai_context:
         signal_tickers = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])]["Ticker"].tolist()
         if not signal_tickers:

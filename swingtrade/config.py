@@ -8,7 +8,7 @@ Phase 6 will eventually load from MongoDB's System_Config collection (hence
 `to_dict`/`from_dict` below).
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -248,3 +248,31 @@ class TradingConfig:
 
 
 DEFAULT_CONFIG = TradingConfig()
+
+
+def loosened_breakout_config(config: TradingConfig) -> TradingConfig:
+    """Same core breakout definition as `config` (breakout_lookback_days,
+    ATR stop/target multiples, everything that defines WHAT a signal is)
+    but the six "sharpening" filters -- breakout_rsi_overbought_threshold,
+    breakout_relative_strength_min, breakout_volume_ratio_min,
+    breakout_adx_min, breakout_obv_zscore_min, breakout_squeeze_zscore_max
+    -- reset to their practical-disabled defaults. Shows what would have
+    scored a real signal under just the base strategy, without the extra
+    selectivity that's WHY the real config is validated to be as selective
+    as it is (see improvements.txt items 17/18/23 -- each filter earned its
+    place, or didn't, through actual holdout testing).
+
+    Purely a display/research convenience (see dip_buy_analyzer.py's
+    "Loosened Filters" section) -- never used for capital allocation,
+    never logged to Trade_Signals, never touches the active System_Config.
+    Only meaningful for strategy="breakout" configs; harmless no-op shape
+    for "rsi" (those six fields aren't read by RSI scoring at all)."""
+    return replace(
+        config,
+        breakout_rsi_overbought_threshold=100.0,
+        breakout_relative_strength_min=-100.0,
+        breakout_volume_ratio_min=0.0,
+        breakout_adx_min=0.0,
+        breakout_obv_zscore_min=-100.0,
+        breakout_squeeze_zscore_max=100.0,
+    )
