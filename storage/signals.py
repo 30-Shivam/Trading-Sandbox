@@ -4,6 +4,24 @@ Document shape (one per ticker per trading day):
     {
         "ticker": str,
         "signal_date": str,          # ISO date, matches compute_levels' As_Of
+        "strategy": str,             # "rsi" | "breakout" | "pullback" |
+                                      # "breakout_retest" | "week52_high" --
+                                      # from config_snapshot["strategy"].
+                                      # Part of the unique key alongside
+                                      # ticker/signal_date: once more than
+                                      # one strategy can be live at once
+                                      # (see dip_buy_analyzer.py's secondary
+                                      # scan sections), the SAME ticker can
+                                      # legitimately fire under two
+                                      # different strategies on the same
+                                      # day, and those must be two separate
+                                      # documents, not one overwriting the
+                                      # other. A missing strategy field
+                                      # (pre-existing documents written
+                                      # before this field existed) means
+                                      # "rsi" -- every signal logged before
+                                      # this was one, and was backfilled
+                                      # explicitly (see improvements.txt).
         "signal": "Strong Buy" | "Buy" | "Watch",
         "tier": "actionable" | "research" | "research_loosened",
                                       # "actionable" = Strong Buy/Buy (real
@@ -101,7 +119,7 @@ def _tier_for_signal(signal: str) -> str:
 
 def ensure_indexes() -> None:
     db = get_db()
-    db[COLLECTION_NAME].create_index([("ticker", 1), ("signal_date", 1)], unique=True)
+    db[COLLECTION_NAME].create_index([("ticker", 1), ("signal_date", 1), ("strategy", 1)], unique=True)
 
 
 def _native(value):
@@ -120,6 +138,7 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
     return {
         "ticker": _native(row["Ticker"]),
         "signal_date": str(row["As_Of"]),
+        "strategy": config_snapshot.get("strategy", "rsi"),
         "signal": _native(row["Signal"]),
         "tier": tier if tier is not None else _tier_for_signal(row["Signal"]),
         "trade_score": _native(row["Trade_Score"]),
@@ -143,18 +162,21 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
 
 
 def log_trade_signal(row: dict, config_snapshot: dict, tier: str | None = None) -> None:
-    """Upsert one Trade_Signals document, keyed on (ticker, signal_date).
-    Re-running the same scan the same day updates the existing document in
-    place instead of creating a duplicate. `tier`, if given, overrides the
-    normal actionable/research split derived from `row["Signal"]` -- used
-    for LOOSENED_RESEARCH_TIER, where the Signal value itself came from a
+    """Upsert one Trade_Signals document, keyed on (ticker, signal_date,
+    strategy). Re-running the same scan the same day updates the existing
+    document in place instead of creating a duplicate -- and, critically,
+    a DIFFERENT strategy firing on the same ticker/day gets its OWN
+    document instead of overwriting this one (see the module docstring's
+    `strategy` field note). `tier`, if given, overrides the normal
+    actionable/research split derived from `row["Signal"]` -- used for
+    LOOSENED_RESEARCH_TIER, where the Signal value itself came from a
     loosened config and shouldn't be mistaken for a real actionable one."""
     db = get_db()
     now = datetime.now(timezone.utc)
     doc = _build_document(row, config_snapshot, now, tier=tier)
 
     db[COLLECTION_NAME].update_one(
-        {"ticker": doc["ticker"], "signal_date": doc["signal_date"]},
+        {"ticker": doc["ticker"], "signal_date": doc["signal_date"], "strategy": doc["strategy"]},
         {"$set": doc, "$setOnInsert": {"created_at": now}},
         upsert=True,
     )
@@ -187,37 +209,39 @@ def get_unsettled_signals() -> list[dict]:
     return list(db[COLLECTION_NAME].find({"settled": {"$ne": True}}))
 
 
-def mark_settled(ticker: str, signal_date: str) -> None:
+def mark_settled(ticker: str, signal_date: str, strategy: str) -> None:
     db = get_db()
     db[COLLECTION_NAME].update_one(
-        {"ticker": ticker, "signal_date": signal_date},
+        {"ticker": ticker, "signal_date": signal_date, "strategy": strategy},
         {"$set": {"settled": True}},
     )
 
 
-def confirm_fill(ticker: str, signal_date: str, fill_price: float | None = None) -> None:
+def confirm_fill(ticker: str, signal_date: str, strategy: str, fill_price: float | None = None) -> None:
     """Mark a logged signal as an actual, confirmed fill -- distinct from
     merely being logged, since most mechanical signals are never actually
     traded. `fill_price` (optional) records what you actually paid if it
     differed from the system's computed buy_price; settle_trades.py uses it
     as the real entry price for pnl_pct when set. Stop_Loss/Sell_Price are
     never touched -- they're absolute levels computed at signal time, not
-    relative to whatever price you actually got filled at."""
+    relative to whatever price you actually got filled at. `strategy` is
+    required (not optional) because a ticker/date pair can now have more
+    than one candidate document -- see the module docstring."""
     db = get_db()
     update = {"confirmed_filled": True, "confirmed_at": datetime.now(timezone.utc)}
     if fill_price is not None:
         update["fill_price"] = float(fill_price)
     db[COLLECTION_NAME].update_one(
-        {"ticker": ticker, "signal_date": signal_date},
+        {"ticker": ticker, "signal_date": signal_date, "strategy": strategy},
         {"$set": update},
     )
 
 
-def unconfirm_fill(ticker: str, signal_date: str) -> None:
+def unconfirm_fill(ticker: str, signal_date: str, strategy: str) -> None:
     """Undo a mistaken confirm_fill call."""
     db = get_db()
     db[COLLECTION_NAME].update_one(
-        {"ticker": ticker, "signal_date": signal_date},
+        {"ticker": ticker, "signal_date": signal_date, "strategy": strategy},
         {"$set": {"confirmed_filled": False}, "$unset": {"fill_price": "", "confirmed_at": ""}},
     )
 

@@ -6,6 +6,11 @@ history using swingtrade.settle_trade(). Document shape:
     {
         "ticker": str,
         "signal_date": str,      # matches the source Trade_Signals document
+        "strategy": str,         # carried from the source Trade_Signals doc --
+                                  # part of the unique key alongside ticker/
+                                  # signal_date, same reasoning as
+                                  # storage/signals.py (a ticker can now fire
+                                  # under more than one strategy the same day)
         "entry_price": float,    # confirmed fill_price if set, else that signal's buy_price
         "exit_price": float,
         "exit_reason": "target_hit" | "stop_hit_intraday"
@@ -40,16 +45,18 @@ COLLECTION_NAME = "Trade_Outcomes"
 
 def ensure_indexes() -> None:
     db = get_db()
-    db[COLLECTION_NAME].create_index([("ticker", 1), ("signal_date", 1)], unique=True)
+    db[COLLECTION_NAME].create_index([("ticker", 1), ("signal_date", 1), ("strategy", 1)], unique=True)
 
 
 def log_trade_outcome(
-    ticker: str, signal_date: str, entry_price: float, result: dict,
+    ticker: str, signal_date: str, strategy: str, entry_price: float, result: dict,
     confirmed_filled: bool = False, tier: str = "actionable",
 ) -> None:
     """Upsert a Trade_Outcomes document for a resolved trade. `result` is
     the dict returned by swingtrade.settle_trade() for a terminal status
-    (WIN/LOSS/EXPIRED) -- never call this with an OPEN result."""
+    (WIN/LOSS/EXPIRED) -- never call this with an OPEN result. `strategy`
+    is required (not optional) because a ticker/date pair can now have more
+    than one candidate document -- see the module docstring."""
     if result["status"] == "OPEN":
         raise ValueError("cannot log an OPEN result -- the trade hasn't resolved yet")
 
@@ -57,6 +64,7 @@ def log_trade_outcome(
     doc = {
         "ticker": ticker,
         "signal_date": signal_date,
+        "strategy": strategy,
         "entry_price": float(entry_price),
         "exit_price": float(result["exit_price"]),
         "exit_reason": result["exit_reason"],
@@ -69,7 +77,7 @@ def log_trade_outcome(
         "settled_at": datetime.now(timezone.utc),
     }
     db[COLLECTION_NAME].update_one(
-        {"ticker": ticker, "signal_date": signal_date},
+        {"ticker": ticker, "signal_date": signal_date, "strategy": strategy},
         {"$set": doc},
         upsert=True,
     )

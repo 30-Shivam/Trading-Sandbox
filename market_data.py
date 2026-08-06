@@ -101,45 +101,88 @@ def check_market_uptrend(
     return swingtrade.is_market_uptrend(df, config)
 
 
-def scan_tickers(
-    tickers: tuple[str, ...], config: swingtrade.TradingConfig
-) -> tuple[list[dict], list[tuple[str, str]]]:
-    """Fetch data and compute levels for every ticker. The only network-heavy
-    step; callers decide whether/how to cache it (Streamlit wraps this in
-    st.cache_data, ingest.py calls it once per process). Dispatches on
-    `config.strategy` -- "rsi" (default, compute_levels) or "breakout"
-    (compute_breakout_levels) -- so callers don't need to know which
-    strategy produced the active config; the returned dicts are
-    schema-compatible either way (see compute_breakout_levels' docstring).
+def fetch_ticker_bundle(
+    tickers: tuple[str, ...],
+) -> tuple[dict[str, dict], pd.DataFrame | None, list[tuple[str, str]]]:
+    """Fetch OHLCV + earnings + headlines for every ticker ONCE, independent
+    of any strategy config -- the pure-fetch half of what scan_tickers()
+    used to do in one fetch-then-compute-then-discard loop. Also fetches the
+    market index (SPY) exactly once here, unconditionally -- previously
+    only fetched for "breakout" configs (and, for breakout specifically, a
+    SECOND time inside scan_tickers' old per-ticker loop, an existing minor
+    inefficiency this also fixes). Fetching it unconditionally now is a
+    small, one-time cost that's basically free relative to the per-ticker
+    loop, and lets every strategy share the same bundle without needing to
+    know ahead of time which of them will actually use it.
 
-    For "breakout", also fetches the market index ONCE (not per ticker) to
-    enable Relative_Strength -- see compute_relative_strength(). Failure to
-    fetch it degrades gracefully (Relative_Strength stays None, informational
-    only unless config.breakout_relative_strength_min is enabled) rather than
-    failing the whole scan over a single extra data point."""
-    market_df = None
-    if config.strategy == "breakout":
-        try:
-            market_df = fetch_data(MARKET_INDEX_TICKER)
-        except Exception:
-            market_df = None
+    Returns `(bundle, market_df, skipped)`: `bundle` maps ticker ->
+    `{"df": OHLCV DataFrame, "next_earnings": Timestamp | None,
+    "top_headline": str}`; `market_df` is SPY's OHLCV (`None` if it failed
+    to fetch -- degrades gracefully, same as before: Relative_Strength
+    stays `None` rather than failing the whole scan over one extra data
+    point); `skipped` is `(ticker, reason)` pairs for tickers whose OWN
+    data failed to fetch.
 
-    results = []
-    skipped = []
+    Callers running more than one strategy against the same tickers (see
+    dip_buy_analyzer.py's multi-strategy dashboard sections) should call
+    this ONCE and then `score_bundle_for_strategy()` once per strategy
+    against the same bundle, instead of paying the fetch cost per strategy."""
+    try:
+        market_df = fetch_data(MARKET_INDEX_TICKER)
+    except Exception:
+        market_df = None
+
+    bundle: dict[str, dict] = {}
+    skipped: list[tuple[str, str]] = []
+    now_utc = pd.Timestamp.now(tz="UTC")
     for i, ticker in enumerate(tickers):
         if i > 0:
             time.sleep(REQUEST_DELAY_SEC)
         try:
             df = fetch_data(ticker)
             ticker_obj = yf.Ticker(ticker)
-            now_utc = pd.Timestamp.now(tz="UTC")
             next_earnings = get_next_earnings_date(ticker_obj, now_utc)
             headlines = get_recent_headlines(ticker_obj)
             top_headline = headlines[0] if headlines else ""
+            bundle[ticker] = {"df": df, "next_earnings": next_earnings, "top_headline": top_headline}
+        except Exception as exc:
+            skipped.append((ticker, str(exc)))
+    return bundle, market_df, skipped
+
+
+def score_bundle_for_strategy(
+    bundle: dict[str, dict], market_df: pd.DataFrame | None, config: swingtrade.TradingConfig
+) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Compute levels for every ticker in an already-fetched bundle (see
+    fetch_ticker_bundle()), dispatching on `config.strategy`: "rsi"
+    (default, compute_levels), "breakout" (compute_breakout_levels, uses
+    `market_df` for Relative_Strength), "pullback" (compute_pullback_levels),
+    "breakout_retest" (compute_breakout_retest_levels), or "week52_high"
+    (compute_week52_levels) -- the returned dicts are schema-compatible
+    across all five (see compute_breakout_levels' docstring). Pure
+    computation, no network calls -- safe and cheap to call once per
+    strategy against the SAME bundle."""
+    results = []
+    skipped = []
+    for ticker, entry in bundle.items():
+        df, next_earnings, top_headline = entry["df"], entry["next_earnings"], entry["top_headline"]
+        try:
             if config.strategy == "breakout":
                 levels = swingtrade.compute_breakout_levels(
                     ticker, df, config, next_earnings_date=next_earnings,
                     top_headline=top_headline, market_df=market_df,
+                )
+            elif config.strategy == "pullback":
+                levels = swingtrade.compute_pullback_levels(
+                    ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
+                )
+            elif config.strategy == "breakout_retest":
+                levels = swingtrade.compute_breakout_retest_levels(
+                    ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
+                )
+            elif config.strategy == "week52_high":
+                levels = swingtrade.compute_week52_levels(
+                    ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
                 )
             else:
                 levels = swingtrade.compute_levels(
@@ -149,6 +192,24 @@ def scan_tickers(
         except Exception as exc:
             skipped.append((ticker, str(exc)))
     return results, skipped
+
+
+def scan_tickers(
+    tickers: tuple[str, ...], config: swingtrade.TradingConfig
+) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Fetch data and compute levels for every ticker. The only network-heavy
+    step; callers decide whether/how to cache it (Streamlit wraps this in
+    st.cache_data, ingest.py calls it once per process). Signature and
+    behavior are unchanged from before the fetch/compute split below --
+    existing single-strategy callers (ingest.py, the dashboard's primary
+    scan) need no changes. Thin wrapper over fetch_ticker_bundle() +
+    score_bundle_for_strategy() -- callers running MULTIPLE strategies
+    against the same tickers should call those two directly instead (see
+    fetch_ticker_bundle()'s docstring), to fetch once and score many times
+    rather than paying the fetch cost per strategy."""
+    bundle, market_df, fetch_skipped = fetch_ticker_bundle(tickers)
+    results, score_skipped = score_bundle_for_strategy(bundle, market_df, config)
+    return results, fetch_skipped + score_skipped
 
 
 def review_holdings(

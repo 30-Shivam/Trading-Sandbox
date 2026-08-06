@@ -29,7 +29,7 @@ import storage
 from settle_trades import settle_one
 
 
-def _resettle_if_already_settled(ticker: str, signal_date: str) -> None:
+def _resettle_if_already_settled(ticker: str, signal_date: str, strategy: str) -> None:
     """confirm_fill()/unconfirm_fill() only touch the Trade_Signals document.
     If that signal already settled BEFORE you confirmed it, its
     Trade_Outcomes doc is now stale (wrong confirmed_filled, wrong
@@ -38,7 +38,7 @@ def _resettle_if_already_settled(ticker: str, signal_date: str) -> None:
     the outcome reflects the confirmation immediately instead of silently
     staying wrong forever."""
     db = storage.get_db()
-    signal = db["Trade_Signals"].find_one({"ticker": ticker, "signal_date": signal_date})
+    signal = db["Trade_Signals"].find_one({"ticker": ticker, "signal_date": signal_date, "strategy": strategy})
     if signal and signal.get("settled"):
         outcome = settle_one(signal)
         print(f"  (was already settled -- re-settled: {outcome})")
@@ -48,6 +48,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--ticker", default=None)
     parser.add_argument("--date", default=None, help="signal_date, YYYY-MM-DD")
+    parser.add_argument(
+        "--strategy", default="rsi",
+        help="Which strategy's signal to confirm (rsi/breakout/pullback/breakout_retest/week52_high) -- "
+             "required to disambiguate now that the same ticker/date can have more than one candidate. "
+             "Default: rsi (matches every pre-existing signal logged before multi-strategy support).",
+    )
     parser.add_argument("--price", type=float, default=None, help="Your actual fill price, if different from the logged buy_price.")
     parser.add_argument("--undo", action="store_true", help="Unmark a previously confirmed fill.")
     args = parser.parse_args()
@@ -60,13 +66,13 @@ def main():
 
     if args.ticker and args.date:
         if args.undo:
-            storage.unconfirm_fill(args.ticker, args.date)
-            print(f"Unconfirmed {args.ticker} ({args.date}).")
+            storage.unconfirm_fill(args.ticker, args.date, args.strategy)
+            print(f"Unconfirmed {args.ticker} ({args.date}, strategy={args.strategy}).")
         else:
-            storage.confirm_fill(args.ticker, args.date, fill_price=args.price)
+            storage.confirm_fill(args.ticker, args.date, args.strategy, fill_price=args.price)
             price_note = f" at ${args.price:.2f}" if args.price else " (using the logged buy_price)"
-            print(f"Confirmed {args.ticker} ({args.date}) as filled{price_note}.")
-        _resettle_if_already_settled(args.ticker, args.date)
+            print(f"Confirmed {args.ticker} ({args.date}, strategy={args.strategy}) as filled{price_note}.")
+        _resettle_if_already_settled(args.ticker, args.date, args.strategy)
         return
 
     pending = storage.get_signals_pending_confirmation()
@@ -75,12 +81,13 @@ def main():
         return
     print(f"{len(pending)} unconfirmed signal(s), most recent first:")
     for s in pending:
+        strategy = s.get("strategy", "rsi")
         print(
-            f"  {s['ticker']:6s} {s['signal_date']}  {s['signal']:11s}  "
+            f"  {s['ticker']:6s} {s['signal_date']}  {strategy:15s}  {s['signal']:11s}  "
             f"buy={s['buy_price']:.2f}  stop={s['stop_loss']:.2f}  sell={s['sell_price']:.2f}"
         )
     print()
-    print("Confirm one with: python confirm_fill.py --ticker TICKER --date SIGNAL_DATE [--price YOUR_FILL_PRICE]")
+    print("Confirm one with: python confirm_fill.py --ticker TICKER --date SIGNAL_DATE --strategy STRATEGY [--price YOUR_FILL_PRICE]")
 
 
 if __name__ == "__main__":

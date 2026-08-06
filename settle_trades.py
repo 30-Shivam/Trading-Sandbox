@@ -65,6 +65,7 @@ def settle_one(signal: dict) -> str:
         return "no new bars yet"
 
     config = swingtrade.TradingConfig.from_dict(signal["config_snapshot"])
+    strategy = config.strategy  # correct for old docs too -- from_dict() defaults missing "strategy" to "rsi"
     confirmed = bool(signal.get("confirmed_filled", False))
     tier = signal.get("tier", "actionable")  # pre-existing docs predate this field -- they were all actionable
     entry_price = signal.get("fill_price") or signal["buy_price"]
@@ -79,8 +80,10 @@ def settle_one(signal: dict) -> str:
     if result["status"] == "OPEN":
         return "OPEN (still open)"
 
-    storage.log_trade_outcome(ticker, signal_date, entry_price, result, confirmed_filled=confirmed, tier=tier)
-    storage.mark_settled(ticker, signal_date)
+    storage.log_trade_outcome(
+        ticker, signal_date, strategy, entry_price, result, confirmed_filled=confirmed, tier=tier
+    )
+    storage.mark_settled(ticker, signal_date, strategy)
     tag = "CONFIRMED" if confirmed else "unconfirmed"
     return (
         f"{result['status']} ({result['exit_reason']}, "

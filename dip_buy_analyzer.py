@@ -119,6 +119,20 @@ compute, for every scanned ticker:
       HOLD / SELL (stop breached) / SELL (target hit) recommendation --
       informational, not a guarantee.
 
+  12. Below the primary scan, two validated secondary strategies (see
+      improvements.txt items 27/28) are shown in their own sections --
+      "Breakout Retest" (a genuine breakout's own trigger level retested
+      within a following window) and "52-Week High" (price near its own
+      trailing 52-week high) -- each with its OWN separate "Total Available
+      Cash" pool (never merged with the primary or each other) and its own
+      independent capital-allocation pass against your SAME real Current
+      Holdings. All three sections share one fetch of the watchlist's OHLCV
+      data (see market_data.fetch_ticker_bundle) so running three
+      strategies costs one network fetch, not three. Genuinely tradeable,
+      capital-eligible signals -- logged to MongoDB the same as the primary
+      scan, not a research-only/informational view like the Loosened
+      Filters section above.
+
 The actual level/score/allocation math lives in the `swingtrade` package
 (no yfinance/streamlit dependency there); persistence lives in the
 `storage` package (no yfinance/streamlit dependency there either). This
@@ -190,18 +204,18 @@ def cached_market_uptrend(config: swingtrade.TradingConfig) -> tuple[bool, float
     return market_data.check_market_uptrend(config)
 
 
-@st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Scanning watchlist...")
-def scan_watchlist(
-    tickers: tuple[str, ...], config: swingtrade.TradingConfig
-) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
-    """Fetch data and compute levels for every ticker, via the shared
-    market_data module (also used standalone by ingest.py -- see
-    ARCHITECTURE_PLAN.md Phase 7). Cached so sidebar tweaks (budget, sorting)
-    don't re-trigger a full re-scan; `config` is part of the cache key, so a
-    newly-promoted System_Config correctly triggers a fresh scan instead of
-    serving results computed under the old parameters."""
-    results, skipped = market_data.scan_tickers(tickers, config)
-    return pd.DataFrame(results), skipped
+@st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Fetching watchlist data...")
+def cached_fetch_bundle(tickers: tuple[str, ...]):
+    """Fetch OHLCV + earnings + headlines for every ticker ONCE, shared
+    across every strategy section below (primary v19 + the secondary
+    breakout_retest/week52_high sections) -- see
+    market_data.fetch_ticker_bundle()'s docstring. Cached on `tickers`
+    alone, unlike the old per-config scan_watchlist this replaces --
+    correct, since fetching doesn't depend on which strategy will score
+    the data. Each section then calls market_data.score_bundle_for_strategy()
+    against this same bundle, so running 3 strategies costs 1x the network
+    fetch, not 3x."""
+    return market_data.fetch_ticker_bundle(tickers)
 
 
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Reviewing current holdings...")
@@ -210,7 +224,7 @@ def cached_review_holdings(
 ) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
     """Evaluate each held ticker (with a known avg_cost) against the active
     config's stop/target rules. `holdings_key` is a hashable
-    ((ticker, avg_cost), ...) tuple so this can be cached like scan_watchlist."""
+    ((ticker, avg_cost), ...) tuple so this can be cached like cached_fetch_bundle."""
     results, skipped = market_data.review_holdings(dict(holdings_key), config)
     return pd.DataFrame(results), skipped
 
@@ -311,6 +325,121 @@ def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
     return config_loader.load_active_config()
 
 
+# Fixed, immutable candidate System_Config versions for the two validated
+# secondary strategies shown alongside the primary scan -- see
+# improvements.txt items 27/28. Not "active" (v19 remains the one real
+# active config) -- these are genuinely tradeable secondary signals shown
+# in their own sections, each with their own cash pool (see main()).
+SECONDARY_STRATEGY_VERSIONS = {
+    "Breakout Retest": 27,
+    "52-Week High": 28,
+}
+
+
+@st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner=False)
+def load_secondary_config(version: int) -> tuple[swingtrade.TradingConfig | None, str]:
+    """Load one fixed candidate System_Config version for a secondary scan
+    section -- see config_loader.load_config_by_version()'s docstring for
+    why this returns (None, reason) on failure rather than a silent
+    DEFAULT_CONFIG fallback."""
+    return config_loader.load_config_by_version(version)
+
+
+def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> pd.DataFrame:
+    """Dispatch to the right add_*_trade_score() for config.strategy --
+    covers all five strategies (previously this dispatch only handled
+    "breakout" vs. everything-else, silently mis-scoring pullback/
+    breakout_retest/week52_high rows as RSI; fixed alongside the same gap
+    in market_data.score_bundle_for_strategy())."""
+    if config.strategy == "breakout":
+        return swingtrade.add_breakout_trade_score(df, config)
+    elif config.strategy == "pullback":
+        return swingtrade.add_pullback_trade_score(df, config)
+    elif config.strategy == "breakout_retest":
+        return swingtrade.add_breakout_retest_trade_score(df, config)
+    elif config.strategy == "week52_high":
+        return swingtrade.add_week52_trade_score(df, config)
+    else:
+        return swingtrade.add_trade_score(df, config)
+
+
+def render_secondary_section(
+    label: str,
+    config: swingtrade.TradingConfig,
+    bundle: dict,
+    market_df,
+    fetch_skipped: list[tuple[str, str]],
+    sector_lookup: dict[str, str],
+    existing_holdings: dict[str, float],
+    total_cash: float,
+    apply_allocation: bool,
+    risk_amount: float | None,
+    position_budget: float | None,
+    storage_ok: bool,
+) -> None:
+    """Score, log, allocate, and display one secondary strategy's results
+    against the SAME already-fetched bundle the primary scan used -- no
+    extra network fetch (see cached_fetch_bundle()). `existing_holdings` is
+    your real portfolio, shared and NOT updated between this call and the
+    primary/other secondary section's own allocate_capital() call within
+    the same page load -- each strategy's allocation is evaluated against
+    your actual holdings, not against what another strategy hypothetically
+    proposed today. A leaner treatment than the primary section (no
+    per-sector breakdown expander, no Loosened Filters View) since these
+    are newly-added, alongside-only signals -- see improvements.txt items
+    27/28."""
+    st.subheader(label)
+    results, score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+    if not results:
+        st.caption("No tickers were successfully analyzed.")
+        return
+
+    results_df = pd.DataFrame(results)
+    if risk_amount:
+        results_df["Shares_To_Buy"] = swingtrade.size_by_risk(
+            results_df["Buy_Price"], results_df["Stop_Loss"], risk_amount, config.fractional_share_decimals
+        )
+    else:
+        results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
+    results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
+    results_df = _score_for_strategy(results_df, config)
+    results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
+
+    if storage_ok:
+        try:
+            logged = storage.log_trade_signals(results_df, config.to_dict())
+            st.caption(
+                f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB."
+            )
+        except Exception as exc:
+            st.warning(f"Signal logging failed: {exc}")
+    else:
+        st.caption("MongoDB not connected -- signals aren't being logged.")
+
+    if apply_allocation:
+        results_df, capital_allocated = swingtrade.allocate_capital(
+            results_df, total_cash,
+            sector_lookup=sector_lookup, max_sector_allocation_pct=config.max_sector_allocation_pct,
+            existing_holdings=existing_holdings,
+        )
+        remaining_idle_cash = round(total_cash - capital_allocated, 2)
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Analyzed", len(results_df))
+        col2.metric("Starting Cash", f"${total_cash:,.2f}")
+        col3.metric("Allocated", f"${capital_allocated:,.2f}")
+        col4.metric("Idle Cash", f"${remaining_idle_cash:,.2f}")
+    else:
+        st.caption(f"{len(results_df)} analyzed. Capital allocation is off.")
+
+    display_columns = DISPLAY_COLUMNS_RSI if config.strategy == "rsi" else DISPLAY_COLUMNS_BREAKOUT
+    st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
+
+    all_skipped = fetch_skipped + score_skipped
+    if all_skipped:
+        with st.expander(f"Skipped for {label} ({len(all_skipped)})"):
+            st.dataframe(pd.DataFrame(all_skipped, columns=["Ticker", "Reason"]), hide_index=True)
+
+
 def main():
     st.set_page_config(page_title="Swing-Trading Dashboard", layout="wide")
     st.title("Swing-Trading Dashboard")
@@ -320,6 +449,9 @@ def main():
     )
 
     config, config_source = load_active_config()
+    secondary_configs = {
+        label: load_secondary_config(version) for label, version in SECONDARY_STRATEGY_VERSIONS.items()
+    }
 
     with st.sidebar:
         st.header("Configuration")
@@ -383,6 +515,26 @@ def main():
                  "over-concentrate one sector are marked Sector Limit Reached (see "
                  "max_sector_allocation_pct in the active config above).",
         )
+
+        st.caption(
+            "Each secondary strategy below gets its OWN separate cash pool -- never merged "
+            "with the primary pool above or with each other."
+        )
+        secondary_cash: dict[str, float] = {}
+        for label in SECONDARY_STRATEGY_VERSIONS:
+            secondary_config, secondary_source = secondary_configs[label]
+            if secondary_config is not None:
+                secondary_cash[label] = st.number_input(
+                    f"Total Available Cash -- {label} ($)",
+                    min_value=0.0,
+                    value=float(DEFAULT_TOTAL_CASH),
+                    step=100.0,
+                    help=f"Separate cash pool for the {label} secondary section below -- "
+                         "not shared with the primary or any other secondary pool.",
+                )
+            else:
+                secondary_cash[label] = 0.0
+                st.caption(f"{label} section unavailable: {secondary_source}")
 
         st.subheader("Current Holdings")
         try:
@@ -465,7 +617,10 @@ def main():
         st.stop()
     st.success(f"{market_data.MARKET_INDEX_TICKER} is above its 200-day SMA ({market_close:.2f} >= {market_sma200:.2f}).")
 
-    results_df, skipped = scan_watchlist(tickers, config)
+    bundle, market_df, fetch_skipped = cached_fetch_bundle(tickers)
+    primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+    results_df = pd.DataFrame(primary_results)
+    skipped = fetch_skipped + primary_score_skipped
 
     if results_df.empty:
         st.error("No tickers were successfully analyzed. See skipped tickers below.")
@@ -481,10 +636,7 @@ def main():
     else:
         results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
     results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
-    if config.strategy == "breakout":
-        results_df = swingtrade.add_breakout_trade_score(results_df, config)
-    else:
-        results_df = swingtrade.add_trade_score(results_df, config)
+    results_df = _score_for_strategy(results_df, config)
     results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
 
     # Log signals BEFORE the capital-allocation overlay: Trade_Signals should
@@ -625,6 +777,21 @@ def main():
                        "genuinely no breakout activity anywhere in the watchlist today.")
         else:
             st.dataframe(style_results(shown[display_columns]), width="stretch", hide_index=True)
+
+    for label in SECONDARY_STRATEGY_VERSIONS:
+        secondary_config, _ = secondary_configs[label]
+        if secondary_config is None:
+            continue
+        st.divider()
+        render_secondary_section(
+            f"{label} Signals (v{SECONDARY_STRATEGY_VERSIONS[label]}, secondary)",
+            secondary_config,
+            bundle, market_df, fetch_skipped,
+            sector_lookup, existing_holdings,
+            secondary_cash[label], apply_allocation,
+            risk_amount, position_budget,
+            storage_ok,
+        )
 
     if generate_ai_context:
         signal_tickers = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])]["Ticker"].tolist()
