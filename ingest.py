@@ -103,6 +103,22 @@ def run(
     print(f"Analyzed {len(results_df)}/{len(tickers)} ticker(s): {strong_buys} Strong Buy, {buys} Buy, {watches} Watch.")
     print(f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB.")
 
+    if config.strategy == "breakout":
+        loosened_config = swingtrade.loosened_breakout_config(config)
+        loosened_df = swingtrade.add_breakout_trade_score(results_df.copy(), loosened_config)
+        strict_signal_by_ticker = dict(zip(results_df["Ticker"], results_df["Signal"]))
+        loosened_only = loosened_df[
+            loosened_df["Ticker"].map(strict_signal_by_ticker).eq("Ignore")
+        ]
+        loosened_logged = storage.log_trade_signals(
+            loosened_only, loosened_config.to_dict(), tier=storage.LOOSENED_RESEARCH_TIER
+        )
+        print(
+            f"Logged {loosened_logged.get(storage.LOOSENED_RESEARCH_TIER, 0)} research_loosened "
+            "signal(s) to MongoDB (would-be signals under loosened filters that the active "
+            "config scored Ignore -- see storage/signals.py)."
+        )
+
     if with_ai_context:
         if not ai_context.is_available():
             print("[WARN] --with-ai-context requested but unavailable (set GEMINI_API_KEY).", file=sys.stderr)

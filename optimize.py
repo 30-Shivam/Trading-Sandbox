@@ -349,6 +349,7 @@ def report_live_outcomes_context() -> None:
 
     actionable_docs = [d for d in docs if d.get("tier", "actionable") == "actionable"]
     research_docs = [d for d in docs if d.get("tier") == "research"]
+    loosened_docs = [d for d in docs if d.get("tier") == "research_loosened"]
     print(f"  Actionable tier (Strong Buy/Buy) only: {len(actionable_docs)} -- "
           f"pooled metrics: {swingtrade.summarize_trades(as_trades(actionable_docs))}")
 
@@ -361,6 +362,13 @@ def report_live_outcomes_context() -> None:
 
     print(f"  Research tier (Watch, never traded/tradeable) only: {len(research_docs)} -- "
           f"pooled metrics: {swingtrade.summarize_trades(as_trades(research_docs))}")
+
+    if loosened_docs:
+        print(f"  Research_loosened tier (active config scored Ignore, loosened config didn't, "
+              f"never traded/tradeable) only: {len(loosened_docs)} -- "
+              f"pooled metrics: {swingtrade.summarize_trades(as_trades(loosened_docs))}. "
+              "Reflects the loosened config, NOT the active one -- a sanity check on whether "
+              "loosening is worth considering, not a report card on v19 itself.")
 
 
 def main():

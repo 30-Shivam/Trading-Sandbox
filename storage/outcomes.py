@@ -18,7 +18,7 @@ history using swingtrade.settle_trade(). Document shape:
                                   # doc -- most outcomes are mechanical
                                   # what-ifs, not real trades; this is how
                                   # you separate the two in reporting
-        "tier": "actionable" | "research",  # carried over from the source
+        "tier": "actionable" | "research" | "research_loosened",  # carried from the source
                                   # Trade_Signals doc (see storage/signals.py)
                                   # -- lets reporting separate "signals I'd
                                   # actually trade" from the broader

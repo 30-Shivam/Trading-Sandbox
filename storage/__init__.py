@@ -9,6 +9,7 @@ from .holdings import get_holdings, set_holdings
 from .mongo import MongoNotConfigured, get_client, get_db
 from .outcomes import log_trade_outcome
 from .signals import (
+    LOOSENED_RESEARCH_TIER,
     confirm_fill,
     get_signals_pending_confirmation,
     get_unsettled_signals,
@@ -31,6 +32,7 @@ __all__ = [
     "MongoNotConfigured",
     "get_client",
     "get_db",
+    "LOOSENED_RESEARCH_TIER",
     "log_trade_signal",
     "log_trade_signals",
     "get_unsettled_signals",

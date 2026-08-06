@@ -594,11 +594,30 @@ def main():
             "selectivity that's WHY the active config is validated to be this selective (see "
             "improvements.txt items 17/18/23). The core trigger (breakout_lookback_days) and "
             "ATR stop/target levels are unchanged -- only the extra gates are loosened. "
-            "**Never used for capital allocation, never logged to MongoDB** -- purely a wider "
-            "net to look at on days the Scan Results table above is empty or thin."
+            "**Never used for capital allocation** -- rows the active config scored Ignore are "
+            "logged to MongoDB tagged tier=\"research_loosened\" purely to accumulate real "
+            "outcome data on days the Scan Results table above is empty or thin (see "
+            "storage/signals.py); never mixed with actionable/research-tier outcomes."
         )
         loosened_config = swingtrade.loosened_breakout_config(config)
         loosened_df = swingtrade.add_breakout_trade_score(results_df.copy(), loosened_config)
+
+        if storage_ok:
+            try:
+                strict_signal_by_ticker = dict(zip(results_df["Ticker"], results_df["Signal"]))
+                loosened_only = loosened_df[
+                    loosened_df["Ticker"].map(strict_signal_by_ticker).eq("Ignore")
+                ]
+                loosened_logged = storage.log_trade_signals(
+                    loosened_only, loosened_config.to_dict(), tier=storage.LOOSENED_RESEARCH_TIER
+                )
+                st.caption(
+                    f"Logged {loosened_logged.get(storage.LOOSENED_RESEARCH_TIER, 0)} "
+                    "research_loosened signal(s) to MongoDB."
+                )
+            except Exception as exc:
+                st.caption(f"Loosened-signal logging failed: {exc}")
+
         loosened_df = loosened_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
         shown = loosened_df[loosened_df["Signal"] != "Ignore"]
         if shown.empty:

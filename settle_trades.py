@@ -123,6 +123,7 @@ def main():
     all_outcomes = list(db["Trade_Outcomes"].find({}))
     actionable_outcomes = [o for o in all_outcomes if o.get("tier", "actionable") == "actionable"]
     research_outcomes = [o for o in all_outcomes if o.get("tier") == "research"]
+    loosened_outcomes = [o for o in all_outcomes if o.get("tier") == "research_loosened"]
     confirmed_outcomes = [o for o in all_outcomes if o.get("confirmed_filled")]
     as_trades = lambda outs: [{"status": o["status"], "pnl_pct": o["pnl_pct"]} for o in outs]  # noqa: E731
     print()
@@ -134,6 +135,10 @@ def main():
           f"{swingtrade.summarize_trades(as_trades(confirmed_outcomes))}")
     print(f"  Research tier (Watch, never traded/tradeable) ({len(research_outcomes)} settled): "
           f"{swingtrade.summarize_trades(as_trades(research_outcomes))}")
+    if loosened_outcomes:
+        print(f"  Research_loosened tier (active config scored Ignore, would-be signal under "
+              f"loosened filters, never traded/tradeable) ({len(loosened_outcomes)} settled): "
+              f"{swingtrade.summarize_trades(as_trades(loosened_outcomes))}")
     if not confirmed_outcomes:
         print("No confirmed fills yet -- see confirm_fill.py to mark real trades as you make them.")
 

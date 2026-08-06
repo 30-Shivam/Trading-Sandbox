@@ -227,9 +227,14 @@ normal Scan Results table — re-scores the same scan with the active
 config's extra sharpening filters (overbought, relative-strength, volume,
 ADX, OBV, squeeze) reset to disabled, so you can see what would have
 scored a signal under just the base breakout strategy on days the real,
-selective table above is empty or thin. Informational only — never touches
-capital allocation, never gets logged to Mongo. See
-`swingtrade.loosened_breakout_config()`.
+selective table above is empty or thin. Never touches capital allocation —
+but rows the active config scored Ignore that the loosened config scores
+Strong Buy/Buy/Watch ARE logged to Mongo, tagged `tier="research_loosened"`,
+purely to accumulate real outcome data for sanity-checking against backtest
+predictions on days the active config stays silent. Always kept separate
+from actionable/research-tier outcomes in reporting (settle_trades.py,
+optimize.py) — never mistaken for a real, tradeable signal. See
+`swingtrade.loosened_breakout_config()` and `storage/signals.py`.
 
 Allocation also caps concentration per sector (`max_sector_allocation_pct`,
 default 40%, read from `watchlist.txt`'s JSON `sector` field — see the

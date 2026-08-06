@@ -5,14 +5,31 @@ Document shape (one per ticker per trading day):
         "ticker": str,
         "signal_date": str,          # ISO date, matches compute_levels' As_Of
         "signal": "Strong Buy" | "Buy" | "Watch",
-        "tier": "actionable" | "research",  # "actionable" = Strong Buy/Buy
-                                      # (real capital-allocation-eligible);
+        "tier": "actionable" | "research" | "research_loosened",
+                                      # "actionable" = Strong Buy/Buy (real
+                                      # capital-allocation-eligible);
                                       # "research" = Watch, logged/settled
                                       # purely to accumulate live outcome
                                       # data faster than actionable-only
                                       # signals allow, WITHOUT touching real
-                                      # capital -- see improvements.txt. A
-                                      # missing tier field (pre-existing
+                                      # capital -- see improvements.txt.
+                                      # "research_loosened" = would only
+                                      # score Strong Buy/Buy/Watch under
+                                      # swingtrade.loosened_breakout_config()
+                                      # (the six extra breakout filters
+                                      # disabled) -- the active config
+                                      # scored it Ignore. Same purpose as
+                                      # "research" (accumulate real outcome
+                                      # data when the active config is too
+                                      # selective to fire), never traded,
+                                      # never capital-allocation-eligible;
+                                      # kept as its own tier (not folded into
+                                      # "research") so its outcomes are never
+                                      # pooled with real active-config
+                                      # research-tier performance -- they
+                                      # reflect a DIFFERENT, deliberately
+                                      # loosened config, not the real one.
+                                      # A missing tier field (pre-existing
                                       # documents written before this field
                                       # existed) means "actionable" -- every
                                       # signal logged before this was one.
@@ -72,6 +89,10 @@ COLLECTION_NAME = "Trade_Signals"
 ACTIONABLE_SIGNALS = ("Strong Buy", "Buy")
 RESEARCH_SIGNALS = ("Watch",)
 LOGGABLE_SIGNALS = ACTIONABLE_SIGNALS + RESEARCH_SIGNALS
+LOOSENED_RESEARCH_TIER = "research_loosened"
+# Matches pre-existing documents (written before the tier field existed) as
+# "actionable" too -- see the module docstring.
+ACTIONABLE_TIER_FILTER = {"$or": [{"tier": "actionable"}, {"tier": {"$exists": False}}]}
 
 
 def _tier_for_signal(signal: str) -> str:
@@ -94,13 +115,13 @@ def _native(value):
     return value
 
 
-def _build_document(row: dict, config_snapshot: dict, now: datetime) -> dict:
+def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str | None = None) -> dict:
     next_earnings = _native(row.get("Next_Earnings_Date"))
     return {
         "ticker": _native(row["Ticker"]),
         "signal_date": str(row["As_Of"]),
         "signal": _native(row["Signal"]),
-        "tier": _tier_for_signal(row["Signal"]),
+        "tier": tier if tier is not None else _tier_for_signal(row["Signal"]),
         "trade_score": _native(row["Trade_Score"]),
         "buy_price": _native(row["Buy_Price"]),
         "sell_price": _native(row["Sell_Price"]),
@@ -121,13 +142,16 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime) -> dict:
     }
 
 
-def log_trade_signal(row: dict, config_snapshot: dict) -> None:
+def log_trade_signal(row: dict, config_snapshot: dict, tier: str | None = None) -> None:
     """Upsert one Trade_Signals document, keyed on (ticker, signal_date).
     Re-running the same scan the same day updates the existing document in
-    place instead of creating a duplicate."""
+    place instead of creating a duplicate. `tier`, if given, overrides the
+    normal actionable/research split derived from `row["Signal"]` -- used
+    for LOOSENED_RESEARCH_TIER, where the Signal value itself came from a
+    loosened config and shouldn't be mistaken for a real actionable one."""
     db = get_db()
     now = datetime.now(timezone.utc)
-    doc = _build_document(row, config_snapshot, now)
+    doc = _build_document(row, config_snapshot, now, tier=tier)
 
     db[COLLECTION_NAME].update_one(
         {"ticker": doc["ticker"], "signal_date": doc["signal_date"]},
@@ -136,14 +160,21 @@ def log_trade_signal(row: dict, config_snapshot: dict) -> None:
     )
 
 
-def log_trade_signals(df: pd.DataFrame, config_snapshot: dict) -> dict[str, int]:
+def log_trade_signals(df: pd.DataFrame, config_snapshot: dict, tier: str | None = None) -> dict[str, int]:
     """Log every Strong Buy / Buy / Watch row in df (expects pre-allocation
     Signal values) -- Strong Buy/Buy tagged tier="actionable", Watch tagged
     tier="research" (see module docstring for why). Returns
-    {"actionable": n, "research": m}."""
+    {"actionable": n, "research": m}.
+
+    Pass `tier` to force every logged row to that tier instead (e.g.
+    LOOSENED_RESEARCH_TIER) -- returns {tier: n} instead. Used for
+    loosened-config rows, whose Signal values (Strong Buy/Buy/Watch) would
+    otherwise be mistaken for real actionable/research-tier ones."""
     eligible = df[df["Signal"].isin(LOGGABLE_SIGNALS)]
     for _, row in eligible.iterrows():
-        log_trade_signal(row.to_dict(), config_snapshot)
+        log_trade_signal(row.to_dict(), config_snapshot, tier=tier)
+    if tier is not None:
+        return {tier: len(eligible)}
     actionable_count = int(eligible["Signal"].isin(ACTIONABLE_SIGNALS).sum())
     return {"actionable": actionable_count, "research": len(eligible) - actionable_count}
 
@@ -194,11 +225,14 @@ def unconfirm_fill(ticker: str, signal_date: str) -> None:
 def get_signals_pending_confirmation() -> list[dict]:
     """Actionable (Strong Buy/Buy) signals not yet marked confirmed_filled,
     most recent first -- for a human to review and confirm or ignore.
-    Deliberately excludes the research tier (Watch) -- those were never
-    meant to be traded/confirmed, only tracked for outcome data."""
+    Deliberately excludes the research and research_loosened tiers -- those
+    were never meant to be traded/confirmed, only tracked for outcome data.
+    Filters on tier (not just `signal`) because a research_loosened row can
+    also carry signal="Strong Buy"/"Buy" (that's the loosened config's own
+    label for it) without being a real, capital-eligible signal."""
     db = get_db()
     return list(
         db[COLLECTION_NAME]
-        .find({"signal": {"$in": list(ACTIONABLE_SIGNALS)}, "confirmed_filled": {"$ne": True}})
+        .find({**ACTIONABLE_TIER_FILTER, "confirmed_filled": {"$ne": True}})
         .sort("signal_date", -1)
     )
