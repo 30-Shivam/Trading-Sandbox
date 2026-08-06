@@ -283,12 +283,29 @@ class TradingConfig:
                                             # same lean-v1, Optuna-tunable
                                             # pattern as pullback_band_pct
 
+    # 52-week-high momentum strategy (swingtrade/levels.compute_week52_levels,
+    # swingtrade/backtest.simulate_week52_signals) -- a fifth signal, a
+    # well-documented academic factor (George & Hwang 2004) distinct from
+    # every prior attempt: unlike breakout (a discrete "new high TODAY"
+    # event) or breakout_retest (a bounded window after one specific
+    # event), this is a continuous STATE -- how close is price, right now,
+    # to its own trailing week52_lookback_days high -- so it can stay true
+    # for many consecutive days while a stock consolidates near its highs,
+    # likely the most frequent-firing strength-anchored signal tried yet.
+    # Still anchored to genuine strength, not weakness or mere MA proximity.
+    week52_lookback_days: int = 252        # trailing window (trading days,
+                                            # ~52 weeks) for the high
+    week52_nearness_pct: float = 5.0       # max % BELOW that trailing high
+                                            # still counted as "near" (0% =
+                                            # at/above the high itself)
+
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,
     # trend-following), "pullback" (simulate_pullback_signals,
-    # trend-following pullback entry), or "breakout_retest"
+    # trend-following pullback entry), "breakout_retest"
     # (simulate_breakout_retest_signals, pullback to a recent breakout's
-    # level). Purely a tag for downstream dispatch (optimize.py,
+    # level), or "week52_high" (simulate_week52_signals, near a trailing
+    # 52-week high). Purely a tag for downstream dispatch (optimize.py,
     # run_backtest.py, eventually live signal generation); doesn't affect
     # any calculation itself. Old configs written before this field existed
     # default to "rsi" via from_dict(), which is correct -- every config

@@ -46,7 +46,13 @@ from watchlist import read_ticker_sectors, read_tickers
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 MARKET_INDEX_TICKER = "SPY"
-LOOKBACK_BUFFER_DAYS = 320  # calendar-day buffer before window start, for SMA200 warmup
+LOOKBACK_BUFFER_DAYS = 420  # calendar-day buffer before window start -- sized for the
+                             # LARGEST indicator window across all strategies:
+                             # week52_high's week52_lookback_days (252 trading days,
+                             # default), not just SMA200's 200. 252 trading days is
+                             # roughly 365 calendar days; this leaves a real safety
+                             # margin on top for holidays/warmup, same margin the old
+                             # 320-day constant left for SMA200's shorter window.
 REQUEST_DELAY_SEC = 0.5
 EARNINGS_HISTORY_LIMIT = 40  # ~10 years of quarterly reports
 

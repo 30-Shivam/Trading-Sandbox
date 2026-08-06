@@ -212,3 +212,45 @@ def add_breakout_retest_trade_score(df: pd.DataFrame, config: TradingConfig = DE
     df["Trade_Score"] = raw_score.where(df["Retest_Signal"], 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
     return df
+
+
+def add_week52_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    """52-week-high-momentum counterpart to add_trade_score()/add_breakout_trade_score()/
+    add_pullback_trade_score()/add_breakout_retest_trade_score() -- blends
+    RRR and Distance_to_Buy_Pct into a 0-100 Trade_Score for rows produced
+    by compute_week52_levels(), reusing signal_for_score()'s thresholds so
+    a week52_high Trade_Score means the same thing on the same 0-100 scale
+    as the other four strategies.
+
+    No RSI component, same reasoning as the other trend-following
+    strategies. rrr_score_weight/distance_score_weight are rescaled to
+    still sum to 100.
+
+    Distance_to_Buy_Pct here means "how far price is BELOW the trailing
+    52-week high" (can go slightly negative on a fresh high) -- same "clip
+    at 0, then smaller distance scores higher" formula as the other three
+    trend-following strategies: at-or-above the high scores the max
+    distance points uniformly, while further below is progressively
+    penalized as it approaches the band's edge.
+
+    Hard gate, not just a scoring input: a ticker whose Week52_Signal is
+    False (further than week52_nearness_pct below its own trailing
+    week52_lookback_days high, or outside the macro-uptrend/liquidity
+    gates -- see compute_week52_levels) gets Trade_Score=0/Ignore, full
+    stop -- same "not eligible at all" semantics as every other
+    strategy's hard gate, not merely a low score."""
+    df = df.copy()
+
+    rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+
+    distance_clipped = df["Distance_to_Buy_Pct"].clip(lower=0, upper=config.distance_score_cap_pct)
+    distance_score = (1 - distance_clipped / config.distance_score_cap_pct) * config.distance_score_weight
+
+    total_weight = config.rrr_score_weight + config.distance_score_weight
+    rescale = (100 / total_weight) if total_weight > 0 else 0.0
+
+    raw_score = ((rrr_score + distance_score) * rescale).clip(lower=0)
+
+    df["Trade_Score"] = raw_score.where(df["Week52_Signal"], 0.0).round(1)
+    df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
+    return df

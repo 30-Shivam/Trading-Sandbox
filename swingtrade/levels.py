@@ -865,6 +865,173 @@ def compute_breakout_retest_levels(
     return breakout_retest_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def precompute_week52_frame(
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> pd.DataFrame:
+    """Vectorized precompute of every rolling column week52_levels_from_frame()
+    needs -- the 52-week-high counterpart to precompute_rsi_frame()/
+    precompute_pullback_frame(). SMA_TREND/RSI/ATR/AvgVolume are the same
+    shared macro/liquidity/informational columns every strategy computes.
+
+    Week52_High = High.rolling(week52_lookback_days).max() -- deliberately
+    NOT shifted (unlike breakout's Highest_High), because this is a
+    continuous STATE (how close is today's own price to its own trailing
+    high, inclusive of today), not a discrete EVENT (did today cross a
+    level established before today) -- see compute_week52_levels()'s
+    docstring for the full reasoning. Still fully backtest-safe: only ever
+    reads data through and including the current row, same as SMA_TREND/
+    RSI/ATR everywhere else in this codebase.
+    """
+    df = df.copy()
+    df["SMA_TREND"] = df["Close"].rolling(window=config.sma_trend_window).mean()
+    df["RSI"] = ta.rsi(df["Close"], length=config.rsi_window)
+    df["ATR"] = ta.atr(df["High"], df["Low"], df["Close"], length=config.atr_window)
+    df["AvgVolume"] = df["Volume"].rolling(window=config.volume_lookback_days).mean()
+    df["Week52_High"] = df["High"].rolling(window=config.week52_lookback_days).max()
+    return df
+
+
+def week52_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract compute_week52_levels()'s dict for one row of a frame
+    already built by precompute_week52_frame() -- the O(1)-per-row
+    counterpart a walk-forward loop calls once per `as_of`. Business logic
+    is verbatim compute_week52_levels(), just reading from a precomputed
+    row.
+    """
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, rsi, atr, avg_volume, week52_high = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["RSI"], last_row["ATR"],
+        last_row["AvgVolume"], last_row["Week52_High"],
+    )
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+    if pd.isna(week52_high):
+        raise RuntimeError(f"insufficient history to compute {config.week52_lookback_days}-day high")
+    # RSI is informational only for week52_high (not used for gating) --
+    # same treatment as the other trend-following strategies.
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+
+    last_close, sma_trend, atr, avg_volume, week52_high = (
+        float(last_close), float(sma_trend), float(atr), float(avg_volume), float(week52_high),
+    )
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    buy_price = round(last_close, 2)
+    # Distance BELOW the 52-week high -- >=0 normally; can go slightly
+    # negative if today's own Close is itself a fresh week52_lookback_days
+    # high (Week52_High includes today, see precompute_week52_frame).
+    distance_to_buy_pct = ((week52_high - last_close) / week52_high) * 100
+    week52_signal = bool(distance_to_buy_pct <= config.week52_nearness_pct)
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "Week52_High": round(week52_high, 2),
+        "Week52_Signal": week52_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": round(distance_to_buy_pct, 2),
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_week52_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Compute 52-week-high-momentum levels for one ticker's OHLCV history
+    -- a fifth strategy, a well-documented academic factor (George & Hwang
+    2004, "The 52-Week High and Momentum Investing") distinct from every
+    prior attempt here: unlike breakout (a discrete "new high TODAY" event,
+    compute_breakout_levels) or breakout_retest (a bounded window after one
+    specific event, compute_breakout_retest_levels), this is a continuous
+    STATE -- how close is price, right now, to its own trailing
+    week52_lookback_days high -- so it can stay true for many consecutive
+    days while a stock consolidates near its highs.
+
+    Week52_High deliberately does NOT use .shift(1) the way breakout's
+    Highest_High does: breakout's shift exists because it's detecting a
+    discrete EVENT (did today cross a level established BEFORE today);
+    this is a continuous STATE description (how close is today's own
+    price to its own trailing high, inclusive of today) -- the standard
+    academic definition, and still fully backtest-safe, since both
+    formulations only ever use data through `as_of`, no future leakage
+    either way.
+
+    Buy_Price is today's own Close -- a resting LIMIT order at essentially
+    the current price (this strategy means "already near strength," not
+    "wait for a specific dip level"), filled via the same
+    _find_entry_fill() mechanics as pullback/breakout_retest, not
+    breakout's stop-buy. Distance_to_Buy_Pct is repurposed here to mean
+    "distance BELOW the 52-week high" (>=0 normally, can go slightly
+    negative if today's Close itself is a fresh 252-day high) -- consistent
+    with how every prior strategy gives this field its own strategy-
+    specific meaning while feeding the identical scoring formula.
+
+    The returned dict is schema-compatible with the other four strategies'
+    -- only add_week52_trade_score (swingtrade/scoring.py) differs
+    downstream. RSI is informational only, same treatment as the others.
+
+    Thin wrapper over precompute_week52_frame()/week52_levels_from_frame()
+    -- kept as a single-call convenience for the live dashboard/ingest.py,
+    matching every other strategy's same rationale.
+    """
+    frame = precompute_week52_frame(df, config)
+    as_of = frame.index[-1]
+    return week52_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def review_holding(
     ticker: str,
     df: pd.DataFrame,

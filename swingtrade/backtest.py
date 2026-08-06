@@ -72,7 +72,9 @@ from .levels import (
     precompute_breakout_retest_frame,
     precompute_pullback_frame,
     precompute_rsi_frame,
+    precompute_week52_frame,
     pullback_levels_from_frame,
+    week52_levels_from_frame,
 )
 from .scoring import add_trade_score
 from .settlement import settle_trade
@@ -988,6 +990,190 @@ def simulate_random_breakout_retest_entries(
     return trades
 
 
+def simulate_week52_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """52-week-high-momentum counterpart to simulate_signals()/simulate_breakout_signals()/
+    simulate_pullback_signals()/simulate_breakout_retest_signals() -- buys
+    when price is within config.week52_nearness_pct of its own trailing
+    config.week52_lookback_days high, in a confirmed macro uptrend. Unlike
+    every prior strategy, this is a continuous STATE rather than a
+    discrete event, so it can fire on many consecutive days while a stock
+    consolidates near its highs.
+
+    Same no-look-ahead discipline, same entry-timing realism -- Buy_Price
+    is a resting LIMIT order at essentially today's own Close (already
+    near strength, not waiting for a specific dip level), filled via the
+    same _find_entry_fill() mechanics as pullback/breakout_retest. Same
+    ATR-multiple stop/target sizing as every other strategy.
+
+    `market_ohlcv` is accepted for signature consistency with the other
+    four simulate_*() functions but unused here -- no Relative_Strength
+    concept in this v1, same as pullback/breakout_retest.
+
+    `ohlcv` needs the same leading-history buffer as the other strategies
+    -- see LOOKBACK_BUFFER_BARS (note: week52_lookback_days defaults to
+    252, noticeably longer than the other strategies' windows, so callers
+    fetching history for this strategy need a correspondingly larger
+    buffer -- see run_backtest.py's fetch buffering).
+    """
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_week52_frame(ohlcv, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = week52_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        if not levels["Week52_Signal"]:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Week52_High",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_week52_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_week52_signals() -- same idea as
+    the other four simulate_random_*_entries() functions, using this
+    strategy's own gates (macro uptrend, liquidity via
+    compute_week52_levels) and limit-order fill mechanics
+    (_find_entry_fill), so it isolates whether being-near-a-52-week-high
+    TIMING adds value over a random day using the identical Buy_Price
+    formula (that day's own Close) and entry/exit structure. `n_trades`
+    should be simulate_week52_signals()'s real signal count for this
+    ticker/window, so trade volume is matched. This is the critical
+    validation gate for this strategy -- see benchmark_random_entry.py."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_week52_frame(ohlcv, config)
+
+    candidates = []  # (as_of, buy_price, atr) for every day that passed the macro/liquidity gates, near-high or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = week52_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_Week52_High",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
 def run_backtest(
     ticker_data: dict[str, pd.DataFrame],
     market_data: pd.DataFrame,
@@ -1010,9 +1196,11 @@ def run_backtest(
     default), "breakout" (simulate_breakout_signals, trend-following;
     earnings_data is ignored, it has no catalyst concept), "pullback"
     (simulate_pullback_signals, trend-following pullback entry; earnings_data
-    also ignored, same reasoning), or "breakout_retest"
+    also ignored, same reasoning), "breakout_retest"
     (simulate_breakout_retest_signals, pullback to a recent breakout's
-    level; earnings_data also ignored, same reasoning)."""
+    level; earnings_data also ignored, same reasoning), or "week52_high"
+    (simulate_week52_signals, near a trailing 52-week high; earnings_data
+    also ignored, same reasoning)."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     all_trades = []
@@ -1035,9 +1223,14 @@ def run_backtest(
             trades = simulate_breakout_retest_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
             )
+        elif strategy == "week52_high":
+            trades = simulate_week52_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
+            )
         else:
             raise ValueError(
-                f"unknown strategy: {strategy!r} (expected 'rsi', 'breakout', 'pullback', or 'breakout_retest')"
+                f"unknown strategy: {strategy!r} "
+                "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', or 'week52_high')"
             )
         all_trades.extend(trades)
     return all_trades

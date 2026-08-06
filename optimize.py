@@ -93,9 +93,14 @@ atr_take_profit_multiplier/stop_loss_atr_multiplier (buys a pullback BACK
 TO a recent genuine breakout's own trigger level, instead of requiring the
 chase on the breakout day itself -- see
 swingtrade.compute_breakout_retest_levels, built after pullback lost to
-random-entry timing while breakout itself didn't) -- everything above
-(WFO, recency weighting, correlation-adjustment, ticker-holdout,
-champion/challenger) applies identically to all four.
+random-entry timing while breakout itself didn't); --strategy week52_high
+searches week52_lookback_days/week52_nearness_pct/atr_take_profit_multiplier/
+stop_loss_atr_multiplier (a continuous-STATE signal -- how close is price to
+its own trailing 52-week high, right now -- rather than a discrete event,
+so it can fire on many consecutive days; a well-documented academic factor,
+see swingtrade.compute_week52_levels) -- everything above (WFO, recency
+weighting, correlation-adjustment, ticker-holdout, champion/challenger)
+applies identically to all five.
 
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
@@ -104,6 +109,7 @@ Usage:
     python optimize.py --trials 30 --strategy breakout           # search the breakout signal instead
     python optimize.py --trials 30 --strategy pullback           # search the pullback signal instead
     python optimize.py --trials 30 --strategy breakout_retest    # search the breakout-retest signal instead
+    python optimize.py --trials 30 --strategy week52_high        # search the 52-week-high signal instead
 """
 
 import argparse
@@ -220,6 +226,22 @@ RETEST_BAND_PCT_RANGE = (0.5, 10.0)
 # Same range/reasoning as PULLBACK_BAND_PCT_RANGE -- both are symmetric
 # proximity-to-a-level bands with the same "how demanding should this be"
 # question.
+
+# 52-week-high momentum strategy's own search space. Even leaner than
+# pullback/retest (4D total incl. the two shared ATR/stop fields) -- no
+# third "slope"/"underlying lookback" dimension needed, just the window
+# and the nearness band.
+WEEK52_LOOKBACK_DAYS_RANGE = (100, 252)
+# Lower bound (100) is roughly a 5-month high (much shorter than the
+# classic "52-week" framing, letting Optuna find out whether a shorter
+# window works better); upper bound (252) is the standard full 52-week
+# definition -- the search can't go LONGER than the textbook definition,
+# only shorter, since going longer has no real academic grounding to test
+# against.
+WEEK52_NEARNESS_PCT_RANGE = (0.5, 15.0)
+# Lower bound (0.5) is a very tight band (must be almost exactly at the
+# high); upper bound (15.0) is quite loose (a stock 15% off its highs
+# still counts as "near"). 5.0's default sits well within this range.
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -354,11 +376,18 @@ def build_objective(
                 "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
                 "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
             }
-        else:
+        elif strategy == "breakout_retest":
             params = {
                 "breakout_lookback_days": trial.suggest_int("breakout_lookback_days", *BREAKOUT_LOOKBACK_RANGE),
                 "retest_window_days": trial.suggest_int("retest_window_days", *RETEST_WINDOW_DAYS_RANGE),
                 "retest_band_pct": trial.suggest_float("retest_band_pct", *RETEST_BAND_PCT_RANGE),
+                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
+                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+            }
+        else:
+            params = {
+                "week52_lookback_days": trial.suggest_int("week52_lookback_days", *WEEK52_LOOKBACK_DAYS_RANGE),
+                "week52_nearness_pct": trial.suggest_float("week52_nearness_pct", *WEEK52_NEARNESS_PCT_RANGE),
                 "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
                 "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
             }
@@ -435,8 +464,10 @@ def report_live_outcomes_context() -> None:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--strategy", choices=["rsi", "breakout", "pullback", "breakout_retest"], default="rsi",
-                         help="Which signal to search parameters for. Default: rsi.")
+    parser.add_argument(
+        "--strategy", choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high"], default="rsi",
+        help="Which signal to search parameters for. Default: rsi.",
+    )
     parser.add_argument("--trials", type=int, default=50)
     parser.add_argument("--start", default=None, help="Backtest window start (YYYY-MM-DD). Default: 1y before --end.")
     parser.add_argument("--end", default=None, help="Backtest window end (YYYY-MM-DD). Default: today.")

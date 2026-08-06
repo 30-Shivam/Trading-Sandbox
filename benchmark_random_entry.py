@@ -35,7 +35,14 @@ config.retest_window_days -- swingtrade.simulate_breakout_retest_signals /
 simulate_random_breakout_retest_entries), built to keep the one ingredient
 that's actually shown a real edge (breakout's trigger) while relaxing its
 same-day-only restriction -- this IS the critical validation gate for that
-strategy too.
+strategy too. (Result: PASSED, both on untuned defaults and on its own
+Optuna-tuned candidate -- see improvements.txt item 27.)
+--strategy week52_high tests the 52-week-high-momentum signal (buy when
+price is within config.week52_nearness_pct of its own trailing
+week52_lookback_days high -- swingtrade.simulate_week52_signals /
+simulate_random_week52_entries), a well-documented academic factor and a
+continuous STATE rather than a discrete event, unlike every prior
+strategy -- this IS the critical validation gate for that strategy too.
 
 Applies the same ticker-holdout split as optimize.py (--holdout-frac,
 --holdout-seed) so the comparison also holds up (or doesn't) on tickers
@@ -96,8 +103,10 @@ def summarize(trades: list[dict]) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--strategy", choices=["rsi", "breakout", "pullback", "breakout_retest"], default="rsi",
-                         help="Which signal to benchmark against random entries. Default: rsi.")
+    parser.add_argument(
+        "--strategy", choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high"], default="rsi",
+        help="Which signal to benchmark against random entries. Default: rsi.",
+    )
     parser.add_argument("--breakout-lookback-days", type=int, default=None,
                          help="Override config.breakout_lookback_days (--strategy breakout only). "
                               "Default: whatever the tested config already has (20 by default).")
@@ -140,10 +149,15 @@ def main():
               f"pullback_band_pct={config.pullback_band_pct}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
-    else:
+    elif args.strategy == "breakout_retest":
         print(f"  breakout_lookback_days={config.breakout_lookback_days}, "
               f"retest_window_days={config.retest_window_days}, "
               f"retest_band_pct={config.retest_band_pct}, "
+              f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
+              f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
+    else:
+        print(f"  week52_lookback_days={config.week52_lookback_days}, "
+              f"week52_nearness_pct={config.week52_nearness_pct}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
 
@@ -187,9 +201,12 @@ def main():
     elif args.strategy == "pullback":
         real_fn, random_fn = swingtrade.simulate_pullback_signals, swingtrade.simulate_random_pullback_entries
         real_label = "Pullback-timed"
-    else:
+    elif args.strategy == "breakout_retest":
         real_fn, random_fn = swingtrade.simulate_breakout_retest_signals, swingtrade.simulate_random_breakout_retest_entries
         real_label = "Breakout_Retest-timed"
+    else:
+        real_fn, random_fn = swingtrade.simulate_week52_signals, swingtrade.simulate_random_week52_entries
+        real_label = "Week52_High-timed"
 
     real_trades = []
     random_trades = []
