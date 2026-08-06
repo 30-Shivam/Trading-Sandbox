@@ -680,6 +680,191 @@ def compute_pullback_levels(
     return pullback_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def precompute_breakout_retest_frame(
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    market_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Vectorized precompute of every column breakout_retest_levels_from_frame()
+    needs -- built ON TOP of precompute_breakout_frame() (reused wholesale,
+    not reimplemented: SMA_TREND/RSI/ATR/AvgVolume/Highest_High/ADX/etc. are
+    identical to what a genuine breakout needs, since a retest is
+    fundamentally "did a genuine breakout happen recently, and has price
+    pulled back to it").
+
+    Adds three retest-specific columns:
+    - Breakout_Flag: True on any day Close > Highest_High (today's own
+      breakout) -- exactly compute_breakout_levels' Breakout_Signal
+      definition, just computed for every row instead of one `as_of`.
+    - Last_Breakout_Level: the Highest_High value from the MOST RECENT
+      Breakout_Flag day, forward-filled -- NaN before the first breakout
+      ever occurs. ffill() only ever propagates an EARLIER row's value
+      forward, so this carries no look-ahead: on any given day it reflects
+      only breakouts that have already happened by that day's close,
+      exactly like every other rolling column in this codebase.
+    - Days_Since_Breakout: row-position distance back to that same most
+      recent breakout day (0 on the breakout day itself, NaN before any
+      breakout has occurred) -- same forward-fill-of-position technique,
+      no look-ahead for the identical reason.
+    """
+    df = precompute_breakout_frame(df, config, market_df=market_df)
+    breakout_flag = df["Close"] > df["Highest_High"]
+    df["Last_Breakout_Level"] = df["Highest_High"].where(breakout_flag).ffill()
+    row_position = pd.Series(range(len(df)), index=df.index)
+    breakout_day_position = row_position.where(breakout_flag).ffill()
+    df["Days_Since_Breakout"] = row_position - breakout_day_position
+    return df
+
+
+def breakout_retest_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract compute_breakout_retest_levels()'s dict for one row of a
+    frame already built by precompute_breakout_retest_frame() -- the
+    O(1)-per-row counterpart a walk-forward loop calls once per `as_of`.
+    Business logic is verbatim compute_breakout_retest_levels(), just
+    reading from a precomputed row.
+    """
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, rsi, adx, last_breakout_level, days_since_breakout = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"],
+        last_row["RSI"], last_row["ADX"], last_row["Last_Breakout_Level"], last_row["Days_Since_Breakout"],
+    )
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+    # RSI/ADX are informational only for breakout_retest (not used for
+    # gating) -- same treatment as breakout's/pullback's.
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+    adx = None if pd.isna(adx) else round(float(adx), 2)
+
+    last_close, sma_trend, atr, avg_volume = float(last_close), float(sma_trend), float(atr), float(avg_volume)
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    # No breakout has ever occurred yet -- Last_Breakout_Level/Days_Since_Breakout
+    # are both NaN. Not an error (a totally normal, common state for a
+    # ticker with no recent breakout) -- just means Retest_Signal is False.
+    has_breakout = pd.notna(last_breakout_level) and pd.notna(days_since_breakout)
+    if has_breakout:
+        buy_price = round(float(last_breakout_level), 2)
+        days_since = int(days_since_breakout)
+        distance_to_buy_pct = ((last_close - buy_price) / buy_price) * 100
+        retest_signal = bool(
+            0 < days_since <= config.retest_window_days and abs(distance_to_buy_pct) <= config.retest_band_pct
+        )
+    else:
+        # No prior breakout to retest -- Buy_Price/Distance_to_Buy_Pct still
+        # need SOME numeric value for schema-compatibility (storage/display
+        # code reads these fields unconditionally), so fall back to
+        # Last_Close itself (Distance_to_Buy_Pct becomes 0 by construction)
+        # -- harmless, since Retest_Signal is always False here and the
+        # hard gate in add_breakout_retest_trade_score zeroes the score
+        # regardless of what these fallback values are.
+        buy_price = round(last_close, 2)
+        days_since = None
+        distance_to_buy_pct = 0.0
+        retest_signal = False
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "ADX": adx,
+        "Days_Since_Breakout": days_since,
+        "Retest_Signal": retest_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": round(distance_to_buy_pct, 2),
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_breakout_retest_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+    market_df: pd.DataFrame | None = None,
+) -> dict:
+    """Compute breakout-retest levels for one ticker's OHLCV history -- a
+    fourth strategy, built after BOTH RSI-oversold (compute_levels) and
+    pullback-in-uptrend (compute_pullback_levels) lost to matched-count
+    random-entry timing on held-out tickers (see benchmark_random_entry.py),
+    while breakout (compute_breakout_levels) was the one signal that beat
+    it. Keeps that validated ingredient -- Retest_Signal requires a genuine
+    breakout_lookback_days-day closing high to have occurred within the
+    last retest_window_days days -- but relaxes breakout's single most
+    restrictive property (must fire THE SAME DAY) by allowing entry when
+    price pulls BACK to that breakout's own trigger level within the
+    window, instead of only on the breakout day itself.
+
+    Buy_Price is the ORIGINAL breakout's trigger level (Highest_High on the
+    day it fired, forward-filled) -- a resting LIMIT order, filled via the
+    same _find_entry_fill() mechanics as RSI/pullback (buying a dip back
+    down to a known level), NOT breakout's own stop-buy _find_breakout_fill().
+
+    The returned dict is schema-compatible with the other three strategies'
+    (Buy_Price, Sell_Price, Stop_Loss, RRR, Distance_to_Buy_Pct,
+    Catalyst_Warning, etc. all present) -- only add_breakout_retest_trade_score
+    (swingtrade/scoring.py) differs downstream. RSI/ADX are informational
+    only, same treatment as breakout's/pullback's.
+
+    No extra filters (RSI-overbought/relative-strength/volume/ADX/OBV/squeeze)
+    in this v1 -- same lean-first-version reasoning as compute_pullback_levels.
+
+    Thin wrapper over precompute_breakout_retest_frame()/breakout_retest_levels_from_frame()
+    -- kept as a single-call convenience for the live dashboard/ingest.py,
+    matching every other strategy's same rationale.
+    """
+    frame = precompute_breakout_retest_frame(df, config, market_df=market_df)
+    as_of = frame.index[-1]
+    return breakout_retest_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def review_holding(
     ticker: str,
     df: pd.DataFrame,

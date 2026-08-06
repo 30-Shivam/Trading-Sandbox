@@ -261,15 +261,38 @@ class TradingConfig:
                                             # tighter/looser or asymmetric
                                             # band would help
 
+    # Breakout-retest strategy (swingtrade/levels.compute_breakout_retest_levels,
+    # swingtrade/backtest.simulate_breakout_retest_signals) -- a fourth
+    # signal, built after BOTH RSI-oversold and pullback-in-uptrend lost to
+    # matched-count random-entry timing on held-out tickers (see
+    # benchmark_random_entry.py) while breakout (v19) was the one signal
+    # that beat it. Keeps breakout's validated ingredient -- a genuine
+    # fresh breakout_lookback_days-day closing high -- but relaxes its most
+    # restrictive property (must fire THE SAME DAY) by allowing entry on a
+    # pullback BACK TO that breakout's level within a following window,
+    # instead of requiring the chase on day one. Reuses breakout_lookback_days
+    # for what counts as "a breakout" in the first place; no separate field.
+    retest_window_days: int = 10           # how many days after a
+                                            # confirmed breakout the retest
+                                            # is still considered valid
+    retest_band_pct: float = 3.0           # symmetric band (both
+                                            # above/below the original
+                                            # breakout trigger level)
+                                            # counted as "close enough" to
+                                            # call it a genuine retest --
+                                            # same lean-v1, Optuna-tunable
+                                            # pattern as pullback_band_pct
+
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,
-    # trend-following), or "pullback" (simulate_pullback_signals,
-    # trend-following pullback entry). Purely a tag for downstream dispatch
-    # (optimize.py, run_backtest.py, eventually live signal generation);
-    # doesn't affect any calculation itself. Old configs written before
-    # this field existed default to "rsi" via from_dict(), which is
-    # correct -- every config before the breakout strategy was added WAS an
-    # RSI config.
+    # trend-following), "pullback" (simulate_pullback_signals,
+    # trend-following pullback entry), or "breakout_retest"
+    # (simulate_breakout_retest_signals, pullback to a recent breakout's
+    # level). Purely a tag for downstream dispatch (optimize.py,
+    # run_backtest.py, eventually live signal generation); doesn't affect
+    # any calculation itself. Old configs written before this field existed
+    # default to "rsi" via from_dict(), which is correct -- every config
+    # before the breakout strategy was added WAS an RSI config.
     strategy: str = "rsi"
 
     def to_dict(self) -> dict:

@@ -65,9 +65,11 @@ import pandas as pd
 from .config import DEFAULT_CONFIG, TradingConfig
 from .levels import (
     breakout_levels_from_frame,
+    breakout_retest_levels_from_frame,
     levels_from_rsi_frame,
     market_uptrend_from_frame,
     precompute_breakout_frame,
+    precompute_breakout_retest_frame,
     precompute_pullback_frame,
     precompute_rsi_frame,
     pullback_levels_from_frame,
@@ -801,6 +803,191 @@ def simulate_random_pullback_entries(
     return trades
 
 
+def simulate_breakout_retest_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Breakout-retest counterpart to simulate_signals()/simulate_breakout_signals()/
+    simulate_pullback_signals() -- buys a pullback BACK TO a recent genuine
+    breakout's own trigger level, instead of RSI-oversold weakness, a fresh
+    N-day high THE SAME DAY, or proximity to a rising MA regardless of any
+    prior breakout. Built after both simulate_signals() and
+    simulate_pullback_signals() lost to matched-count random-entry timing
+    on held-out tickers (see benchmark_random_entry.py), keeping the one
+    ingredient that DID show a real edge (simulate_breakout_signals'
+    trigger definition) while relaxing its "must fire today" restriction.
+
+    Same no-look-ahead discipline, same entry-timing realism -- Buy_Price
+    is a resting LIMIT order at the original breakout's level, filled via
+    the same _find_entry_fill() mechanics as simulate_signals()/
+    simulate_pullback_signals() (a downside touch), NOT breakout's resting
+    STOP-BUY (_find_breakout_fill(), an upside cross). Same ATR-multiple
+    stop/target sizing as every other strategy, deliberately kept identical
+    so this is a clean test of whether retest TIMING adds value.
+
+    `market_ohlcv` is accepted for signature consistency with the other
+    three simulate_*() functions but unused here, same as
+    simulate_pullback_signals() -- v1 has no Relative_Strength concept.
+
+    `ohlcv` needs the same leading-history buffer as the other strategies
+    -- see LOOKBACK_BUFFER_BARS.
+    """
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_breakout_retest_frame(ohlcv, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = breakout_retest_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        if not levels["Retest_Signal"]:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Breakout_Retest",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_breakout_retest_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_breakout_retest_signals() -- same
+    idea as the other three simulate_random_*_entries() functions, using
+    this strategy's own gates (macro uptrend, liquidity, a recent breakout
+    to retest via compute_breakout_retest_levels) and limit-order fill
+    mechanics (_find_entry_fill), so it isolates whether retest-day TIMING
+    adds value over a random day using the identical Buy_Price formula
+    (that day's own eligible retest level) and entry/exit structure.
+    `n_trades` should be simulate_breakout_retest_signals()'s real signal
+    count for this ticker/window, so trade volume is matched. This is the
+    critical validation gate for this strategy -- see benchmark_random_entry.py."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_breakout_retest_frame(ohlcv, config)
+
+    candidates = []  # (as_of, buy_price, atr) for every day that passed the macro/liquidity gates, retest-eligible or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = breakout_retest_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_Breakout_Retest",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
 def run_backtest(
     ticker_data: dict[str, pd.DataFrame],
     market_data: pd.DataFrame,
@@ -821,9 +1008,11 @@ def run_backtest(
     each trade for compute_cluster_weights(). `strategy` selects which
     signal to simulate -- "rsi" (simulate_signals, mean-reversion,
     default), "breakout" (simulate_breakout_signals, trend-following;
-    earnings_data is ignored, it has no catalyst concept), or "pullback"
+    earnings_data is ignored, it has no catalyst concept), "pullback"
     (simulate_pullback_signals, trend-following pullback entry; earnings_data
-    also ignored, same reasoning)."""
+    also ignored, same reasoning), or "breakout_retest"
+    (simulate_breakout_retest_signals, pullback to a recent breakout's
+    level; earnings_data also ignored, same reasoning)."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     all_trades = []
@@ -842,8 +1031,14 @@ def run_backtest(
             trades = simulate_pullback_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
             )
+        elif strategy == "breakout_retest":
+            trades = simulate_breakout_retest_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
+            )
         else:
-            raise ValueError(f"unknown strategy: {strategy!r} (expected 'rsi', 'breakout', or 'pullback')")
+            raise ValueError(
+                f"unknown strategy: {strategy!r} (expected 'rsi', 'breakout', 'pullback', or 'breakout_retest')"
+            )
         all_trades.extend(trades)
     return all_trades
 
