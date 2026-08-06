@@ -518,6 +518,168 @@ def compute_breakout_levels(
     return breakout_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def precompute_pullback_frame(
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> pd.DataFrame:
+    """Vectorized precompute of every rolling column pullback_levels_from_frame()
+    needs, run ONCE over the full df -- the pullback counterpart to
+    precompute_rsi_frame()/precompute_breakout_frame() (see precompute_rsi_frame's
+    docstring for why this is an exact equivalence to a fresh truncated
+    recompute, not an approximation: SMA_TREND/AvgVolume/MA_Pullback are all
+    plain fixed-window rolling functions; RSI/ATR/ADX are Wilder-smoothed
+    but converge well within the ~260-day trailing buffer this codebase
+    always keeps -- see LOOKBACK_BUFFER_BARS in swingtrade/backtest.py).
+    """
+    df = df.copy()
+    df["SMA_TREND"] = df["Close"].rolling(window=config.sma_trend_window).mean()
+    df["RSI"] = ta.rsi(df["Close"], length=config.rsi_window)
+    df["ATR"] = ta.atr(df["High"], df["Low"], df["Close"], length=config.atr_window)
+    df["ADX"] = ta.adx(df["High"], df["Low"], df["Close"], length=config.adx_window)[f"ADX_{config.adx_window}"]
+    df["AvgVolume"] = df["Volume"].rolling(window=config.volume_lookback_days).mean()
+    df["MA_Pullback"] = df["Close"].rolling(window=config.pullback_ma_window).mean()
+    df["MA_Pullback_Prior"] = df["MA_Pullback"].shift(config.pullback_ma_slope_window)
+    return df
+
+
+def pullback_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract compute_pullback_levels()'s dict for one row of a frame
+    already built by precompute_pullback_frame() -- the O(1)-per-row
+    counterpart a walk-forward loop calls once per `as_of`. Business logic
+    is verbatim compute_pullback_levels(), just reading from a precomputed
+    row.
+    """
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, rsi, atr, avg_volume, adx, ma_pullback, ma_pullback_prior = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["RSI"], last_row["ATR"],
+        last_row["AvgVolume"], last_row["ADX"], last_row["MA_Pullback"], last_row["MA_Pullback_Prior"],
+    )
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+    if pd.isna(ma_pullback):
+        raise RuntimeError(f"insufficient history to compute {config.pullback_ma_window}-day pullback MA")
+    if pd.isna(ma_pullback_prior):
+        raise RuntimeError(
+            f"insufficient history to confirm {config.pullback_ma_window}-day MA slope "
+            f"({config.pullback_ma_slope_window}d lookback)"
+        )
+    # RSI/ADX are informational only for pullback (not used for gating) --
+    # same treatment as breakout's RSI/ADX (see breakout_levels_from_frame).
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+    adx = None if pd.isna(adx) else round(float(adx), 2)
+
+    last_close, sma_trend, atr, avg_volume, ma_pullback, ma_pullback_prior = (
+        float(last_close), float(sma_trend), float(atr), float(avg_volume),
+        float(ma_pullback), float(ma_pullback_prior),
+    )
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    buy_price = round(ma_pullback, 2)
+    distance_to_buy_pct = ((last_close - buy_price) / buy_price) * 100
+    ma_rising = ma_pullback > ma_pullback_prior
+    pullback_signal = bool(ma_rising and (abs(distance_to_buy_pct) <= config.pullback_band_pct))
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "ADX": adx,
+        "MA_Pullback": buy_price,
+        "MA_Basis": f"{config.pullback_ma_window}-day SMA (rising over prior {config.pullback_ma_slope_window}d)",
+        "Pullback_Signal": pullback_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": round(distance_to_buy_pct, 2),
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_pullback_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Compute pullback-in-uptrend levels for one ticker's OHLCV history --
+    a third strategy, distinct from both compute_levels() (RSI-oversold
+    mean-reversion -- shown by benchmark_random_entry.py to carry no real
+    timing edge) and compute_breakout_levels() (requires a fresh N-day
+    closing high the SAME day, which is rare). Buys a shallow dip toward a
+    RISING pullback_ma_window-day SMA within a confirmed macro uptrend
+    (Last_Close > SMA_TREND) -- trend-following like breakout, but fires
+    far more often since it doesn't require price to be at a fresh extreme.
+
+    Pullback_Signal requires BOTH: the pullback MA itself rising over the
+    trailing pullback_ma_slope_window days (filters out a topping/rolling-
+    over MA, not a genuine uptrend pullback) AND Distance_to_Buy_Pct within
+    +/- pullback_band_pct of the MA (close enough to call it a genuine
+    support test, not still extended above or already broken below).
+    Buy_Price is the MA level itself -- a resting LIMIT order, filled via
+    the same _find_entry_fill() mechanics as the RSI strategy (see
+    simulate_pullback_signals), not a stop-buy like breakout's.
+
+    The returned dict is schema-compatible with compute_levels()/
+    compute_breakout_levels() (Buy_Price, Sell_Price, Stop_Loss, RRR,
+    Distance_to_Buy_Pct, Catalyst_Warning, etc. all present) -- only
+    add_pullback_trade_score (swingtrade/scoring.py) differs downstream.
+    RSI/ADX are informational only here, same treatment as breakout's.
+
+    Thin wrapper over precompute_pullback_frame()/pullback_levels_from_frame()
+    -- kept as a single-call convenience for the live dashboard/ingest.py,
+    matching compute_levels()/compute_breakout_levels()'s same rationale.
+    """
+    frame = precompute_pullback_frame(df, config)
+    as_of = frame.index[-1]
+    return pullback_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def review_holding(
     ticker: str,
     df: pd.DataFrame,

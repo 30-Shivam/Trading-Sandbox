@@ -82,15 +82,21 @@ days). --strategy rsi (default) searches the original RSI/ATR/stop-loss/
 streak-penalty space; --strategy breakout searches breakout_lookback_days/
 atr_take_profit_multiplier/stop_loss_atr_multiplier/
 breakout_rsi_overbought_threshold/breakout_relative_strength_min/
-breakout_volume_ratio_min instead -- everything above (WFO, recency
+breakout_volume_ratio_min instead; --strategy pullback searches
+pullback_ma_window/pullback_ma_slope_window/pullback_band_pct/
+atr_take_profit_multiplier/stop_loss_atr_multiplier (a genuinely different,
+more frequent trend-following signal -- buys a shallow dip toward a rising
+short-term MA instead of requiring a fresh N-day high, see
+swingtrade.compute_pullback_levels) -- everything above (WFO, recency
 weighting, correlation-adjustment, ticker-holdout, champion/challenger)
-applies identically to either.
+applies identically to all three.
 
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
     python optimize.py --trials 50 --recency-half-life-days 90   # weight recent regime more heavily
     python optimize.py --trials 50 --holdout-frac 0.3            # hold out 30% of tickers by sector
     python optimize.py --trials 30 --strategy breakout           # search the breakout signal instead
+    python optimize.py --trials 30 --strategy pullback           # search the pullback signal instead
 """
 
 import argparse
@@ -176,6 +182,23 @@ BREAKOUT_ADX_MIN_RANGE = (0.0, 40.0)
 # other breakout filter (improvements.txt item 18).
 BREAKOUT_OBV_ZSCORE_MIN_RANGE = (-3.0, 3.0)
 BREAKOUT_SQUEEZE_ZSCORE_MAX_RANGE = (-3.0, 3.0)
+
+# Pullback-in-uptrend strategy's own search space. Deliberately compact
+# (3 new dimensions, vs. breakout's 6) -- this session's breakout searches
+# showed a 6-9D space can under-explore on a 15-45 trial budget (see item
+# 17/18's discussion of v22/v24's thin holdout samples); starting smaller
+# for a brand-new, unvalidated strategy family is the more conservative
+# choice, not a shortcut.
+PULLBACK_MA_WINDOW_RANGE = (10, 50)
+# Lower bound (3) lets Optuna find "barely needs to be rising" almost-disabled;
+# upper bound (30) requires a genuinely sustained uptrend in the MA itself,
+# not just a brief tick up -- same "let a real search decide" reasoning as
+# every breakout filter range above.
+PULLBACK_MA_SLOPE_WINDOW_RANGE = (3, 30)
+# Lower bound (0.5) is a tight, demanding band (barely any room around the
+# MA); upper bound (10.0) is quite loose (a wide berth still counts as "a
+# pullback"). 3.0's default sits in the middle of this range.
+PULLBACK_BAND_PCT_RANGE = (0.5, 10.0)
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -278,7 +301,7 @@ def build_objective(
                     "extended_decline_penalty_cap", *EXTENDED_DECLINE_PENALTY_CAP_RANGE
                 ),
             }
-        else:
+        elif strategy == "breakout":
             params = {
                 "breakout_lookback_days": trial.suggest_int("breakout_lookback_days", *BREAKOUT_LOOKBACK_RANGE),
                 "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
@@ -299,6 +322,16 @@ def build_objective(
                 "breakout_squeeze_zscore_max": trial.suggest_float(
                     "breakout_squeeze_zscore_max", *BREAKOUT_SQUEEZE_ZSCORE_MAX_RANGE
                 ),
+            }
+        else:
+            params = {
+                "pullback_ma_window": trial.suggest_int("pullback_ma_window", *PULLBACK_MA_WINDOW_RANGE),
+                "pullback_ma_slope_window": trial.suggest_int(
+                    "pullback_ma_slope_window", *PULLBACK_MA_SLOPE_WINDOW_RANGE
+                ),
+                "pullback_band_pct": trial.suggest_float("pullback_band_pct", *PULLBACK_BAND_PCT_RANGE),
+                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
+                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
             }
         candidate = swingtrade.TradingConfig(**{
             **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": strategy, **params,
@@ -373,7 +406,7 @@ def report_live_outcomes_context() -> None:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--strategy", choices=["rsi", "breakout"], default="rsi",
+    parser.add_argument("--strategy", choices=["rsi", "breakout", "pullback"], default="rsi",
                          help="Which signal to search parameters for. Default: rsi.")
     parser.add_argument("--trials", type=int, default=50)
     parser.add_argument("--start", default=None, help="Backtest window start (YYYY-MM-DD). Default: 1y before --end.")

@@ -123,3 +123,49 @@ def add_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_C
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
     return df
+
+
+def add_pullback_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    """Pullback-in-uptrend counterpart to add_trade_score()/add_breakout_trade_score()
+    -- blends RRR and Distance_to_Buy_Pct into a 0-100 Trade_Score for rows
+    produced by compute_pullback_levels(), reusing signal_for_score()'s
+    thresholds so a pullback Trade_Score means the same thing on the same
+    0-100 scale as the other two strategies (comparable when shown/allocated
+    side by side).
+
+    No RSI component, same reasoning as breakout: this strategy isn't
+    RSI-gated by design (kept structurally distinct from the already-
+    disproven RSI-oversold timing signal -- see benchmark_random_entry.py),
+    so there's no RSI dimension to score. rrr_score_weight/distance_score_weight
+    are rescaled to still sum to 100, same as add_breakout_trade_score().
+
+    Distance_to_Buy_Pct here means "how far price is from the pullback MA,
+    signed" -- can be negative (at/below the MA, within the allowed band)
+    or positive (still above it, approaching from strength). The same
+    "clip at 0, then smaller distance scores higher" formula as the other
+    two strategies applies: at-or-below the MA scores the max distance
+    points uniformly (a real, gated pullback is a real, gated pullback,
+    however deep within the allowed band), while still being above the MA
+    is progressively penalized as it approaches the band's edge.
+
+    Hard gate, not just a scoring input: a ticker whose Pullback_Signal is
+    False (not within pullback_band_pct of a rising pullback_ma_window-day
+    SMA, in a confirmed macro uptrend -- see compute_pullback_levels) gets
+    Trade_Score=0/Ignore, full stop -- same "not eligible at all" semantics
+    as add_breakout_trade_score()'s Breakout_Signal gate, not merely a low
+    score."""
+    df = df.copy()
+
+    rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+
+    distance_clipped = df["Distance_to_Buy_Pct"].clip(lower=0, upper=config.distance_score_cap_pct)
+    distance_score = (1 - distance_clipped / config.distance_score_cap_pct) * config.distance_score_weight
+
+    total_weight = config.rrr_score_weight + config.distance_score_weight
+    rescale = (100 / total_weight) if total_weight > 0 else 0.0
+
+    raw_score = ((rrr_score + distance_score) * rescale).clip(lower=0)
+
+    df["Trade_Score"] = raw_score.where(df["Pullback_Signal"], 0.0).round(1)
+    df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
+    return df

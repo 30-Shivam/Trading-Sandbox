@@ -22,6 +22,11 @@ config.breakout_lookback_days-day closing high in a confirmed uptrend --
 swingtrade.simulate_breakout_signals / simulate_random_breakout_entries),
 built specifically because the RSI result showed pure mean-reversion timing
 adds no value -- see improvements.txt's STRATEGIC PIVOT section.
+--strategy pullback tests the pullback-in-uptrend signal (buy a shallow
+dip toward a rising config.pullback_ma_window-day SMA in a confirmed
+uptrend -- swingtrade.simulate_pullback_signals / simulate_random_pullback_entries),
+built to fire more often than breakout's fresh-high requirement -- this IS
+the critical validation gate for that strategy before it's trusted at all.
 
 Applies the same ticker-holdout split as optimize.py (--holdout-frac,
 --holdout-seed) so the comparison also holds up (or doesn't) on tickers
@@ -82,7 +87,7 @@ def summarize(trades: list[dict]) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--strategy", choices=["rsi", "breakout"], default="rsi",
+    parser.add_argument("--strategy", choices=["rsi", "breakout", "pullback"], default="rsi",
                          help="Which signal to benchmark against random entries. Default: rsi.")
     parser.add_argument("--breakout-lookback-days", type=int, default=None,
                          help="Override config.breakout_lookback_days (--strategy breakout only). "
@@ -116,8 +121,14 @@ def main():
         print(f"  rsi_oversold_threshold={config.rsi_oversold_threshold}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
-    else:
+    elif args.strategy == "breakout":
         print(f"  breakout_lookback_days={config.breakout_lookback_days}, "
+              f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
+              f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
+    else:
+        print(f"  pullback_ma_window={config.pullback_ma_window}, "
+              f"pullback_ma_slope_window={config.pullback_ma_slope_window}, "
+              f"pullback_band_pct={config.pullback_band_pct}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
 
@@ -155,9 +166,12 @@ def main():
     if args.strategy == "rsi":
         real_fn, random_fn = swingtrade.simulate_signals, swingtrade.simulate_random_entries
         real_label = "RSI-timed"
-    else:
+    elif args.strategy == "breakout":
         real_fn, random_fn = swingtrade.simulate_breakout_signals, swingtrade.simulate_random_breakout_entries
         real_label = "Breakout-timed"
+    else:
+        real_fn, random_fn = swingtrade.simulate_pullback_signals, swingtrade.simulate_random_pullback_entries
+        real_label = "Pullback-timed"
 
     real_trades = []
     random_trades = []

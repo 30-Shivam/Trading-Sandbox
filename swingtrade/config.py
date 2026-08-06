@@ -230,13 +230,46 @@ class TradingConfig:
                                             # essentially never gets that
                                             # extreme
 
+    # Pullback-in-uptrend strategy (swingtrade/levels.compute_pullback_levels,
+    # swingtrade/backtest.simulate_pullback_signals) -- a third, independent
+    # signal, distinct from both RSI-oversold mean-reversion (any weakness,
+    # no trend context -- already shown to carry no real timing edge, see
+    # benchmark_random_entry.py) and breakout (requires a fresh N-day
+    # closing high THE SAME DAY, which is rare). Buys a shallow dip toward
+    # a rising short-term moving average WITHIN a confirmed macro uptrend --
+    # fires far more often than breakout because "price near its own rising
+    # 20-day SMA" happens on many more days per ticker than "fresh 45-day
+    # high", while still being trend-following (buying in a real uptrend),
+    # not blind mean-reversion.
+    pullback_ma_window: int = 20           # short SMA price pulls back
+                                            # toward (the "pullback anchor")
+    pullback_ma_slope_window: int = 10     # lookback to confirm that SMA
+                                            # is itself rising
+                                            # (MA > MA.shift(this)) -- a
+                                            # topping/rolling-over MA is a
+                                            # different, less trustworthy
+                                            # event than a genuine uptrend
+                                            # pullback and shouldn't count
+    pullback_band_pct: float = 3.0         # symmetric band (both above and
+                                            # below the MA) counted as
+                                            # "close enough" to call it a
+                                            # pullback/support test.
+                                            # Deliberately symmetric (not
+                                            # direction-aware) for a lean
+                                            # v1 -- tunable by Optuna, which
+                                            # can reveal whether a
+                                            # tighter/looser or asymmetric
+                                            # band would help
+
     # Which signal this config represents -- "rsi" (simulate_signals,
-    # mean-reversion) or "breakout" (simulate_breakout_signals,
-    # trend-following). Purely a tag for downstream dispatch (optimize.py,
-    # run_backtest.py, eventually live signal generation); doesn't affect
-    # any calculation itself. Old configs written before this field existed
-    # default to "rsi" via from_dict(), which is correct -- every config
-    # before the breakout strategy was added WAS an RSI config.
+    # mean-reversion), "breakout" (simulate_breakout_signals,
+    # trend-following), or "pullback" (simulate_pullback_signals,
+    # trend-following pullback entry). Purely a tag for downstream dispatch
+    # (optimize.py, run_backtest.py, eventually live signal generation);
+    # doesn't affect any calculation itself. Old configs written before
+    # this field existed default to "rsi" via from_dict(), which is
+    # correct -- every config before the breakout strategy was added WAS an
+    # RSI config.
     strategy: str = "rsi"
 
     def to_dict(self) -> dict:
