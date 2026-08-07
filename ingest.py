@@ -9,17 +9,28 @@ This is the concrete gap it closes: previously, Trade_Signals only
 accumulated on days someone opened the dashboard and it happened to compute
 a Buy/Strong Buy -- starving the settlement job (Phase 3) and the learning
 loop (Phase 5) of data whenever nobody looked. Running this on a schedule
-(cron locally, a Kubernetes CronJob once Phase 8 containerizes it) makes
-signal generation independent of the UI.
+(cron locally, GitHub Actions' daily_run.yml in production) makes signal
+generation independent of the UI.
+
+Scans THREE strategies every run, same as dip_buy_analyzer.py: the active
+System_Config (config_loader.load_active_config()) plus the two validated
+secondary strategies (config_loader.SECONDARY_STRATEGY_VERSIONS --
+breakout_retest v27, week52_high v28, see improvements.txt items 27/28),
+all against ONE shared fetch of the watchlist's OHLCV data
+(market_data.fetch_ticker_bundle()) so running three strategies costs one
+network round-trip, not three. A secondary strategy that fails to load
+(e.g. its System_Config document is ever deleted) is skipped with a
+warning, not a fatal error -- the primary scan still runs regardless.
 
 Not rewritten in Go (amendment #1) -- see market_data.py's docstring.
 
 Position sizing here uses --position-budget (default matches the dashboard's
 default) purely to populate the shares_to_buy/est_cost fields Trade_Signals
-expects. This script does no capital allocation across signals -- greedily
-spending a cash pool across today's top signals is a personal, interactive
-decision that belongs in the dashboard, not something to bake into a
-scheduled job or log as if it were part of the technical signal.
+expects, for all three strategies alike. This script does no capital
+allocation across signals -- greedily spending a cash pool across today's
+top signals is a personal, interactive decision that belongs in the
+dashboard, not something to bake into a scheduled job or log as if it were
+part of the technical signal.
 
 Usage:
     python ingest.py
@@ -35,6 +46,7 @@ import pandas as pd
 import ai_context
 import config_loader
 import market_data
+import notifications
 import storage
 import swingtrade
 from watchlist import read_tickers
@@ -42,6 +54,97 @@ from watchlist import read_tickers
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 DEFAULT_POSITION_BUDGET = 250.0
+
+
+def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> pd.DataFrame:
+    """Dispatch to the right add_*_trade_score() for config.strategy --
+    covers all five strategies (previously this dispatch only handled
+    "breakout" vs. everything-else here, the same latent gap already fixed
+    in market_data.py/dip_buy_analyzer.py this session)."""
+    if config.strategy == "breakout":
+        return swingtrade.add_breakout_trade_score(df, config)
+    elif config.strategy == "pullback":
+        return swingtrade.add_pullback_trade_score(df, config)
+    elif config.strategy == "breakout_retest":
+        return swingtrade.add_breakout_retest_trade_score(df, config)
+    elif config.strategy == "week52_high":
+        return swingtrade.add_week52_trade_score(df, config)
+    else:
+        return swingtrade.add_trade_score(df, config)
+
+
+def _size_positions(results_df: pd.DataFrame, config: swingtrade.TradingConfig,
+                     position_budget: float, risk_amount: float | None) -> None:
+    """Populate Shares_To_Buy/Est_Cost in place -- shared sizing logic for
+    every strategy scanned this run."""
+    if risk_amount:
+        results_df["Shares_To_Buy"] = swingtrade.size_by_risk(
+            results_df["Buy_Price"], results_df["Stop_Loss"], risk_amount, config.fractional_share_decimals
+        )
+    else:
+        results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
+    results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
+
+
+def _build_signal_notification(label: str, results_df: pd.DataFrame) -> str | None:
+    """Short Discord message listing today's Strong Buy/Buy tickers for one
+    strategy, sorted by Trade_Score descending. Returns None if there are
+    none -- callers skip notifying entirely on quiet days (confirmed
+    cadence: signal channels fire only when there's a real signal, unlike
+    the always-fires daily run-status report)."""
+    signal_rows = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])]
+    if signal_rows.empty:
+        return None
+    signal_rows = signal_rows.sort_values("Trade_Score", ascending=False)
+    lines = [f"**{label}: {len(signal_rows)} signal(s)**"]
+    for _, row in signal_rows.iterrows():
+        lines.append(f"{row['Ticker']}: {row['Signal']} (score {row['Trade_Score']:.0f}, buy {row['Buy_Price']:.2f})")
+    return "\n".join(lines)
+
+
+def run_secondary_strategy(
+    label: str,
+    config: swingtrade.TradingConfig,
+    bundle: dict,
+    market_df,
+    position_budget: float,
+    risk_amount: float | None,
+) -> pd.DataFrame:
+    """Score, size, and log one secondary strategy's results against the
+    SAME already-fetched bundle the primary scan used -- no extra network
+    fetch (see market_data.fetch_ticker_bundle()). Mirrors
+    dip_buy_analyzer.py's render_secondary_section(), adapted for
+    print-based CLI output. A leaner treatment than the primary scan below
+    (no fatal error on empty results, no research_loosened logging) since
+    these are the newly-automated secondary strategies -- see
+    improvements.txt. Returns the scored results_df (empty if nothing was
+    analyzed) so --with-ai-context can use it."""
+    results, score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+    if not results:
+        print(f"{label}: no tickers were successfully analyzed.")
+        return pd.DataFrame()
+
+    results_df = pd.DataFrame(results)
+    _size_positions(results_df, config, position_budget, risk_amount)
+    results_df = _score_for_strategy(results_df, config)
+
+    logged = storage.log_trade_signals(results_df, config.to_dict())
+    strong_buys = int((results_df["Signal"] == "Strong Buy").sum())
+    buys = int((results_df["Signal"] == "Buy").sum())
+    watches = int((results_df["Signal"] == "Watch").sum())
+    print(f"{label}: analyzed {len(results_df)} ticker(s): {strong_buys} Strong Buy, {buys} Buy, {watches} Watch.")
+    print(f"{label}: logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB.")
+
+    message = _build_signal_notification(label, results_df)
+    if message:
+        notifications.notify(message, webhook_url=notifications.get_strategy_webhook_url(config.strategy))
+
+    if score_skipped:
+        print(f"{label}: {len(score_skipped)} ticker(s) could not be scored for this strategy:")
+        for ticker, reason in score_skipped:
+            print(f"  {ticker}: {reason}")
+
+    return results_df
 
 
 def run(
@@ -76,25 +179,23 @@ def run(
         )
         return 0
 
-    results, skipped = market_data.scan_tickers(tickers, config)
-    if not results:
+    # Fetched ONCE, shared by the primary scan and both secondary
+    # strategies below -- see market_data.fetch_ticker_bundle()'s
+    # docstring for why this replaces calling market_data.scan_tickers()
+    # (or its equivalent) three separate times.
+    bundle, market_df, fetch_skipped = market_data.fetch_ticker_bundle(tickers)
+
+    primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+    skipped = fetch_skipped + primary_score_skipped
+    if not primary_results:
         print("[ERROR] no tickers were successfully analyzed.", file=sys.stderr)
         for ticker, reason in skipped:
             print(f"  skipped {ticker}: {reason}", file=sys.stderr)
         return 1
 
-    results_df = pd.DataFrame(results)
-    if risk_amount:
-        results_df["Shares_To_Buy"] = swingtrade.size_by_risk(
-            results_df["Buy_Price"], results_df["Stop_Loss"], risk_amount, config.fractional_share_decimals
-        )
-    else:
-        results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
-    results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
-    if config.strategy == "breakout":
-        results_df = swingtrade.add_breakout_trade_score(results_df, config)
-    else:
-        results_df = swingtrade.add_trade_score(results_df, config)
+    results_df = pd.DataFrame(primary_results)
+    _size_positions(results_df, config, position_budget, risk_amount)
+    results_df = _score_for_strategy(results_df, config)
 
     logged = storage.log_trade_signals(results_df, config.to_dict())
     strong_buys = int((results_df["Signal"] == "Strong Buy").sum())
@@ -102,6 +203,10 @@ def run(
     watches = int((results_df["Signal"] == "Watch").sum())
     print(f"Analyzed {len(results_df)}/{len(tickers)} ticker(s): {strong_buys} Strong Buy, {buys} Buy, {watches} Watch.")
     print(f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB.")
+
+    message = _build_signal_notification(f"Primary ({config.strategy})", results_df)
+    if message:
+        notifications.notify(message, webhook_url=notifications.get_strategy_webhook_url(config.strategy))
 
     if config.strategy == "breakout":
         loosened_config = swingtrade.loosened_breakout_config(config)
@@ -119,19 +224,32 @@ def run(
             "config scored Ignore -- see storage/signals.py)."
         )
 
+    all_signal_rows = [results_df]
+    for label, version in config_loader.SECONDARY_STRATEGY_VERSIONS.items():
+        secondary_config, source = config_loader.load_config_by_version(version)
+        if secondary_config is None:
+            print(f"{label} (v{version}): skipped -- {source}")
+            continue
+        secondary_df = run_secondary_strategy(
+            f"{label} (v{version})", secondary_config, bundle, market_df, position_budget, risk_amount,
+        )
+        if not secondary_df.empty:
+            all_signal_rows.append(secondary_df)
+
     if with_ai_context:
         if not ai_context.is_available():
             print("[WARN] --with-ai-context requested but unavailable (set GEMINI_API_KEY).", file=sys.stderr)
         else:
-            signal_rows = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])]
-            for _, row in signal_rows.iterrows():
-                headlines = market_data.get_multi_headlines(row["Ticker"])
-                summary = ai_context.summarize_ticker_context(row["Ticker"], row["Signal"], headlines)
-                if summary:
-                    print(f"\n[{row['Ticker']} ({row['Signal']})] {summary}")
+            for df in all_signal_rows:
+                signal_rows = df[df["Signal"].isin(["Strong Buy", "Buy"])]
+                for _, row in signal_rows.iterrows():
+                    headlines = market_data.get_multi_headlines(row["Ticker"])
+                    summary = ai_context.summarize_ticker_context(row["Ticker"], row["Signal"], headlines)
+                    if summary:
+                        print(f"\n[{row['Ticker']} ({row['Signal']})] {summary}")
 
     if skipped:
-        print(f"Skipped {len(skipped)} ticker(s):")
+        print(f"Skipped {len(skipped)} ticker(s) (primary scan -- fetch + scoring failures):")
         for ticker, reason in skipped:
             print(f"  {ticker}: {reason}")
 
@@ -153,8 +271,8 @@ def main():
     parser.add_argument(
         "--with-ai-context", action="store_true",
         help="Print an AI-generated news summary (informational only, not a rating) for each "
-             "Strong Buy/Buy signal found. Requires GEMINI_API_KEY (free tier); degrades to a "
-             "warning if unavailable rather than failing the scan.",
+             "Strong Buy/Buy signal found across all three strategies. Requires GEMINI_API_KEY "
+             "(free tier); degrades to a warning if unavailable rather than failing the scan.",
     )
     args = parser.parse_args()
     sys.exit(run(args.watchlist, args.position_budget, args.with_ai_context, args.risk_amount))

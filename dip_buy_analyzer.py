@@ -345,15 +345,10 @@ def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
     return config_loader.load_active_config()
 
 
-# Fixed, immutable candidate System_Config versions for the two validated
-# secondary strategies shown alongside the primary scan -- see
-# improvements.txt items 27/28. Not "active" (v19 remains the one real
-# active config) -- these are genuinely tradeable secondary signals shown
-# in their own sections, each with their own cash pool (see main()).
-SECONDARY_STRATEGY_VERSIONS = {
-    "Breakout Retest": 27,
-    "52-Week High": 28,
-}
+# Single source of truth now lives in config_loader.py (shared with
+# ingest.py) -- aliased here so every existing reference in this file
+# keeps working unchanged.
+SECONDARY_STRATEGY_VERSIONS = config_loader.SECONDARY_STRATEGY_VERSIONS
 
 
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner=False)

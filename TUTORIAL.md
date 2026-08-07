@@ -596,6 +596,15 @@ variables → Actions → "New repository secret", and add:
 - `MONGODB_URI` — same connection string as your local `.env`.
 - `DISCORD_WEBHOOK_URL` — same webhook URL as your local `.env` (optional,
   but without it you won't get paged on failure — same as the local case).
+- `DISCORD_WEBHOOK_URL_BREAKOUT`, `DISCORD_WEBHOOK_URL_BREAKOUT_RETEST`,
+  `DISCORD_WEBHOOK_URL_WEEK52_HIGH` — optional, one per strategy, to route
+  each strategy's own Strong Buy/Buy signals to its own Discord channel
+  instead of everything landing in the shared webhook above. Each is
+  independent: set one, all three, or none. A strategy whose secret isn't
+  set falls back to posting in the shared `DISCORD_WEBHOOK_URL` channel, so
+  nothing is lost by leaving some unconfigured — you can split channels out
+  incrementally. Unlike the always-fires run-status report, these only post
+  on days that strategy actually finds a signal (silent otherwise).
 
 (If your Mongo setup uses a non-default database name, also add
 `MONGODB_DB_NAME` as a secret and uncomment the corresponding line in the

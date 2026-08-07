@@ -9,6 +9,17 @@ always agree on which config is "live" -- see ARCHITECTURE_PLAN.md Phase 6/7.
 import storage
 import swingtrade
 
+# Fixed, immutable candidate System_Config versions for the validated
+# secondary strategies shown alongside the active config -- see
+# improvements.txt items 27/28. Single source of truth shared by
+# dip_buy_analyzer.py (the dashboard's secondary sections) and ingest.py
+# (the headless scheduled scan) so the two can never silently drift apart
+# on which candidate versions are "the" secondary strategies.
+SECONDARY_STRATEGY_VERSIONS = {
+    "Breakout Retest": 27,
+    "52-Week High": 28,
+}
+
 
 def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
     try:
