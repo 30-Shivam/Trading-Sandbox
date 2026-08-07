@@ -7,4 +7,5 @@ pymongo[srv]>=4.9
 python-dotenv>=1.0
 optuna>=4.9
 google-genai>=1.0
+openai>=1.0
 requests>=2.33

@@ -133,6 +133,22 @@ compute, for every scanned ticker:
       scan, not a research-only/informational view like the Loosened
       Filters section above.
 
+  13. A second top-level tab, "LLM Agent (experimental)" -- a genuine
+      LLM-derived Buy/Hold/Avoid judgment (see llm_agent.py), NOT another
+      mechanical strategy. Unlike everything in the "Mechanical Strategies"
+      tab, this can never be validated via walk-forward backtesting
+      (re-prompting a model with "historical" context risks it already
+      knowing what happened next from training data) -- it can only be
+      validated PROSPECTIVELY, over real elapsed time, which the tab's own
+      validation-progress counter makes visible. Evaluates only a small,
+      capped set of tickers the mechanical strategies already flagged
+      today (never an independent blind scan), logs Buy/Hold decisions to
+      MongoDB the same way research-tier signals are (tier="research" for
+      Hold, "actionable" for Buy) purely to accumulate real graded
+      outcomes over time, and is **never** passed to
+      swingtrade.allocate_capital() -- no cash pool, not capital-eligible,
+      regardless of how confident a call looks.
+
 The actual level/score/allocation math lives in the `swingtrade` package
 (no yfinance/streamlit dependency there); persistence lives in the
 `storage` package (no yfinance/streamlit dependency there either). This
@@ -143,9 +159,11 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import yfinance as yf
 
 import ai_context
 import config_loader
+import llm_agent
 import market_data
 import storage
 import swingtrade
@@ -158,6 +176,8 @@ WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 
 DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for flat position sizing
 DEFAULT_RISK_AMOUNT = 25         # default $ sidebar value for risk-based position sizing
+MAX_LLM_CANDIDATES = 10          # cap on the "LLM Agent" tab's per-page-load evaluation
+                                  # count -- cost/rate-limit control, see llm_agent.py
 DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash
 
 SCAN_CACHE_TTL_SEC = 900         # how long a scan result stays cached (15 min)
@@ -376,7 +396,7 @@ def render_secondary_section(
     risk_amount: float | None,
     position_budget: float | None,
     storage_ok: bool,
-) -> None:
+) -> pd.DataFrame:
     """Score, log, allocate, and display one secondary strategy's results
     against the SAME already-fetched bundle the primary scan used -- no
     extra network fetch (see cached_fetch_bundle()). `existing_holdings` is
@@ -387,12 +407,16 @@ def render_secondary_section(
     proposed today. A leaner treatment than the primary section (no
     per-sector breakdown expander, no Loosened Filters View) since these
     are newly-added, alongside-only signals -- see improvements.txt items
-    27/28."""
+    27/28.
+
+    Returns the scored (post-allocation, if applied) results_df -- empty if
+    nothing was analyzed -- so callers (see the LLM Agent tab's candidate
+    pre-filter) can see what this strategy found today without re-scoring."""
     st.subheader(label)
     results, score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
     if not results:
         st.caption("No tickers were successfully analyzed.")
-        return
+        return pd.DataFrame()
 
     results_df = pd.DataFrame(results)
     if risk_amount:
@@ -438,6 +462,8 @@ def render_secondary_section(
     if all_skipped:
         with st.expander(f"Skipped for {label} ({len(all_skipped)})"):
             st.dataframe(pd.DataFrame(all_skipped, columns=["Ticker", "Reason"]), hide_index=True)
+
+    return results_df
 
 
 def main():
@@ -595,241 +621,394 @@ def main():
         tickers = tuple(parse_ticker_text(ticker_text))
         st.caption(f"{len(tickers)} ticker(s) loaded.")
 
-    sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
+    tab1, tab2 = st.tabs(["Mechanical Strategies", "LLM Agent (experimental)"])
 
-    if not tickers:
-        st.warning("No tickers to scan. Paste some tickers in the sidebar watchlist box.")
-        st.stop()
+    with tab1:
+        sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
 
-    try:
-        market_uptrend, market_close, market_sma200 = cached_market_uptrend(config)
-    except Exception as exc:
-        st.error(f"Could not evaluate {market_data.MARKET_INDEX_TICKER} macro trend: {exc}")
-        st.stop()
+        if not tickers:
+            st.warning("No tickers to scan. Paste some tickers in the sidebar watchlist box.")
+            st.stop()
 
-    if not market_uptrend:
-        st.error(
-            f"**{market_data.MARKET_INDEX_TICKER} is in a macro downtrend** "
-            f"(Last_Close {market_close:.2f} < SMA200 {market_sma200:.2f}). "
-            "Individual structural-support levels are unreliable when the broad market "
-            "itself is breaking down -- watchlist analysis has been skipped."
+        try:
+            market_uptrend, market_close, market_sma200 = cached_market_uptrend(config)
+        except Exception as exc:
+            st.error(f"Could not evaluate {market_data.MARKET_INDEX_TICKER} macro trend: {exc}")
+            st.stop()
+
+        if not market_uptrend:
+            st.error(
+                f"**{market_data.MARKET_INDEX_TICKER} is in a macro downtrend** "
+                f"(Last_Close {market_close:.2f} < SMA200 {market_sma200:.2f}). "
+                "Individual structural-support levels are unreliable when the broad market "
+                "itself is breaking down -- watchlist analysis has been skipped."
+            )
+            st.stop()
+        st.success(f"{market_data.MARKET_INDEX_TICKER} is above its 200-day SMA ({market_close:.2f} >= {market_sma200:.2f}).")
+
+        bundle, market_df, fetch_skipped = cached_fetch_bundle(tickers)
+        primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+        results_df = pd.DataFrame(primary_results)
+        skipped = fetch_skipped + primary_score_skipped
+
+        if results_df.empty:
+            st.error("No tickers were successfully analyzed. See skipped tickers below.")
+            if skipped:
+                with st.expander(f"Skipped tickers ({len(skipped)})"):
+                    st.dataframe(pd.DataFrame(skipped, columns=["Ticker", "Reason"]), hide_index=True)
+            st.stop()
+
+        if risk_amount:
+            results_df["Shares_To_Buy"] = swingtrade.size_by_risk(
+                results_df["Buy_Price"], results_df["Stop_Loss"], risk_amount, config.fractional_share_decimals
+            )
+        else:
+            results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
+        results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
+        results_df = _score_for_strategy(results_df, config)
+        results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
+
+        # Log signals BEFORE the capital-allocation overlay: Trade_Signals should
+        # reflect the underlying technical signal, not whether cash happened to
+        # be available today.
+        storage_ok, storage_message = init_storage()
+        if storage_ok:
+            try:
+                logged = storage.log_trade_signals(results_df, config.to_dict())
+                st.sidebar.caption(
+                    f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB."
+                )
+            except Exception as exc:
+                st.sidebar.warning(f"Signal logging failed: {exc}")
+        else:
+            st.sidebar.caption(f"MongoDB not connected ({storage_message}) -- signals aren't being logged.")
+
+        if apply_allocation:
+            results_df, capital_allocated = swingtrade.allocate_capital(
+                results_df, total_cash,
+                sector_lookup=sector_lookup, max_sector_allocation_pct=config.max_sector_allocation_pct,
+                existing_holdings=existing_holdings,
+            )
+            remaining_idle_cash = round(total_cash - capital_allocated, 2)
+        else:
+            capital_allocated = None
+            remaining_idle_cash = None
+
+        strong_buys = int((results_df["Signal"] == "Strong Buy").sum())
+        catalyst_warnings = int(results_df["Catalyst_Warning"].sum())
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Tickers Scanned", len(tickers))
+        col2.metric("Successfully Analyzed", len(results_df))
+        col3.metric("Active Strong Buys", strong_buys)
+        col4.metric("Catalyst Warnings", catalyst_warnings)
+
+        if apply_allocation:
+            col5, col6, col7 = st.columns(3)
+            col5.metric("Starting Cash", f"${total_cash:,.2f}")
+            col6.metric("Capital Allocated to Orders", f"${capital_allocated:,.2f}")
+            col7.metric("Remaining Idle Cash", f"${remaining_idle_cash:,.2f}")
+        else:
+            st.info(
+                "Capital allocation is off -- Signal column shows raw Strong Buy/Buy/Watch/Ignore, "
+                "unaffected by Total Available Cash or Current Holdings."
+            )
+
+        if apply_allocation and sector_lookup:
+            funded = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])].copy()
+            funded["Sector"] = funded["Ticker"].map(sector_lookup).fillna("Unknown")
+            new_by_sector = funded.groupby("Sector")["Est_Cost"].sum()
+
+            holdings_by_sector: dict[str, float] = {}
+            for ticker, amount in existing_holdings.items():
+                sector = sector_lookup.get(ticker, "Unknown")
+                holdings_by_sector[sector] = holdings_by_sector.get(sector, 0.0) + amount
+            holdings_by_sector = pd.Series(holdings_by_sector, dtype=float)
+
+            breakdown = pd.DataFrame({
+                "Existing Holdings ($)": holdings_by_sector,
+                "New Today ($)": new_by_sector,
+            }).fillna(0.0)
+            breakdown["Total ($)"] = breakdown["Existing Holdings ($)"] + breakdown["New Today ($)"]
+            breakdown = breakdown.sort_values("Total ($)", ascending=False)
+
+            portfolio_value = total_cash + sum(existing_holdings.values())
+            sector_cap_dollars = (
+                config.max_sector_allocation_pct * portfolio_value if config.max_sector_allocation_pct > 0 else None
+            )
+            with st.expander("Capital allocated by sector"):
+                if sector_cap_dollars is not None:
+                    st.caption(
+                        f"Cap: {config.max_sector_allocation_pct * 100:.0f}% of total portfolio value "
+                        f"(${portfolio_value:,.2f} = today's cash + existing holdings) per sector "
+                        f"= ${sector_cap_dollars:,.2f}."
+                    )
+                st.dataframe(breakdown.reset_index(names="Sector"), width="stretch", hide_index=True)
+
+        holdings_with_cost = tuple(sorted(
+            (t, info["avg_cost"]) for t, info in holdings_detail.items() if info.get("avg_cost")
+        ))
+        if holdings_with_cost:
+            st.subheader("Position Review")
+            st.caption(
+                "Checks each holding with a known AVG_COST against the active config's ATR-based "
+                "stop/target, anchored to your real entry price -- not a guarantee, same caveats "
+                "as every other signal in this system."
+            )
+            review_df, review_skipped = cached_review_holdings(holdings_with_cost, config)
+            if not review_df.empty:
+                st.dataframe(style_review(review_df), width="stretch", hide_index=True)
+            if review_skipped:
+                with st.expander(f"Could not review ({len(review_skipped)})"):
+                    st.dataframe(pd.DataFrame(review_skipped, columns=["Ticker", "Reason"]), hide_index=True)
+
+        st.subheader("Scan Results")
+        display_columns = DISPLAY_COLUMNS_BREAKOUT if config.strategy == "breakout" else DISPLAY_COLUMNS_RSI
+        st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
+
+        if config.strategy == "breakout":
+            st.subheader("Loosened Filters View (research/informational only)")
+            st.caption(
+                "Same underlying scan, re-scored with the six 'sharpening' filters (overbought, "
+                "relative-strength, volume-ratio, ADX, OBV, squeeze) reset to disabled -- shows what "
+                "would score a signal under just the base breakout+ATR strategy, without the extra "
+                "selectivity that's WHY the active config is validated to be this selective (see "
+                "improvements.txt items 17/18/23). The core trigger (breakout_lookback_days) and "
+                "ATR stop/target levels are unchanged -- only the extra gates are loosened. "
+                "**Never used for capital allocation** -- rows the active config scored Ignore are "
+                "logged to MongoDB tagged tier=\"research_loosened\" purely to accumulate real "
+                "outcome data on days the Scan Results table above is empty or thin (see "
+                "storage/signals.py); never mixed with actionable/research-tier outcomes."
+            )
+            loosened_config = swingtrade.loosened_breakout_config(config)
+            loosened_df = swingtrade.add_breakout_trade_score(results_df.copy(), loosened_config)
+
+            if storage_ok:
+                try:
+                    strict_signal_by_ticker = dict(zip(results_df["Ticker"], results_df["Signal"]))
+                    loosened_only = loosened_df[
+                        loosened_df["Ticker"].map(strict_signal_by_ticker).eq("Ignore")
+                    ]
+                    loosened_logged = storage.log_trade_signals(
+                        loosened_only, loosened_config.to_dict(), tier=storage.LOOSENED_RESEARCH_TIER
+                    )
+                    st.caption(
+                        f"Logged {loosened_logged.get(storage.LOOSENED_RESEARCH_TIER, 0)} "
+                        "research_loosened signal(s) to MongoDB."
+                    )
+                except Exception as exc:
+                    st.caption(f"Loosened-signal logging failed: {exc}")
+
+            loosened_df = loosened_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
+            shown = loosened_df[loosened_df["Signal"] != "Ignore"]
+            if shown.empty:
+                st.caption("Nothing scores above Ignore even with the extra filters disabled -- "
+                           "genuinely no breakout activity anywhere in the watchlist today.")
+            else:
+                st.dataframe(style_results(shown[display_columns]), width="stretch", hide_index=True)
+
+        secondary_results_by_label: dict[str, pd.DataFrame] = {}
+        for label in SECONDARY_STRATEGY_VERSIONS:
+            secondary_config, _ = secondary_configs[label]
+            if secondary_config is None:
+                continue
+            st.divider()
+            secondary_results_by_label[label] = render_secondary_section(
+                f"{label} Signals (v{SECONDARY_STRATEGY_VERSIONS[label]}, secondary)",
+                secondary_config,
+                bundle, market_df, fetch_skipped,
+                sector_lookup, existing_holdings,
+                secondary_cash[label], apply_allocation,
+                risk_amount, position_budget,
+                storage_ok,
+            )
+
+        if generate_ai_context:
+            signal_tickers = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])]["Ticker"].tolist()
+            if not signal_tickers:
+                st.caption("AI context: no Strong Buy/Buy signals today, nothing to summarize.")
+            else:
+                st.subheader("AI Context (Strong Buy / Buy signals)")
+                st.caption(
+                    "Informational only -- summarizes each ticker's recent headlines for you to "
+                    "read. Not a rating, not a recommendation, and never fed back into Trade_Score "
+                    "or Signal. See ai_context.py for the full reasoning behind keeping this scoped "
+                    "this narrowly."
+                )
+                for ticker in signal_tickers:
+                    signal = results_df.loc[results_df["Ticker"] == ticker, "Signal"].iloc[0]
+                    with st.expander(f"{ticker} ({signal})"):
+                        with st.spinner(f"Summarizing recent news for {ticker}..."):
+                            headlines = market_data.get_multi_headlines(ticker)
+                            summary = ai_context.summarize_ticker_context(ticker, signal, headlines)
+                        if summary:
+                            st.write(summary)
+                        elif headlines:
+                            st.caption("AI summary unavailable -- raw headlines:")
+                            for h in headlines:
+                                st.write(f"- {h}")
+                        else:
+                            st.caption("No recent headlines found for this ticker.")
+
+        st.download_button(
+            "Download full results as CSV",
+            data=results_df.to_csv(index=False).encode("utf-8"),
+            file_name="swing_orders.csv",
+            mime="text/csv",
         )
-        st.stop()
-    st.success(f"{market_data.MARKET_INDEX_TICKER} is above its 200-day SMA ({market_close:.2f} >= {market_sma200:.2f}).")
 
-    bundle, market_df, fetch_skipped = cached_fetch_bundle(tickers)
-    primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
-    results_df = pd.DataFrame(primary_results)
-    skipped = fetch_skipped + primary_score_skipped
-
-    if results_df.empty:
-        st.error("No tickers were successfully analyzed. See skipped tickers below.")
         if skipped:
             with st.expander(f"Skipped tickers ({len(skipped)})"):
                 st.dataframe(pd.DataFrame(skipped, columns=["Ticker", "Reason"]), hide_index=True)
-        st.stop()
 
-    if risk_amount:
-        results_df["Shares_To_Buy"] = swingtrade.size_by_risk(
-            results_df["Buy_Price"], results_df["Stop_Loss"], risk_amount, config.fractional_share_decimals
+    with tab2:
+        st.subheader("LLM Agent (experimental)")
+        st.warning(
+            "**Experimental -- not mechanically validated.** Every strategy in the "
+            "Mechanical Strategies tab was proven to beat matched-count random-entry "
+            "timing on 5 years of held-out historical data before being trusted (see "
+            "improvements.txt items 24-28). An LLM judgment CANNOT be validated that "
+            "way -- re-prompting a model with 'historical' context risks it already "
+            "knowing what happened next from training data. This can only be validated "
+            "PROSPECTIVELY: real time passing, real settled trades -- see the progress "
+            "counter below. **Never used for capital allocation** -- no cash pool, no "
+            "allocate_capital() call, regardless of how confident a call looks."
         )
-    else:
-        results_df["Shares_To_Buy"] = (position_budget / results_df["Buy_Price"]).round(config.fractional_share_decimals)
-    results_df["Est_Cost"] = (results_df["Shares_To_Buy"] * results_df["Buy_Price"]).round(2)
-    results_df = _score_for_strategy(results_df, config)
-    results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
 
-    # Log signals BEFORE the capital-allocation overlay: Trade_Signals should
-    # reflect the underlying technical signal, not whether cash happened to
-    # be available today.
-    storage_ok, storage_message = init_storage()
-    if storage_ok:
-        try:
-            logged = storage.log_trade_signals(results_df, config.to_dict())
-            st.sidebar.caption(
-                f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB."
+        if not llm_agent.is_available():
+            st.caption(
+                "Unavailable: set GEMINI_API_KEY (same key used by the AI Context "
+                "feature in the other tab; primary provider) and/or GROQ_API_KEY "
+                "(fallback provider, used only if Gemini is unavailable or fails) "
+                "to enable -- either one alone is enough."
             )
-        except Exception as exc:
-            st.sidebar.warning(f"Signal logging failed: {exc}")
-    else:
-        st.sidebar.caption(f"MongoDB not connected ({storage_message}) -- signals aren't being logged.")
+        else:
+            # Candidate pre-filter: never independently scans the full watchlist --
+            # only tickers at least one mechanical strategy already found interesting
+            # today, capped at MAX_LLM_CANDIDATES. See llm_agent.py's module
+            # docstring for why (cost/rate-limit control, and framing this as a
+            # second opinion rather than a blind scan).
+            mechanical_frames = {"Primary (v19)": results_df, **secondary_results_by_label}
+            candidates: dict[str, dict] = {}
+            for strategy_label, df in mechanical_frames.items():
+                if df is None or df.empty:
+                    continue
+                interesting = df[df["Signal"] != "Ignore"]
+                for _, row in interesting.iterrows():
+                    entry = candidates.setdefault(row["Ticker"], {"scores": {}, "row": row})
+                    entry["scores"][strategy_label] = float(row["Trade_Score"])
 
-    if apply_allocation:
-        results_df, capital_allocated = swingtrade.allocate_capital(
-            results_df, total_cash,
-            sector_lookup=sector_lookup, max_sector_allocation_pct=config.max_sector_allocation_pct,
-            existing_holdings=existing_holdings,
-        )
-        remaining_idle_cash = round(total_cash - capital_allocated, 2)
-    else:
-        capital_allocated = None
-        remaining_idle_cash = None
+            ranked_candidates = sorted(
+                candidates.items(), key=lambda item: max(item[1]["scores"].values()), reverse=True
+            )[:MAX_LLM_CANDIDATES]
 
-    strong_buys = int((results_df["Signal"] == "Strong Buy").sum())
-    catalyst_warnings = int(results_df["Catalyst_Warning"].sum())
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Tickers Scanned", len(tickers))
-    col2.metric("Successfully Analyzed", len(results_df))
-    col3.metric("Active Strong Buys", strong_buys)
-    col4.metric("Catalyst Warnings", catalyst_warnings)
-
-    if apply_allocation:
-        col5, col6, col7 = st.columns(3)
-        col5.metric("Starting Cash", f"${total_cash:,.2f}")
-        col6.metric("Capital Allocated to Orders", f"${capital_allocated:,.2f}")
-        col7.metric("Remaining Idle Cash", f"${remaining_idle_cash:,.2f}")
-    else:
-        st.info(
-            "Capital allocation is off -- Signal column shows raw Strong Buy/Buy/Watch/Ignore, "
-            "unaffected by Total Available Cash or Current Holdings."
-        )
-
-    if apply_allocation and sector_lookup:
-        funded = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])].copy()
-        funded["Sector"] = funded["Ticker"].map(sector_lookup).fillna("Unknown")
-        new_by_sector = funded.groupby("Sector")["Est_Cost"].sum()
-
-        holdings_by_sector: dict[str, float] = {}
-        for ticker, amount in existing_holdings.items():
-            sector = sector_lookup.get(ticker, "Unknown")
-            holdings_by_sector[sector] = holdings_by_sector.get(sector, 0.0) + amount
-        holdings_by_sector = pd.Series(holdings_by_sector, dtype=float)
-
-        breakdown = pd.DataFrame({
-            "Existing Holdings ($)": holdings_by_sector,
-            "New Today ($)": new_by_sector,
-        }).fillna(0.0)
-        breakdown["Total ($)"] = breakdown["Existing Holdings ($)"] + breakdown["New Today ($)"]
-        breakdown = breakdown.sort_values("Total ($)", ascending=False)
-
-        portfolio_value = total_cash + sum(existing_holdings.values())
-        sector_cap_dollars = (
-            config.max_sector_allocation_pct * portfolio_value if config.max_sector_allocation_pct > 0 else None
-        )
-        with st.expander("Capital allocated by sector"):
-            if sector_cap_dollars is not None:
+            if not ranked_candidates:
                 st.caption(
-                    f"Cap: {config.max_sector_allocation_pct * 100:.0f}% of total portfolio value "
-                    f"(${portfolio_value:,.2f} = today's cash + existing holdings) per sector "
-                    f"= ${sector_cap_dollars:,.2f}."
+                    "No tickers scored above Ignore under any mechanical strategy today -- "
+                    "nothing for the LLM Agent to weigh in on (see the Mechanical Strategies "
+                    "tab). Genuinely empty, not a bug."
                 )
-            st.dataframe(breakdown.reset_index(names="Sector"), width="stretch", hide_index=True)
+            else:
+                st.caption(
+                    f"Evaluating {len(ranked_candidates)} ticker(s) flagged by at least one "
+                    "mechanical strategy today, highest mechanical Trade_Score first."
+                )
+                llm_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "llm_agent"})
+                llm_rows = []
+                for ticker, entry in ranked_candidates:
+                    row = entry["row"]
+                    fundamentals = {}
+                    try:
+                        info = yf.Ticker(ticker).info
+                        fundamentals = {
+                            k: info[k] for k in ("trailingPE", "marketCap", "sector") if info.get(k) is not None
+                        }
+                    except Exception:
+                        pass
+                    context = {
+                        "last_close": float(row["Last_Close"]),
+                        "rsi": float(row["RSI"]) if pd.notna(row.get("RSI")) else None,
+                        "atr": float(row["ATR"]),
+                        "mechanical_scores": entry["scores"],
+                        "catalyst_warning": bool(row.get("Catalyst_Warning", False)),
+                        "next_earnings_date": row.get("Next_Earnings_Date"),
+                        "headlines": market_data.get_multi_headlines(ticker),
+                        "fundamentals": fundamentals,
+                    }
 
-    holdings_with_cost = tuple(sorted(
-        (t, info["avg_cost"]) for t, info in holdings_detail.items() if info.get("avg_cost")
-    ))
-    if holdings_with_cost:
-        st.subheader("Position Review")
+                    with st.spinner(f"Evaluating {ticker}..."):
+                        verdict = llm_agent.evaluate_ticker(ticker, context)
+
+                    with st.expander(f"{ticker} -- {verdict['decision'] if verdict else 'unavailable'}"):
+                        if verdict is None:
+                            st.caption("LLM evaluation failed or returned an unusable response for this ticker.")
+                            continue
+                        st.write(f"**{verdict['decision']}** (confidence: {verdict['confidence']:.0f}/100)")
+                        st.write(verdict["rationale"])
+
+                        if verdict["decision"] in ("Buy", "Hold"):
+                            atr = context["atr"]
+                            buy_price = round(context["last_close"], 2)
+                            sell_price = round(buy_price + llm_config.atr_take_profit_multiplier * atr, 2)
+                            stop_loss = round(buy_price - llm_config.stop_loss_atr_multiplier * atr, 2)
+                            risk = buy_price - stop_loss
+                            rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+                            llm_rows.append({
+                                "Ticker": ticker, "As_Of": row["As_Of"], "Signal": verdict["decision"],
+                                "Trade_Score": verdict["confidence"], "Last_Close": context["last_close"],
+                                "Buy_Price": buy_price, "Sell_Price": sell_price, "Stop_Loss": stop_loss,
+                                "RRR": rrr, "RSI": context["rsi"], "ATR": atr,
+                                "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
+                                "Next_Earnings_Date": context["next_earnings_date"],
+                                "Catalyst_Warning": context["catalyst_warning"], "Top_Headline": "",
+                            })
+
+                if llm_rows and storage_ok:
+                    llm_df = pd.DataFrame(llm_rows)
+                    # "Hold" isn't in the shared Strong Buy/Buy/Watch/Ignore vocabulary
+                    # storage/signals.py expects -- map it to "Watch" (research tier),
+                    # same actionable/research split every mechanical strategy uses.
+                    llm_df["Signal"] = llm_df["Signal"].replace("Hold", "Watch")
+                    try:
+                        logged = storage.log_trade_signals(llm_df, llm_config.to_dict())
+                        st.caption(
+                            f"Logged {logged['actionable']} actionable + {logged['research']} "
+                            "research signal(s) to MongoDB (strategy=llm_agent, never capital-allocated)."
+                        )
+                    except Exception as exc:
+                        st.warning(f"Signal logging failed: {exc}")
+                elif llm_rows:
+                    st.caption("MongoDB not connected -- signals aren't being logged.")
+
+        st.divider()
+        st.subheader("Validation progress")
         st.caption(
-            "Checks each holding with a known AVG_COST against the active config's ATR-based "
-            "stop/target, anchored to your real entry price -- not a guarantee, same caveats "
-            "as every other signal in this system."
+            "Tracked exactly like every mechanical strategy's signals (same "
+            "settle_trades.py grading), but can ONLY be trusted after real time "
+            "passes. Proposed floor before drawing ANY conclusion: at least 20-30 "
+            "settled trades AND at least 4-6 weeks since the first one -- roughly "
+            "double optimize.py's own 15-trade trust floor, since prospective, "
+            "LLM-noise data deserves a higher bar than a large backtested sample, "
+            "not a lower one."
         )
-        review_df, review_skipped = cached_review_holdings(holdings_with_cost, config)
-        if not review_df.empty:
-            st.dataframe(style_review(review_df), width="stretch", hide_index=True)
-        if review_skipped:
-            with st.expander(f"Could not review ({len(review_skipped)})"):
-                st.dataframe(pd.DataFrame(review_skipped, columns=["Ticker", "Reason"]), hide_index=True)
-
-    st.subheader("Scan Results")
-    display_columns = DISPLAY_COLUMNS_BREAKOUT if config.strategy == "breakout" else DISPLAY_COLUMNS_RSI
-    st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
-
-    if config.strategy == "breakout":
-        st.subheader("Loosened Filters View (research/informational only)")
-        st.caption(
-            "Same underlying scan, re-scored with the six 'sharpening' filters (overbought, "
-            "relative-strength, volume-ratio, ADX, OBV, squeeze) reset to disabled -- shows what "
-            "would score a signal under just the base breakout+ATR strategy, without the extra "
-            "selectivity that's WHY the active config is validated to be this selective (see "
-            "improvements.txt items 17/18/23). The core trigger (breakout_lookback_days) and "
-            "ATR stop/target levels are unchanged -- only the extra gates are loosened. "
-            "**Never used for capital allocation** -- rows the active config scored Ignore are "
-            "logged to MongoDB tagged tier=\"research_loosened\" purely to accumulate real "
-            "outcome data on days the Scan Results table above is empty or thin (see "
-            "storage/signals.py); never mixed with actionable/research-tier outcomes."
-        )
-        loosened_config = swingtrade.loosened_breakout_config(config)
-        loosened_df = swingtrade.add_breakout_trade_score(results_df.copy(), loosened_config)
-
         if storage_ok:
             try:
-                strict_signal_by_ticker = dict(zip(results_df["Ticker"], results_df["Signal"]))
-                loosened_only = loosened_df[
-                    loosened_df["Ticker"].map(strict_signal_by_ticker).eq("Ignore")
-                ]
-                loosened_logged = storage.log_trade_signals(
-                    loosened_only, loosened_config.to_dict(), tier=storage.LOOSENED_RESEARCH_TIER
-                )
-                st.caption(
-                    f"Logged {loosened_logged.get(storage.LOOSENED_RESEARCH_TIER, 0)} "
-                    "research_loosened signal(s) to MongoDB."
-                )
+                db = storage.get_db()
+                outcomes = list(db["Trade_Outcomes"].find({"strategy": "llm_agent"}))
+                if not outcomes:
+                    st.caption("0 settled llm_agent trades yet.")
+                else:
+                    first_exit_date = min(o["exit_date"] for o in outcomes)
+                    days_elapsed = (pd.Timestamp.now().normalize() - pd.Timestamp(first_exit_date)).days
+                    win_count = sum(1 for o in outcomes if o["status"] == "WIN")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Settled llm_agent trades", len(outcomes))
+                    col2.metric("Days since first settled trade", days_elapsed)
+                    col3.metric("Win rate so far", f"{win_count / len(outcomes) * 100:.1f}%")
             except Exception as exc:
-                st.caption(f"Loosened-signal logging failed: {exc}")
-
-        loosened_df = loosened_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
-        shown = loosened_df[loosened_df["Signal"] != "Ignore"]
-        if shown.empty:
-            st.caption("Nothing scores above Ignore even with the extra filters disabled -- "
-                       "genuinely no breakout activity anywhere in the watchlist today.")
+                st.caption(f"Could not load validation progress: {exc}")
         else:
-            st.dataframe(style_results(shown[display_columns]), width="stretch", hide_index=True)
-
-    for label in SECONDARY_STRATEGY_VERSIONS:
-        secondary_config, _ = secondary_configs[label]
-        if secondary_config is None:
-            continue
-        st.divider()
-        render_secondary_section(
-            f"{label} Signals (v{SECONDARY_STRATEGY_VERSIONS[label]}, secondary)",
-            secondary_config,
-            bundle, market_df, fetch_skipped,
-            sector_lookup, existing_holdings,
-            secondary_cash[label], apply_allocation,
-            risk_amount, position_budget,
-            storage_ok,
-        )
-
-    if generate_ai_context:
-        signal_tickers = results_df[results_df["Signal"].isin(["Strong Buy", "Buy"])]["Ticker"].tolist()
-        if not signal_tickers:
-            st.caption("AI context: no Strong Buy/Buy signals today, nothing to summarize.")
-        else:
-            st.subheader("AI Context (Strong Buy / Buy signals)")
-            st.caption(
-                "Informational only -- summarizes each ticker's recent headlines for you to "
-                "read. Not a rating, not a recommendation, and never fed back into Trade_Score "
-                "or Signal. See ai_context.py for the full reasoning behind keeping this scoped "
-                "this narrowly."
-            )
-            for ticker in signal_tickers:
-                signal = results_df.loc[results_df["Ticker"] == ticker, "Signal"].iloc[0]
-                with st.expander(f"{ticker} ({signal})"):
-                    with st.spinner(f"Summarizing recent news for {ticker}..."):
-                        headlines = market_data.get_multi_headlines(ticker)
-                        summary = ai_context.summarize_ticker_context(ticker, signal, headlines)
-                    if summary:
-                        st.write(summary)
-                    elif headlines:
-                        st.caption("AI summary unavailable -- raw headlines:")
-                        for h in headlines:
-                            st.write(f"- {h}")
-                    else:
-                        st.caption("No recent headlines found for this ticker.")
-
-    st.download_button(
-        "Download full results as CSV",
-        data=results_df.to_csv(index=False).encode("utf-8"),
-        file_name="swing_orders.csv",
-        mime="text/csv",
-    )
-
-    if skipped:
-        with st.expander(f"Skipped tickers ({len(skipped)})"):
-            st.dataframe(pd.DataFrame(skipped, columns=["Ticker", "Reason"]), hide_index=True)
+            st.caption("MongoDB not connected -- no progress to show.")
 
 
 if __name__ == "__main__":
