@@ -98,9 +98,17 @@ searches week52_lookback_days/week52_nearness_pct/atr_take_profit_multiplier/
 stop_loss_atr_multiplier (a continuous-STATE signal -- how close is price to
 its own trailing 52-week high, right now -- rather than a discrete event,
 so it can fire on many consecutive days; a well-documented academic factor,
-see swingtrade.compute_week52_levels) -- everything above (WFO, recency
-weighting, correlation-adjustment, ticker-holdout, champion/challenger)
-applies identically to all five.
+see swingtrade.compute_week52_levels); --strategy momentum_burst searches
+momentum_burst_gain_pct_min/momentum_burst_volume_ratio_min/
+atr_take_profit_multiplier/stop_loss_atr_multiplier (fires on a single
+day's price gain CONFIRMED by unusually high volume, no fresh-high
+requirement at all -- built specifically to fire more often than any prior
+strategy, see swingtrade.compute_momentum_burst_levels; shipped
+experimental with a mixed untuned-defaults result -- beats random-entry
+timing on holdout/aggregate, loses on tune -- see improvements.txt item 35,
+this search is the follow-up that answers whether tuning resolves that) --
+everything above (WFO, recency weighting, correlation-adjustment,
+ticker-holdout, champion/challenger) applies identically to all six.
 
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
@@ -110,6 +118,7 @@ Usage:
     python optimize.py --trials 30 --strategy pullback           # search the pullback signal instead
     python optimize.py --trials 30 --strategy breakout_retest    # search the breakout-retest signal instead
     python optimize.py --trials 30 --strategy week52_high        # search the 52-week-high signal instead
+    python optimize.py --trials 30 --strategy momentum_burst     # search the momentum-burst signal instead
 """
 
 import argparse
@@ -242,6 +251,24 @@ WEEK52_NEARNESS_PCT_RANGE = (0.5, 15.0)
 # Lower bound (0.5) is a very tight band (must be almost exactly at the
 # high); upper bound (15.0) is quite loose (a stock 15% off its highs
 # still counts as "near"). 5.0's default sits well within this range.
+
+# Momentum-burst strategy's own search space. Same lean 4D shape as
+# pullback/retest/week52 (2 new dimensions + the two shared ATR/stop
+# fields) -- built specifically to answer whether tuning resolves this
+# strategy's mixed untuned-defaults result (see improvements.txt item 35:
+# beats random-entry timing on holdout/aggregate, loses on tune).
+MOMENTUM_BURST_GAIN_PCT_RANGE = (1.0, 10.0)
+# Lower bound (1.0%) lets Optuna find "barely needs to be a burst"
+# almost-loose; upper bound (10.0%) requires a genuinely large single-day
+# move. 3.0's default sits well within this range.
+MOMENTUM_BURST_VOLUME_RATIO_RANGE = (1.0, 5.0)
+# Lower bound (1.0x, merely at-or-above-average volume) is the loosest
+# this can go and still mean "confirmation" at all -- unlike breakout's
+# own OPTIONAL breakout_volume_ratio_min filter (which can go to 0.0,
+# fully disabled), this field IS the trigger's volume-confirmation leg,
+# not an add-on gate, so it can't sensibly go below "at least average."
+# Upper bound (5.0x) is a genuinely demanding spike. 2.0's default sits
+# within this range.
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -384,10 +411,21 @@ def build_objective(
                 "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
                 "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
             }
-        else:
+        elif strategy == "week52_high":
             params = {
                 "week52_lookback_days": trial.suggest_int("week52_lookback_days", *WEEK52_LOOKBACK_DAYS_RANGE),
                 "week52_nearness_pct": trial.suggest_float("week52_nearness_pct", *WEEK52_NEARNESS_PCT_RANGE),
+                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
+                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+            }
+        else:
+            params = {
+                "momentum_burst_gain_pct_min": trial.suggest_float(
+                    "momentum_burst_gain_pct_min", *MOMENTUM_BURST_GAIN_PCT_RANGE
+                ),
+                "momentum_burst_volume_ratio_min": trial.suggest_float(
+                    "momentum_burst_volume_ratio_min", *MOMENTUM_BURST_VOLUME_RATIO_RANGE
+                ),
                 "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
                 "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
             }
@@ -465,7 +503,9 @@ def report_live_outcomes_context() -> None:
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "--strategy", choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high"], default="rsi",
+        "--strategy",
+        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst"],
+        default="rsi",
         help="Which signal to search parameters for. Default: rsi.",
     )
     parser.add_argument("--trials", type=int, default=50)
