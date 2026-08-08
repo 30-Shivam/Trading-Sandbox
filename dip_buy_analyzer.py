@@ -365,6 +365,11 @@ def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
 # ingest.py) -- aliased here so every existing reference in this file
 # keeps working unchanged.
 SECONDARY_STRATEGY_VERSIONS = config_loader.SECONDARY_STRATEGY_VERSIONS
+# Deliberately a SEPARATE dict, NOT merged into SECONDARY_STRATEGY_VERSIONS
+# -- see config_loader.EXPERIMENTAL_STRATEGY_VERSIONS' docstring. ingest.py
+# only ever iterates SECONDARY_STRATEGY_VERSIONS, so keeping this separate
+# is what actually keeps an experimental strategy out of automation.
+EXPERIMENTAL_STRATEGY_VERSIONS = config_loader.EXPERIMENTAL_STRATEGY_VERSIONS
 
 
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner=False)
@@ -378,7 +383,7 @@ def load_secondary_config(version: int) -> tuple[swingtrade.TradingConfig | None
 
 def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> pd.DataFrame:
     """Dispatch to the right add_*_trade_score() for config.strategy --
-    covers all five strategies (previously this dispatch only handled
+    covers all six strategies (previously this dispatch only handled
     "breakout" vs. everything-else, silently mis-scoring pullback/
     breakout_retest/week52_high rows as RSI; fixed alongside the same gap
     in market_data.score_bundle_for_strategy())."""
@@ -390,6 +395,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_breakout_retest_trade_score(df, config)
     elif config.strategy == "week52_high":
         return swingtrade.add_week52_trade_score(df, config)
+    elif config.strategy == "momentum_burst":
+        return swingtrade.add_momentum_burst_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -484,6 +491,74 @@ def render_secondary_section(
     return results_df
 
 
+def render_experimental_section(
+    label: str,
+    config: swingtrade.TradingConfig,
+    bundle: dict,
+    market_df,
+    fetch_skipped: list[tuple[str, str]],
+    storage_ok: bool,
+) -> pd.DataFrame:
+    """Score, log, and display one EXPERIMENTAL strategy's results against
+    the SAME already-fetched bundle every other section uses -- no extra
+    network fetch. Unlike render_secondary_section(), this NEVER sizes
+    positions and NEVER calls swingtrade.allocate_capital() -- no cash pool
+    exists for an experimental strategy, full stop (see
+    config_loader.EXPERIMENTAL_STRATEGY_VERSIONS' docstring for why this
+    stays a separate dict from SECONDARY_STRATEGY_VERSIONS, the actual
+    mechanism enforcing this).
+
+    Unlike the LLM Agent tab, an experimental strategy here IS a mechanical
+    one and was already run through the SAME offline validation every
+    strategy in this codebase is held to (benchmark_random_entry.py against
+    5 years of held-out history) BEFORE this tab ever renders it -- see
+    improvements.txt for the specific strategy's result. Signals are still
+    logged to MongoDB (strategy=config.strategy) so settle_trades.py grades
+    real outcomes over time for ongoing review, but that logging is
+    record-keeping, not a substitute for the offline validation that
+    already happened.
+
+    Shares_To_Buy/Est_Cost are deliberately omitted from the display
+    (unlike render_secondary_section()'s DISPLAY_COLUMNS_BREAKOUT) --
+    showing zeroed sizing columns for a strategy with no cash pool would
+    read as a bug, not a design choice."""
+    st.subheader(label)
+    results, score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+    if not results:
+        st.caption("No tickers were successfully analyzed.")
+        return pd.DataFrame()
+
+    results_df = pd.DataFrame(results)
+    results_df = _score_for_strategy(results_df, config)
+    results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
+
+    if storage_ok:
+        try:
+            logged = storage.log_trade_signals(results_df, config.to_dict())
+            st.caption(
+                f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) "
+                "to MongoDB (never capital-allocated -- see warning above)."
+            )
+        except Exception as exc:
+            st.warning(f"Signal logging failed: {exc}")
+    else:
+        st.caption("MongoDB not connected -- signals aren't being logged.")
+
+    display_columns = [
+        "Ticker", "Signal", "Trade_Score", "Last_Close", "Day_Gain_Pct", "Volume_Ratio",
+        "Buy_Price", "Sell_Price", "Stop_Loss", "RRR", "RSI", "ATR",
+        "Next_Earnings_Date", "Catalyst_Warning", "Top_Headline", "As_Of",
+    ]
+    st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
+
+    all_skipped = fetch_skipped + score_skipped
+    if all_skipped:
+        with st.expander(f"Skipped for {label} ({len(all_skipped)})"):
+            st.dataframe(pd.DataFrame(all_skipped, columns=["Ticker", "Reason"]), hide_index=True)
+
+    return results_df
+
+
 def main():
     st.set_page_config(page_title="Swing-Trading Dashboard", layout="wide")
     st.title("Swing-Trading Dashboard")
@@ -495,6 +570,9 @@ def main():
     config, config_source = load_active_config()
     secondary_configs = {
         label: load_secondary_config(version) for label, version in SECONDARY_STRATEGY_VERSIONS.items()
+    }
+    experimental_configs = {
+        label: load_secondary_config(version) for label, version in EXPERIMENTAL_STRATEGY_VERSIONS.items()
     }
 
     with st.sidebar:
@@ -643,7 +721,9 @@ def main():
         tickers = tuple(parse_ticker_text(ticker_text))
         st.caption(f"{len(tickers)} ticker(s) loaded.")
 
-    tab1, tab2 = st.tabs(["Mechanical Strategies", "LLM Agent (experimental)"])
+    tab1, tab_daily, tab2 = st.tabs(
+        ["Mechanical Strategies", "Daily Signals (experimental)", "LLM Agent (experimental)"]
+    )
 
     with tab1:
         sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
@@ -889,6 +969,31 @@ def main():
         if skipped:
             with st.expander(f"Skipped tickers ({len(skipped)})"):
                 st.dataframe(pd.DataFrame(skipped, columns=["Ticker", "Reason"]), hide_index=True)
+
+    with tab_daily:
+        st.warning(
+            "**Experimental -- built to fire faster, not yet promoted.** Every strategy in "
+            "the Mechanical Strategies tab was proven to beat matched-count random-entry "
+            "timing on 5 years of held-out historical data before being trusted with real "
+            "capital (see improvements.txt items 24-28). Strategies here HAVE already been "
+            "run through that same offline validation -- see improvements.txt for each "
+            "one's actual result -- but ship experimental regardless of outcome until "
+            "explicitly promoted. **Never used for capital allocation** -- no cash pool, "
+            "no allocate_capital() call, no matter how good a backtest result looks."
+        )
+        if not EXPERIMENTAL_STRATEGY_VERSIONS:
+            st.caption("No experimental strategies configured.")
+        for label, version in EXPERIMENTAL_STRATEGY_VERSIONS.items():
+            experimental_config, experimental_source = experimental_configs[label]
+            if experimental_config is None:
+                st.caption(f"{label} (v{version}): unavailable -- {experimental_source}")
+                continue
+            render_experimental_section(
+                f"{label} (v{version}, experimental)",
+                experimental_config,
+                bundle, market_df, fetch_skipped,
+                storage_ok,
+            )
 
     with tab2:
         st.subheader("LLM Agent (experimental)")

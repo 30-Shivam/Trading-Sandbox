@@ -1032,6 +1032,183 @@ def compute_week52_levels(
     return week52_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def precompute_momentum_burst_frame(
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    market_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Vectorized precompute of every column momentum_burst_levels_from_frame()
+    needs -- built ON TOP of precompute_breakout_frame() (reused wholesale,
+    not reimplemented: SMA_TREND/RSI/ATR/AvgVolume/AvgVolume_Prior/ADX/etc.
+    are identical to what breakout already computes, and this strategy's
+    volume-confirmation leg is the SAME Volume_Ratio concept breakout's own
+    optional breakout_volume_ratio_min filter already uses -- see
+    breakout_levels_from_frame()'s inline Volume_Ratio computation, mirrored
+    the same way here rather than added as its own frame column).
+
+    Adds one new column: Day_Gain_Pct = today's Close vs. PRIOR Close %
+    gain (pct_change() -- no shift needed, this reads only today's and
+    yesterday's already-closed bars, no look-ahead)."""
+    df = precompute_breakout_frame(df, config, market_df=market_df)
+    df["Day_Gain_Pct"] = df["Close"].pct_change() * 100
+    return df
+
+
+def momentum_burst_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract compute_momentum_burst_levels()'s dict for one row of a
+    frame already built by precompute_momentum_burst_frame() -- the
+    O(1)-per-row counterpart a walk-forward loop calls once per `as_of`.
+    Business logic is verbatim compute_momentum_burst_levels(), just
+    reading from a precomputed row.
+    """
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, avg_volume_prior, last_volume, rsi, day_gain_pct = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"],
+        last_row["AvgVolume_Prior"], last_row["Volume"], last_row["RSI"], last_row["Day_Gain_Pct"],
+    )
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+    if pd.isna(day_gain_pct):
+        raise RuntimeError("insufficient history: no prior Close to compute today's % gain")
+    # RSI is informational only for momentum_burst (not used for gating) --
+    # same treatment as every other trend-following strategy.
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+
+    last_close, sma_trend, atr, avg_volume, day_gain_pct = (
+        float(last_close), float(sma_trend), float(atr), float(avg_volume), float(day_gain_pct),
+    )
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    # Same informational-unless-thresholded treatment as breakout's own
+    # Volume_Ratio (see breakout_levels_from_frame) -- here it's the
+    # trigger's own gating leg, not optional, so a missing/zero prior
+    # average correctly means "can't confirm volume," not "skip the check."
+    if pd.isna(avg_volume_prior) or float(avg_volume_prior) == 0:
+        volume_ratio = None
+    else:
+        volume_ratio = round(float(last_volume) / float(avg_volume_prior), 3)
+
+    momentum_signal = bool(
+        day_gain_pct >= config.momentum_burst_gain_pct_min
+        and volume_ratio is not None
+        and volume_ratio >= config.momentum_burst_volume_ratio_min
+    )
+
+    # Buy_Price = today's own Close -- same "already happening, buy near
+    # the current price" convention week52_high uses, not a resting level
+    # to wait for (this is a same-day confirmation of a move already in
+    # progress, not a discrete price level). Distance_to_Buy_Pct is
+    # therefore always 0 by construction (Buy_Price IS Last_Close) --
+    # uninformative for this strategy the same way breakout_retest's own
+    # "no prior breakout yet" fallback case is, kept only for
+    # schema-compatibility with the shared scoring formula.
+    buy_price = round(last_close, 2)
+    distance_to_buy_pct = 0.0
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "Day_Gain_Pct": round(day_gain_pct, 2),
+        "Volume_Ratio": volume_ratio,
+        "Momentum_Signal": momentum_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": distance_to_buy_pct,
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_momentum_burst_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Compute momentum-burst levels for one ticker's OHLCV history -- a
+    sixth strategy, built specifically to fire MORE OFTEN than any prior
+    one: unlike breakout (a discrete "fresh N-day high TODAY" event) or
+    breakout_retest/week52_high (both anchored to a specific high level),
+    this fires on a single day's strong price gain CONFIRMED by unusually
+    high volume -- a genuinely different phenomenon (sudden, volume-backed
+    conviction) rather than a more-sensitive version of an existing
+    trigger, so it can fire on days none of the other five strategies do.
+
+    Momentum_Signal requires BOTH Day_Gain_Pct >= momentum_burst_gain_pct_min
+    AND Volume_Ratio >= momentum_burst_volume_ratio_min -- price movement
+    alone (a volatile, low-conviction day) and volume alone (elevated
+    trading with no real price movement) are each, individually, weak
+    evidence; both together is the actual "conviction" signal.
+
+    Buy_Price is today's own Close (see momentum_burst_levels_from_frame's
+    inline comment for why -- same convention as week52_high, NOT a
+    resting level to wait for).
+
+    The returned dict is schema-compatible with every other strategy's
+    (Buy_Price, Sell_Price, Stop_Loss, RRR, Distance_to_Buy_Pct,
+    Catalyst_Warning, etc. all present) -- only add_momentum_burst_trade_score
+    (swingtrade/scoring.py) differs downstream. RSI is informational only,
+    same treatment as the others.
+
+    Thin wrapper over precompute_momentum_burst_frame()/momentum_burst_levels_from_frame()
+    -- kept as a single-call convenience for the live dashboard, matching
+    every other strategy's same rationale. NOT called from ingest.py in
+    this v1 -- this strategy is dashboard-only/experimental until it
+    passes the same random-entry-timing validation every other strategy
+    here was held to (see benchmark_random_entry.py).
+    """
+    frame = precompute_momentum_burst_frame(df, config)
+    as_of = frame.index[-1]
+    return momentum_burst_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def review_holding(
     ticker: str,
     df: pd.DataFrame,

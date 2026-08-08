@@ -20,6 +20,19 @@ SECONDARY_STRATEGY_VERSIONS = {
     "52-Week High": 28,
 }
 
+# Fixed candidate System_Config versions for EXPERIMENTAL strategies --
+# deliberately a SEPARATE dict from SECONDARY_STRATEGY_VERSIONS above, not
+# merged into it. This separation is the actual mechanism that keeps an
+# experimental strategy out of ingest.py's automation loop (which only
+# ever iterates SECONDARY_STRATEGY_VERSIONS) and out of any capital-
+# allocation path -- see dip_buy_analyzer.py's "Daily Signals" tab and
+# improvements.txt item 34/35. A strategy only moves from here to
+# SECONDARY_STRATEGY_VERSIONS once it's been promoted after passing
+# validation, the same graduation breakout_retest/week52_high went through.
+EXPERIMENTAL_STRATEGY_VERSIONS = {
+    "Momentum Burst": 29,
+}
+
 
 def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
     try:

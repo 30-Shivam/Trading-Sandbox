@@ -196,11 +196,11 @@ def score_bundle_for_strategy(
     fetch_ticker_bundle()), dispatching on `config.strategy`: "rsi"
     (default, compute_levels), "breakout" (compute_breakout_levels, uses
     `market_df` for Relative_Strength), "pullback" (compute_pullback_levels),
-    "breakout_retest" (compute_breakout_retest_levels), or "week52_high"
-    (compute_week52_levels) -- the returned dicts are schema-compatible
-    across all five (see compute_breakout_levels' docstring). Pure
-    computation, no network calls -- safe and cheap to call once per
-    strategy against the SAME bundle."""
+    "breakout_retest" (compute_breakout_retest_levels), "week52_high"
+    (compute_week52_levels), or "momentum_burst" (compute_momentum_burst_levels)
+    -- the returned dicts are schema-compatible across all six (see
+    compute_breakout_levels' docstring). Pure computation, no network calls
+    -- safe and cheap to call once per strategy against the SAME bundle."""
     results = []
     skipped = []
     for ticker, entry in bundle.items():
@@ -221,6 +221,10 @@ def score_bundle_for_strategy(
                 )
             elif config.strategy == "week52_high":
                 levels = swingtrade.compute_week52_levels(
+                    ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
+                )
+            elif config.strategy == "momentum_burst":
+                levels = swingtrade.compute_momentum_burst_levels(
                     ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
                 )
             else:

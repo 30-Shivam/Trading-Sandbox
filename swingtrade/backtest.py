@@ -68,8 +68,10 @@ from .levels import (
     breakout_retest_levels_from_frame,
     levels_from_rsi_frame,
     market_uptrend_from_frame,
+    momentum_burst_levels_from_frame,
     precompute_breakout_frame,
     precompute_breakout_retest_frame,
+    precompute_momentum_burst_frame,
     precompute_pullback_frame,
     precompute_rsi_frame,
     precompute_week52_frame,
@@ -1174,6 +1176,194 @@ def simulate_random_week52_entries(
     return trades
 
 
+def simulate_momentum_burst_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Momentum-burst counterpart to simulate_signals()/simulate_breakout_signals()/
+    simulate_pullback_signals()/simulate_breakout_retest_signals()/simulate_week52_signals()
+    -- buys a single day's strong price gain CONFIRMED by unusually high
+    volume, in a confirmed macro uptrend. Built to fire MORE OFTEN than any
+    prior strategy: unlike breakout (a discrete "new high TODAY" event) or
+    breakout_retest/week52_high (both anchored to a specific high level),
+    this doesn't require a fresh high at all -- just a forceful, volume-
+    backed move, which can happen on many more days than a genuine N-day
+    high.
+
+    Same no-look-ahead discipline, same entry-timing realism -- Buy_Price
+    is a resting LIMIT order at essentially today's own Close (same
+    convention as week52_high: already happening, not waiting for a
+    specific dip level), filled via the same _find_entry_fill() mechanics
+    as pullback/breakout_retest/week52_high, deliberately NOT a bespoke
+    "buy at the next Open" mechanic -- keeping the identical fill mechanic
+    across every "Buy_Price = today's Close" strategy keeps this an
+    apples-to-apples comparison with week52_high specifically, and matches
+    this codebase's one established precedent for this exact situation.
+    Same ATR-multiple stop/target sizing as every other strategy.
+
+    `market_ohlcv` is accepted for signature consistency with the other
+    five simulate_*() functions but unused here -- no Relative_Strength
+    concept in this v1, same as pullback/breakout_retest/week52_high.
+
+    `ohlcv` needs the same leading-history buffer as the other strategies
+    -- see LOOKBACK_BUFFER_BARS.
+    """
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_momentum_burst_frame(ohlcv, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = momentum_burst_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        if not levels["Momentum_Signal"]:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Momentum_Burst",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_momentum_burst_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_momentum_burst_signals() -- same
+    idea as the other five simulate_random_*_entries() functions, using
+    this strategy's own gates (macro uptrend, liquidity via
+    compute_momentum_burst_levels) and limit-order fill mechanics
+    (_find_entry_fill), so it isolates whether momentum-burst TIMING adds
+    value over a random day using the identical Buy_Price formula (that
+    day's own Close) and entry/exit structure. `n_trades` should be
+    simulate_momentum_burst_signals()'s real signal count for this
+    ticker/window, so trade volume is matched. This is the critical
+    validation gate for this strategy -- see benchmark_random_entry.py."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_momentum_burst_frame(ohlcv, config)
+
+    candidates = []  # (as_of, buy_price, atr) for every day that passed the macro/liquidity gates, burst or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = momentum_burst_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_Momentum_Burst",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
 def run_backtest(
     ticker_data: dict[str, pd.DataFrame],
     market_data: pd.DataFrame,
@@ -1198,9 +1388,11 @@ def run_backtest(
     (simulate_pullback_signals, trend-following pullback entry; earnings_data
     also ignored, same reasoning), "breakout_retest"
     (simulate_breakout_retest_signals, pullback to a recent breakout's
-    level; earnings_data also ignored, same reasoning), or "week52_high"
+    level; earnings_data also ignored, same reasoning), "week52_high"
     (simulate_week52_signals, near a trailing 52-week high; earnings_data
-    also ignored, same reasoning)."""
+    also ignored, same reasoning), or "momentum_burst"
+    (simulate_momentum_burst_signals, single-day price+volume burst;
+    earnings_data also ignored, same reasoning)."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     all_trades = []
@@ -1227,10 +1419,14 @@ def run_backtest(
             trades = simulate_week52_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
             )
+        elif strategy == "momentum_burst":
+            trades = simulate_momentum_burst_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
-                "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', or 'week52_high')"
+                "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', or 'momentum_burst')"
             )
         all_trades.extend(trades)
     return all_trades

@@ -43,6 +43,13 @@ week52_lookback_days high -- swingtrade.simulate_week52_signals /
 simulate_random_week52_entries), a well-documented academic factor and a
 continuous STATE rather than a discrete event, unlike every prior
 strategy -- this IS the critical validation gate for that strategy too.
+--strategy momentum_burst tests the momentum-burst signal (buy a single
+day's Close-vs-prior-Close gain of at least config.momentum_burst_gain_pct_min,
+CONFIRMED by Volume at least config.momentum_burst_volume_ratio_min times
+its prior average -- swingtrade.simulate_momentum_burst_signals /
+simulate_random_momentum_burst_entries), built to fire more often than any
+prior strategy (no fresh-high requirement at all) -- this IS the critical
+validation gate for that strategy too.
 
 Applies the same ticker-holdout split as optimize.py (--holdout-frac,
 --holdout-seed) so the comparison also holds up (or doesn't) on tickers
@@ -104,7 +111,9 @@ def summarize(trades: list[dict]) -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "--strategy", choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high"], default="rsi",
+        "--strategy",
+        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst"],
+        default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
     )
     parser.add_argument("--breakout-lookback-days", type=int, default=None,
@@ -155,9 +164,14 @@ def main():
               f"retest_band_pct={config.retest_band_pct}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
-    else:
+    elif args.strategy == "week52_high":
         print(f"  week52_lookback_days={config.week52_lookback_days}, "
               f"week52_nearness_pct={config.week52_nearness_pct}, "
+              f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
+              f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
+    else:
+        print(f"  momentum_burst_gain_pct_min={config.momentum_burst_gain_pct_min}, "
+              f"momentum_burst_volume_ratio_min={config.momentum_burst_volume_ratio_min}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
 
@@ -204,9 +218,12 @@ def main():
     elif args.strategy == "breakout_retest":
         real_fn, random_fn = swingtrade.simulate_breakout_retest_signals, swingtrade.simulate_random_breakout_retest_entries
         real_label = "Breakout_Retest-timed"
-    else:
+    elif args.strategy == "week52_high":
         real_fn, random_fn = swingtrade.simulate_week52_signals, swingtrade.simulate_random_week52_entries
         real_label = "Week52_High-timed"
+    else:
+        real_fn, random_fn = swingtrade.simulate_momentum_burst_signals, swingtrade.simulate_random_momentum_burst_entries
+        real_label = "Momentum_Burst-timed"
 
     real_trades = []
     random_trades = []

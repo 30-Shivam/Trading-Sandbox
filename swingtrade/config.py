@@ -305,6 +305,29 @@ class TradingConfig:
                                             # still counted as "near" (0% =
                                             # at/above the high itself)
 
+    # Momentum-burst strategy (swingtrade/levels.compute_momentum_burst_levels,
+    # swingtrade/backtest.simulate_momentum_burst_signals) -- a sixth signal,
+    # built for faster firing than any prior strategy: fires on a single
+    # day's strong price gain CONFIRMED by unusually high volume, rather
+    # than requiring a fresh N-day high (breakout) or proximity to one
+    # (breakout_retest/week52_high). Reuses Volume_Ratio (today's Volume /
+    # prior volume_lookback_days average -- already computed for breakout's
+    # own optional filter, see breakout_volume_ratio_min above) as the
+    # volume-confirmation leg; these two fields are this strategy's own
+    # independent thresholds, deliberately NOT shared with
+    # breakout_volume_ratio_min (a different strategy's optional gate).
+    # Unlike every "0/disabled by default" filter field above, these two
+    # DEFINE the trigger itself, so they get real, non-disabled defaults.
+    momentum_burst_gain_pct_min: float = 3.0  # today's Close vs. prior
+                                            # Close % gain must be at least
+                                            # this
+    momentum_burst_volume_ratio_min: float = 2.0  # today's Volume must be
+                                            # at least this many times the
+                                            # PRIOR volume_lookback_days
+                                            # average (same no-look-ahead
+                                            # convention as
+                                            # breakout_volume_ratio_min)
+
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,
     # trend-following), "pullback" (simulate_pullback_signals,
