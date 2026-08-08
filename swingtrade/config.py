@@ -327,6 +327,20 @@ class TradingConfig:
                                             # average (same no-look-ahead
                                             # convention as
                                             # breakout_volume_ratio_min)
+    momentum_burst_entry_fill: str = "limit"  # backtest-only (see
+                                            # swingtrade/backtest.py's
+                                            # simulate_momentum_burst_signals) --
+                                            # "limit" = resting limit order
+                                            # waiting for a downside touch
+                                            # (same convention week52_high
+                                            # uses); "next_open" = buy the
+                                            # very next session's Open
+                                            # unconditionally, no waiting.
+                                            # Default "limit" preserves
+                                            # today's exact behavior; see
+                                            # improvements.txt for why
+                                            # "next_open" may better model
+                                            # a genuine momentum-chase entry
 
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,

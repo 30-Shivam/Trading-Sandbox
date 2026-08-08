@@ -176,6 +176,22 @@ def _find_breakout_fill(trigger_price: float, bars_after_signal: pd.DataFrame, m
     return None
 
 
+def _find_next_open_fill(bars_after_signal: pd.DataFrame):
+    """Buy at the very next session's Open, unconditionally -- no waiting
+    for a specific price to be touched/crossed (contrast _find_entry_fill()/
+    _find_breakout_fill(), both of which wait, possibly days, for a
+    specific level). Models a market-buy the morning after a same-day
+    confirmation (e.g. momentum_burst) -- the premise there is chasing a
+    move already in progress, not waiting for a pullback that may never
+    come; a resting limit order at yesterday's Close can systematically
+    miss the strongest continuation cases (see swingtrade/config.py's
+    momentum_burst_entry_fill). Returns (fill_date, fill_price) or None if
+    there's no bar after the signal at all (end of available data)."""
+    if bars_after_signal.empty:
+        return None
+    return bars_after_signal.index[0], float(bars_after_signal.iloc[0]["Open"])
+
+
 def simulate_signals(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -1239,7 +1255,10 @@ def simulate_momentum_burst_signals(
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]
-        fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if config.momentum_burst_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
         if fill is None:
             continue
         entry_date, entry_price = fill
@@ -1329,7 +1348,10 @@ def simulate_random_momentum_burst_entries(
     trades = []
     for as_of, buy_price, atr in chosen:
         bars_after_signal = ohlcv[ohlcv.index > as_of]
-        fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if config.momentum_burst_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
         if fill is None:
             continue
         entry_date, entry_price = fill

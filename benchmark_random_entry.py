@@ -119,6 +119,15 @@ def main():
     parser.add_argument("--breakout-lookback-days", type=int, default=None,
                          help="Override config.breakout_lookback_days (--strategy breakout only). "
                               "Default: whatever the tested config already has (20 by default).")
+    parser.add_argument(
+        "--momentum-burst-entry-fill", choices=["limit", "next_open"], default=None,
+        help="Override config.momentum_burst_entry_fill (--strategy momentum_burst only) -- "
+             "'limit' waits for a downside touch back to the signal price (today's default, "
+             "same convention week52_high uses); 'next_open' buys the very next session's Open "
+             "unconditionally, no waiting -- a real test of whether the limit-fill model is "
+             "systematically excluding genuine momentum continuations. Default: whatever the "
+             "tested config already has ('limit').",
+    )
     parser.add_argument("--start", default=None, help="Backtest window start (YYYY-MM-DD). Default: 5y before --end.")
     parser.add_argument("--end", default=None, help="Backtest window end (YYYY-MM-DD). Default: today.")
     parser.add_argument("--tickers", default=None, help="Comma-separated tickers to override watchlist.txt.")
@@ -143,6 +152,9 @@ def main():
     if args.breakout_lookback_days is not None:
         config = swingtrade.TradingConfig(**{**config.to_dict(), "breakout_lookback_days": args.breakout_lookback_days})
         config_label += f" (breakout_lookback_days overridden to {args.breakout_lookback_days})"
+    if args.momentum_burst_entry_fill is not None:
+        config = swingtrade.TradingConfig(**{**config.to_dict(), "momentum_burst_entry_fill": args.momentum_burst_entry_fill})
+        config_label += f" (momentum_burst_entry_fill overridden to {args.momentum_burst_entry_fill})"
     print(f"Testing config: {config_label} -- strategy={args.strategy}")
     if args.strategy == "rsi":
         print(f"  rsi_oversold_threshold={config.rsi_oversold_threshold}, "
@@ -172,6 +184,7 @@ def main():
     else:
         print(f"  momentum_burst_gain_pct_min={config.momentum_burst_gain_pct_min}, "
               f"momentum_burst_volume_ratio_min={config.momentum_burst_volume_ratio_min}, "
+              f"momentum_burst_entry_fill={config.momentum_burst_entry_fill}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
 
