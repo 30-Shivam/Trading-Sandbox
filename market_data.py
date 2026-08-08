@@ -19,6 +19,9 @@ LOOKBACK_PERIOD = "1y"           # data window to fetch (needs 200d+ for SMA200)
 MARKET_INDEX_TICKER = "SPY"      # broad-market proxy for the macro gate
 NEWS_HEADLINE_COUNT = 3          # recent news articles to fetch per ticker
 REQUEST_DELAY_SEC = 0.5          # pause between API calls to avoid rate-limiting
+MACRO_HEADLINE_TICKER = "^GSPC"  # broad-index proxy for macro/market-wide headlines (LLM Agent tab)
+MACRO_HEADLINE_COUNT = 5         # macro headlines to fetch per get_macro_snapshot() call
+VIX_TICKER = "^VIX"              # CBOE volatility index -- free numeric market-fear proxy
 
 
 def fetch_data(ticker: str) -> pd.DataFrame:
@@ -91,6 +94,42 @@ def get_multi_headlines(ticker: str, count: int = NEWS_HEADLINE_COUNT) -> list[s
         return get_recent_headlines(yf.Ticker(ticker), count=count)
     except Exception:
         return []
+
+
+def get_macro_headlines(count: int = MACRO_HEADLINE_COUNT) -> list[str]:
+    """Fetch up to `count` recent headlines for a broad market index
+    (MACRO_HEADLINE_TICKER) rather than any single company -- market-wide
+    news (Fed decisions, major economic/political events) tends to surface
+    on a broad index's own news feed. Same mechanism as get_multi_headlines()
+    (yfinance's Ticker.news), just pointed at an index instead of a ticker.
+    Returns [] on any fetch failure -- informational only, never worth
+    failing a scan over."""
+    try:
+        return get_recent_headlines(yf.Ticker(MACRO_HEADLINE_TICKER), count=count)
+    except Exception:
+        return []
+
+
+def get_macro_snapshot() -> dict:
+    """One-per-run market-wide backdrop for the LLM Agent tab (see
+    llm_agent.py) -- VIX level/change plus broad-market headlines, fetched
+    ONCE per dashboard page load and shared across every candidate ticker
+    that run (not one fetch per ticker). Each field degrades independently
+    to None/[] on its own fetch failure rather than the whole snapshot
+    failing -- same resilience philosophy as every other fetcher here."""
+    vix = None
+    vix_change_pct = None
+    try:
+        vix_df = fetch_data(VIX_TICKER)
+        vix = round(float(vix_df["Close"].iloc[-1]), 2)
+        if len(vix_df) >= 2:
+            prev_close = float(vix_df["Close"].iloc[-2])
+            if prev_close:
+                vix_change_pct = round((vix - prev_close) / prev_close * 100, 2)
+    except Exception:
+        pass
+
+    return {"vix": vix, "vix_change_pct": vix_change_pct, "headlines": get_macro_headlines()}
 
 
 def check_market_uptrend(

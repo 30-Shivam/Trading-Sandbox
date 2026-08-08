@@ -224,6 +224,15 @@ def cached_market_uptrend(config: swingtrade.TradingConfig) -> tuple[bool, float
     return market_data.check_market_uptrend(config)
 
 
+@st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner=False)
+def cached_macro_snapshot() -> dict:
+    """VIX level/change + broad-market headlines for the LLM Agent tab (see
+    market_data.get_macro_snapshot()) -- fetched ONCE per page load and
+    shared across every candidate ticker evaluated that run, same caching
+    pattern as cached_market_uptrend/cached_fetch_bundle above."""
+    return market_data.get_macro_snapshot()
+
+
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Fetching watchlist data...")
 def cached_fetch_bundle(tickers: tuple[str, ...]):
     """Fetch OHLCV + earnings + headlines for every ticker ONCE, shared
@@ -909,6 +918,10 @@ def main():
                     "mechanical strategy today, highest mechanical Trade_Score first."
                 )
                 llm_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "llm_agent"})
+                # Fetched ONCE for the whole tab, not per ticker -- see
+                # cached_macro_snapshot()/market_data.get_macro_snapshot().
+                # Every candidate this run shares the same macro backdrop.
+                macro_snapshot = cached_macro_snapshot()
                 llm_rows = []
                 for ticker, entry in ranked_candidates:
                     row = entry["row"]
@@ -929,6 +942,7 @@ def main():
                         "next_earnings_date": row.get("Next_Earnings_Date"),
                         "headlines": market_data.get_multi_headlines(ticker),
                         "fundamentals": fundamentals,
+                        "macro": macro_snapshot,
                     }
 
                     with st.spinner(f"Evaluating {ticker}..."):
@@ -938,7 +952,10 @@ def main():
                         if verdict is None:
                             st.caption("LLM evaluation failed or returned an unusable response for this ticker.")
                             continue
-                        st.write(f"**{verdict['decision']}** (confidence: {verdict['confidence']:.0f}/100)")
+                        st.write(
+                            f"**{verdict['decision']}** (confidence: {verdict['confidence']:.0f}/100) -- "
+                            f"news sentiment: **{verdict['news_sentiment']}**"
+                        )
                         st.write(verdict["rationale"])
 
                         if verdict["decision"] in ("Buy", "Hold"):

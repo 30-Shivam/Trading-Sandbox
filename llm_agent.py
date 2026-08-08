@@ -52,6 +52,23 @@ evaluate_ticker() returns None (never raises) if BOTH fail -- same
 fallback philosophy as ai_context.py and this repo's MongoDB connectivity
 checks: a flaky or unconfigured LLM call must never break a scan that
 would otherwise succeed.
+
+Input richness (added after reviewing TauricResearch/TradingAgents for
+inspiration a second time): the prompt now optionally folds in a shared
+market-wide "macro" snapshot (see market_data.get_macro_snapshot() --
+VIX level/change + broad-index headlines, fetched ONCE per dashboard page
+load, not per ticker, so this adds zero extra LLM calls) alongside the
+ticker-specific inputs, and the requested JSON output gained its own
+"news_sentiment" field (Bullish/Bearish/Neutral) so sentiment is a
+trackable signal in its own right instead of buried in rationale prose.
+Deliberately still ONE synthesis call per candidate, not a multi-agent
+debate pipeline -- each input fetcher (headlines, fundamentals, macro) is
+its own small function precisely so a future multi-agent version could
+reuse them behind separate per-role prompts, but that orchestration layer
+is intentionally not built yet: this tab hasn't passed its own
+prospective trust floor (20-30 settled trades, 4-6 weeks, see
+dip_buy_analyzer.py's LLM Agent tab) and a debate architecture would add
+real cost/complexity on top of a still-unproven signal.
 """
 
 import json
@@ -61,8 +78,10 @@ GEMINI_MODEL = "gemini-2.5-flash"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 MAX_HEADLINES = 5
+MAX_MACRO_HEADLINES = 5
 MAX_OUTPUT_TOKENS = 400
 VALID_DECISIONS = ("Buy", "Hold", "Avoid")
+VALID_SENTIMENTS = ("Bullish", "Bearish", "Neutral")
 
 
 def _gemini_available() -> bool:
@@ -123,7 +142,16 @@ def _parse_response(text: str) -> dict | None:
     if not isinstance(rationale, str) or not rationale.strip():
         return None
 
-    return {"decision": decision, "confidence": confidence, "rationale": rationale.strip()}
+    news_sentiment = data.get("news_sentiment")
+    if news_sentiment not in VALID_SENTIMENTS:
+        return None
+
+    return {
+        "decision": decision,
+        "confidence": confidence,
+        "rationale": rationale.strip(),
+        "news_sentiment": news_sentiment,
+    }
 
 
 def _build_prompt(ticker: str, context: dict) -> tuple[str, int]:
@@ -144,6 +172,24 @@ def _build_prompt(ticker: str, context: dict) -> tuple[str, int]:
     fundamentals = context.get("fundamentals") or {}
     fundamentals_block = ", ".join(f"{k}={v}" for k, v in fundamentals.items()) or "(unavailable)"
 
+    # Optional -- see market_data.get_macro_snapshot(). One shared snapshot
+    # covers every candidate ticker evaluated this run, not fetched here
+    # per-ticker, so this paragraph is cleanly omitted (not an error) for
+    # any caller that doesn't pass "macro".
+    macro = context.get("macro")
+    macro_block = ""
+    if macro:
+        macro_headlines = macro.get("headlines") or []
+        trimmed_macro_headlines = macro_headlines[:MAX_MACRO_HEADLINES]
+        macro_headline_block = (
+            "\n".join(f"- {h}" for h in trimmed_macro_headlines) if trimmed_macro_headlines else "(none available)"
+        )
+        macro_block = (
+            f"\n\nBroader market backdrop today (shared across every candidate, distinct from "
+            f"{ticker}'s own news above): VIX={macro.get('vix')} "
+            f"(change {macro.get('vix_change_pct')}%), S&P-level macro headlines:\n{macro_headline_block}"
+        )
+
     prompt = (
         f"A mechanical price/volume trading system flagged {ticker} today with the "
         f"following technical readings: Last_Close={context.get('last_close')}, "
@@ -152,15 +198,18 @@ def _build_prompt(ticker: str, context: dict) -> tuple[str, int]:
         f"Catalyst_Warning={context.get('catalyst_warning')}, "
         f"next earnings date={context.get('next_earnings_date')}. "
         f"Basic fundamentals: {fundamentals_block}. "
-        f"Its {len(trimmed_headlines)} most recent news headlines:\n{headline_block}\n\n"
+        f"Its {len(trimmed_headlines)} most recent news headlines:\n{headline_block}"
+        f"{macro_block}\n\n"
         "Given all of this, is this ticker worth a human's attention as a candidate "
         "swing trade right now? Respond ONLY with a JSON object matching exactly this "
         'shape: {"decision": "Buy" | "Hold" | "Avoid", "confidence": <integer 0-100>, '
-        '"rationale": "<2-3 plain-language sentences explaining the call>"}. '
+        '"news_sentiment": "Bullish" | "Bearish" | "Neutral", "rationale": "<2-3 '
+        'plain-language sentences explaining the call>"}. '
         '"Buy" means genuinely worth considering now, "Hold" means mixed/uncertain but '
         'worth tracking, "Avoid" means a real red flag outweighs the technical setup. '
-        "Base confidence on how strong the combined evidence is, not just the mechanical "
-        "score alone."
+        '"news_sentiment" is your read of the combined ticker-specific AND broader-market '
+        "news tone, tracked separately from the decision itself. Base confidence on how "
+        "strong the combined evidence is, not just the mechanical score alone."
     )
     return prompt, len(trimmed_headlines)
 
@@ -224,9 +273,14 @@ def evaluate_ticker(ticker: str, context: dict) -> dict | None:
     load, expected keys: `last_close`, `rsi`, `atr`, `mechanical_scores`
     (dict of strategy label -> Trade_Score for whichever mechanical
     strategies flagged this ticker today), `catalyst_warning`,
-    `next_earnings_date`, `headlines` (list[str]), and `fundamentals`
+    `next_earnings_date`, `headlines` (list[str]), `fundamentals`
     (dict, e.g. {"pe_ratio":..., "market_cap":..., "sector":...} from
-    yfinance's Ticker.info -- any subset, missing keys are fine).
+    yfinance's Ticker.info -- any subset, missing keys are fine), and
+    optionally `macro` (dict from market_data.get_macro_snapshot() --
+    {"vix":..., "vix_change_pct":..., "headlines":[...]} -- the SAME
+    snapshot shared across every candidate ticker evaluated this run, not
+    fetched per-ticker; safely omitted entirely by any caller that doesn't
+    have one).
 
     Tries Gemini (primary) first; falls back to Groq only if Gemini is
     unavailable or its call fails/returns an unusable response -- see the
@@ -234,7 +288,8 @@ def evaluate_ticker(ticker: str, context: dict) -> dict | None:
     AND the already-proven integration, not just picked by default).
 
     Returns {"decision": "Buy"|"Hold"|"Avoid", "confidence": 0-100,
-    "rationale": str} or None (never raises) if BOTH providers are
+    "news_sentiment": "Bullish"|"Bearish"|"Neutral", "rationale": str} or
+    None (never raises) if BOTH providers are
     unavailable/fail -- a flaky or unconfigured LLM call must never break
     a scan that would otherwise succeed, same philosophy as
     ai_context.summarize_ticker_context().
