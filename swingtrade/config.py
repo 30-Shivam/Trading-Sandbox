@@ -342,6 +342,54 @@ class TradingConfig:
                                             # "next_open" may better model
                                             # a genuine momentum-chase entry
 
+    # Squeeze-breakout strategy (swingtrade/levels.compute_squeeze_breakout_levels,
+    # swingtrade/backtest.simulate_squeeze_breakout_signals) -- a seventh
+    # signal, a materially different trigger from every prior one: fires
+    # when volatility was recently CONTRACTED (a squeeze, reusing
+    # Squeeze_Zscore -- already computed for breakout's own optional
+    # breakout_squeeze_zscore_max filter, see above) and today shows a
+    # real directional EXPANSION (a meaningful same-day gain, reusing the
+    # Day_Gain_Pct concept momentum_burst introduced). Deliberately does
+    # NOT also require a fresh high over any window (an earlier design
+    # draft did -- rejected because requiring BOTH a squeeze AND a fresh
+    # high is the intersection of two conditions, necessarily rarer than
+    # either alone, defeating the point of a faster-firing signal) and
+    # does NOT require volume confirmation (unlike momentum_burst) -- kept
+    # deliberately distinct rather than a near-duplicate of the existing
+    # fast-firing candidate. Same "real, non-disabled default" treatment
+    # as momentum_burst's fields -- these DEFINE the trigger.
+    squeeze_breakout_zscore_max: float = -1.0  # the trailing MINIMUM
+                                            # Squeeze_Zscore over
+                                            # squeeze_breakout_lookback_days
+                                            # must be at/below this --
+                                            # bottom ~16% of the ticker's
+                                            # own trailing volatility
+                                            # distribution, a real
+                                            # contraction
+    squeeze_breakout_lookback_days: int = 5  # how many trailing days to
+                                            # check for a recent squeeze
+                                            # (squeezes often persist
+                                            # several days before
+                                            # releasing -- the breakout
+                                            # day itself need not be the
+                                            # single tightest day)
+    squeeze_breakout_gain_pct_min: float = 2.0  # today's Close vs. prior
+                                            # Close % gain must be at
+                                            # least this -- lower bar than
+                                            # momentum_burst_gain_pct_min
+                                            # since there's no volume
+                                            # co-requirement here
+    squeeze_breakout_entry_fill: str = "limit"  # same "limit" vs.
+                                            # "next_open" toggle as
+                                            # momentum_burst_entry_fill --
+                                            # see that field's comment.
+                                            # Built in from the start here
+                                            # (not retrofitted) since this
+                                            # is the same "chase a same-day
+                                            # expansion" signal shape that
+                                            # made the fill choice matter
+                                            # for momentum_burst
+
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,
     # trend-following), "pullback" (simulate_pullback_signals,

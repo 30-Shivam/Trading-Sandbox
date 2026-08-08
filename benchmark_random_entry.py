@@ -49,7 +49,25 @@ CONFIRMED by Volume at least config.momentum_burst_volume_ratio_min times
 its prior average -- swingtrade.simulate_momentum_burst_signals /
 simulate_random_momentum_burst_entries), built to fire more often than any
 prior strategy (no fresh-high requirement at all) -- this IS the critical
-validation gate for that strategy too.
+validation gate for that strategy too. (Result: mixed at untuned defaults
+-- beats RANDOM on holdout/aggregate, loses on tune; Optuna-tuning made it
+WORSE, not better -- holdout sharpe went net negative; an alternate
+entry-fill model didn't resolve it either -- see improvements.txt items
+35-37. Deprioritized in favor of a different signal formulation.)
+--strategy squeeze_breakout tests the squeeze-breakout signal (buy a real
+directional expansion -- config.squeeze_breakout_gain_pct_min -- following
+a recent volatility contraction -- Recent_Min_Squeeze_Zscore at/below
+config.squeeze_breakout_zscore_max within the trailing
+config.squeeze_breakout_lookback_days -- swingtrade.simulate_squeeze_breakout_signals
+/ simulate_random_squeeze_breakout_entries), built after momentum_burst
+proved thin/fragile: deliberately does NOT require a fresh high over any
+window (unlike breakout/breakout_retest/week52_high -- an earlier design
+draft did, rejected because requiring both a squeeze AND a fresh high is
+the intersection of two conditions, necessarily rarer than either alone)
+and does NOT require volume confirmation (unlike momentum_burst) -- this
+IS the critical validation gate for that strategy too, checked under BOTH
+entry-fill models from the start (see --squeeze-breakout-entry-fill and
+improvements.txt's validation-pipeline step 7).
 
 Applies the same ticker-holdout split as optimize.py (--holdout-frac,
 --holdout-seed) so the comparison also holds up (or doesn't) on tickers
@@ -112,7 +130,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--strategy",
-        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst"],
+        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout"],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
     )
@@ -127,6 +145,12 @@ def main():
              "unconditionally, no waiting -- a real test of whether the limit-fill model is "
              "systematically excluding genuine momentum continuations. Default: whatever the "
              "tested config already has ('limit').",
+    )
+    parser.add_argument(
+        "--squeeze-breakout-entry-fill", choices=["limit", "next_open"], default=None,
+        help="Override config.squeeze_breakout_entry_fill (--strategy squeeze_breakout only) -- "
+             "same 'limit' vs. 'next_open' choice as --momentum-burst-entry-fill, see that flag's "
+             "help. Default: whatever the tested config already has ('limit').",
     )
     parser.add_argument("--start", default=None, help="Backtest window start (YYYY-MM-DD). Default: 5y before --end.")
     parser.add_argument("--end", default=None, help="Backtest window end (YYYY-MM-DD). Default: today.")
@@ -155,6 +179,9 @@ def main():
     if args.momentum_burst_entry_fill is not None:
         config = swingtrade.TradingConfig(**{**config.to_dict(), "momentum_burst_entry_fill": args.momentum_burst_entry_fill})
         config_label += f" (momentum_burst_entry_fill overridden to {args.momentum_burst_entry_fill})"
+    if args.squeeze_breakout_entry_fill is not None:
+        config = swingtrade.TradingConfig(**{**config.to_dict(), "squeeze_breakout_entry_fill": args.squeeze_breakout_entry_fill})
+        config_label += f" (squeeze_breakout_entry_fill overridden to {args.squeeze_breakout_entry_fill})"
     print(f"Testing config: {config_label} -- strategy={args.strategy}")
     if args.strategy == "rsi":
         print(f"  rsi_oversold_threshold={config.rsi_oversold_threshold}, "
@@ -181,10 +208,17 @@ def main():
               f"week52_nearness_pct={config.week52_nearness_pct}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
-    else:
+    elif args.strategy == "momentum_burst":
         print(f"  momentum_burst_gain_pct_min={config.momentum_burst_gain_pct_min}, "
               f"momentum_burst_volume_ratio_min={config.momentum_burst_volume_ratio_min}, "
               f"momentum_burst_entry_fill={config.momentum_burst_entry_fill}, "
+              f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
+              f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
+    else:
+        print(f"  squeeze_breakout_zscore_max={config.squeeze_breakout_zscore_max}, "
+              f"squeeze_breakout_lookback_days={config.squeeze_breakout_lookback_days}, "
+              f"squeeze_breakout_gain_pct_min={config.squeeze_breakout_gain_pct_min}, "
+              f"squeeze_breakout_entry_fill={config.squeeze_breakout_entry_fill}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
 
@@ -234,9 +268,12 @@ def main():
     elif args.strategy == "week52_high":
         real_fn, random_fn = swingtrade.simulate_week52_signals, swingtrade.simulate_random_week52_entries
         real_label = "Week52_High-timed"
-    else:
+    elif args.strategy == "momentum_burst":
         real_fn, random_fn = swingtrade.simulate_momentum_burst_signals, swingtrade.simulate_random_momentum_burst_entries
         real_label = "Momentum_Burst-timed"
+    else:
+        real_fn, random_fn = swingtrade.simulate_squeeze_breakout_signals, swingtrade.simulate_random_squeeze_breakout_entries
+        real_label = "Squeeze_Breakout-timed"
 
     real_trades = []
     random_trades = []

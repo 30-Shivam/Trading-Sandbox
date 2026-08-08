@@ -383,7 +383,7 @@ def load_secondary_config(version: int) -> tuple[swingtrade.TradingConfig | None
 
 def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> pd.DataFrame:
     """Dispatch to the right add_*_trade_score() for config.strategy --
-    covers all six strategies (previously this dispatch only handled
+    covers all seven strategies (previously this dispatch only handled
     "breakout" vs. everything-else, silently mis-scoring pullback/
     breakout_retest/week52_high rows as RSI; fixed alongside the same gap
     in market_data.score_bundle_for_strategy())."""
@@ -397,6 +397,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_week52_trade_score(df, config)
     elif config.strategy == "momentum_burst":
         return swingtrade.add_momentum_burst_trade_score(df, config)
+    elif config.strategy == "squeeze_breakout":
+        return swingtrade.add_squeeze_breakout_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -544,8 +546,17 @@ def render_experimental_section(
     else:
         st.caption("MongoDB not connected -- signals aren't being logged.")
 
+    # Extra columns showing WHY a signal fired differ per experimental
+    # strategy -- momentum_burst's volume confirmation isn't a column
+    # squeeze_breakout's frame has, and vice versa.
+    if config.strategy == "momentum_burst":
+        trigger_columns = ["Day_Gain_Pct", "Volume_Ratio"]
+    elif config.strategy == "squeeze_breakout":
+        trigger_columns = ["Day_Gain_Pct", "Recent_Min_Squeeze_Zscore"]
+    else:
+        trigger_columns = []
     display_columns = [
-        "Ticker", "Signal", "Trade_Score", "Last_Close", "Day_Gain_Pct", "Volume_Ratio",
+        "Ticker", "Signal", "Trade_Score", "Last_Close", *trigger_columns,
         "Buy_Price", "Sell_Price", "Stop_Loss", "RRR", "RSI", "ATR",
         "Next_Earnings_Date", "Catalyst_Warning", "Top_Headline", "As_Of",
     ]

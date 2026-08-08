@@ -31,6 +31,7 @@ SECONDARY_STRATEGY_VERSIONS = {
 # validation, the same graduation breakout_retest/week52_high went through.
 EXPERIMENTAL_STRATEGY_VERSIONS = {
     "Momentum Burst": 29,
+    "Squeeze Breakout": 31,
 }
 
 
