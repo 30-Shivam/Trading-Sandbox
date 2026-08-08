@@ -253,7 +253,16 @@ total. It's manually maintained on purpose, not inferred from unsettled
 `Trade_Signals` — a logged signal doesn't guarantee you actually got filled
 (see the fill gap in section 4), so guessing your real holdings from it
 would be unreliable. Holdings never reduce "Total Available Cash" itself —
-they only tighten the sector cap.
+they only tighten the sector cap (and the portfolio cap below, if enabled).
+
+A sibling cap, `max_total_deployed_pct`, limits TOTAL spend across ALL
+sectors combined — the sector cap alone can't stop a day with signals
+spread evenly across many sectors from still deploying 100% of cash, since
+no single sector ever breaches its own cap. Trades that would breach it are
+labeled `Portfolio Limit Reached`. It **defaults to disabled (`0`)** so
+existing configs are unaffected until you explicitly set a value (e.g.
+`0.90` to always keep a 10% cash reserve) on the config document itself —
+there's no sidebar control for it, same as `max_sector_allocation_pct`.
 
 **Position Review.** Any holding with an AVG_COST populates a "Position
 Review" table: the same ATR-based stop/target math the scanner uses for new

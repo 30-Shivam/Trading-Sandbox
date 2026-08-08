@@ -76,14 +76,20 @@ compute, for every scanned ticker:
      spend past max_sector_allocation_pct of your whole portfolio value is
      marked Sector Limit Reached instead -- five Strong Buys in one sector on
      the same day are one concentrated bet wearing five tickers, not five
-     independent ones, and nothing else in this pipeline catches that.
+     independent ones, and nothing else in this pipeline catches that. A
+     positive max_total_deployed_pct (0/disabled by default) additionally
+     caps TOTAL spend across ALL sectors combined at that fraction of
+     portfolio value -- the sector cap alone can't stop a day with signals
+     spread evenly across many sectors from still deploying 100% of cash; a
+     trade that would breach this cap is marked Portfolio Limit Reached
+     instead.
      "Whole portfolio value" includes the sidebar's "Current Holdings" box
      (persisted to MongoDB's Current_Holdings collection via a Save button,
      manually maintained rather than inferred from unsettled signals, since a
      logged signal doesn't guarantee you actually got filled) -- a sector
-     you're already overweight in from prior holdings gets little or no new
-     room today, even though holdings never reduce Total Available Cash
-     itself.
+     (or, for the portfolio cap, your whole book) you're already overweight
+     in from prior holdings gets little or no new room today, even though
+     holdings never reduce Total Available Cash itself.
 
   8. Trade_Score (0-100) blends Risk-to-Reward Ratio, RSI, and how close the
      last close is to the buy trigger into a single priority score, mapped to
@@ -189,6 +195,7 @@ SIGNAL_COLORS = {
     "Ignore": "background-color: #e57373; color: #1a1a1a;",
     "Insufficient Funds": "background-color: #78909c; color: #ffffff;",
     "Sector Limit Reached": "background-color: #5e35b1; color: #ffffff;",
+    "Portfolio Limit Reached": "background-color: #ad1457; color: #ffffff;",
 }
 CATALYST_WARNING_STYLE = "background-color: #c62828; color: #ffffff; font-weight: 600;"
 EXTENDED_DECLINE_STYLE = "background-color: #e65100; color: #ffffff; font-weight: 600;"
@@ -448,7 +455,7 @@ def render_secondary_section(
         results_df, capital_allocated = swingtrade.allocate_capital(
             results_df, total_cash,
             sector_lookup=sector_lookup, max_sector_allocation_pct=config.max_sector_allocation_pct,
-            existing_holdings=existing_holdings,
+            existing_holdings=existing_holdings, max_total_deployed_pct=config.max_total_deployed_pct,
         )
         remaining_idle_cash = round(total_cash - capital_allocated, 2)
         col1, col2, col3, col4 = st.columns(4)
@@ -456,6 +463,13 @@ def render_secondary_section(
         col2.metric("Starting Cash", f"${total_cash:,.2f}")
         col3.metric("Allocated", f"${capital_allocated:,.2f}")
         col4.metric("Idle Cash", f"${remaining_idle_cash:,.2f}")
+        if config.max_total_deployed_pct and config.max_total_deployed_pct > 0:
+            portfolio_value = total_cash + sum(existing_holdings.values())
+            st.caption(
+                f"Portfolio cap: {config.max_total_deployed_pct * 100:.0f}% of "
+                f"${portfolio_value:,.2f} = ${config.max_total_deployed_pct * portfolio_value:,.2f} "
+                "total across all sectors combined."
+            )
     else:
         st.caption(f"{len(results_df)} analyzed. Capital allocation is off.")
 
@@ -495,6 +509,7 @@ def main():
                     "stop_loss_atr_multiplier": config.stop_loss_atr_multiplier,
                     "max_holding_days": config.max_holding_days,
                     "max_sector_allocation_pct": config.max_sector_allocation_pct,
+                    "max_total_deployed_pct": config.max_total_deployed_pct,
                 })
             else:
                 st.json({
@@ -504,6 +519,7 @@ def main():
                     "stop_loss_atr_multiplier": config.stop_loss_atr_multiplier,
                     "max_holding_days": config.max_holding_days,
                     "max_sector_allocation_pct": config.max_sector_allocation_pct,
+                    "max_total_deployed_pct": config.max_total_deployed_pct,
                 })
         sizing_mode = st.radio(
             "Position sizing mode",
@@ -541,9 +557,11 @@ def main():
             value=float(DEFAULT_TOTAL_CASH),
             step=100.0,
             help="Capital pool spent greedily down the Trade_Score-ranked Buy/Strong Buy list; "
-                 "trades that no longer fit are marked Insufficient Funds, and trades that would "
-                 "over-concentrate one sector are marked Sector Limit Reached (see "
-                 "max_sector_allocation_pct in the active config above).",
+                 "trades that no longer fit are marked Insufficient Funds, trades that would "
+                 "over-concentrate one sector are marked Sector Limit Reached, and trades that "
+                 "would push TOTAL spend past a portfolio-wide cap are marked Portfolio Limit "
+                 "Reached (see max_sector_allocation_pct / max_total_deployed_pct in the active "
+                 "config above -- the latter defaults to disabled).",
         )
 
         st.caption(
@@ -596,12 +614,12 @@ def main():
                 st.warning(f"Could not save holdings: {exc}")
 
         apply_allocation = st.checkbox(
-            "Apply capital allocation (cash + sector caps)",
+            "Apply capital allocation (cash + sector + portfolio caps)",
             value=True,
             help="When off, the Scan Results table shows raw Strong Buy/Buy/Watch/Ignore "
-                 "signals with no Insufficient Funds / Sector Limit Reached overlay -- your "
-                 "Total Available Cash and Current Holdings are ignored for screening "
-                 "purposes (Position Review below is unaffected either way).",
+                 "signals with no Insufficient Funds / Sector Limit Reached / Portfolio Limit "
+                 "Reached overlay -- your Total Available Cash and Current Holdings are ignored "
+                 "for screening purposes (Position Review below is unaffected either way).",
         )
 
         ai_context_available = ai_context.is_available()
@@ -691,7 +709,7 @@ def main():
             results_df, capital_allocated = swingtrade.allocate_capital(
                 results_df, total_cash,
                 sector_lookup=sector_lookup, max_sector_allocation_pct=config.max_sector_allocation_pct,
-                existing_holdings=existing_holdings,
+                existing_holdings=existing_holdings, max_total_deployed_pct=config.max_total_deployed_pct,
             )
             remaining_idle_cash = round(total_cash - capital_allocated, 2)
         else:
@@ -712,6 +730,13 @@ def main():
             col5.metric("Starting Cash", f"${total_cash:,.2f}")
             col6.metric("Capital Allocated to Orders", f"${capital_allocated:,.2f}")
             col7.metric("Remaining Idle Cash", f"${remaining_idle_cash:,.2f}")
+            if config.max_total_deployed_pct and config.max_total_deployed_pct > 0:
+                portfolio_value = total_cash + sum(existing_holdings.values())
+                st.caption(
+                    f"Portfolio cap: {config.max_total_deployed_pct * 100:.0f}% of "
+                    f"${portfolio_value:,.2f} = ${config.max_total_deployed_pct * portfolio_value:,.2f} "
+                    "total across all sectors combined."
+                )
         else:
             st.info(
                 "Capital allocation is off -- Signal column shows raw Strong Buy/Buy/Watch/Ignore, "

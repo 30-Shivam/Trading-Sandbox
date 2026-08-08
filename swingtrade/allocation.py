@@ -34,6 +34,7 @@ def allocate_capital(
     sector_lookup: dict[str, str] | None = None,
     max_sector_allocation_pct: float | None = None,
     existing_holdings: dict[str, float] | None = None,
+    max_total_deployed_pct: float | None = None,
 ) -> tuple[pd.DataFrame, float]:
     """Greedily allocate total_cash down the (already Trade_Score-sorted) list
     of Strong Buy / Buy signals, in order. A trade whose Est_Cost exceeds the
@@ -53,14 +54,32 @@ def allocate_capital(
     exposure either). A ticker missing from sector_lookup is never capped --
     there's no sector to check it against.
 
+    A positive `max_total_deployed_pct` caps TOTAL spend this call (across
+    every sector combined) at that fraction of portfolio value -- the sibling
+    cap to max_sector_allocation_pct: the sector cap alone can't stop a day
+    with signals spread evenly across many sectors from still deploying
+    100% of cash, since no single sector ever breaches its own cap. A trade
+    that would push cumulative total spend past this cap is relabeled
+    Portfolio Limit Reached, same non-consuming, keep-walking treatment as
+    the other two reasons.
+
     `existing_holdings` (ticker -> dollars already committed, see
-    storage.holdings) counts toward the sector cap on BOTH sides: it inflates
-    the denominator (the cap is a fraction of total_cash + total holdings --
-    your whole portfolio, not just today's fresh cash pool in isolation) and
-    seeds each sector's already-spent total. A sector you're already
-    overweight in from prior holdings will correctly get little or no new
-    room today, even though existing_holdings never reduces `remaining_cash`
-    itself -- holdings aren't fresh cash, they're already-deployed capital.
+    storage.holdings) counts toward BOTH caps on BOTH sides: it inflates the
+    shared denominator (each cap is a fraction of total_cash + total
+    holdings -- your whole portfolio, not just today's fresh cash pool in
+    isolation) and seeds each cap's already-spent total (per-sector for the
+    sector cap, portfolio-wide for this one). A portfolio already near a cap
+    from prior holdings will correctly get little or no new room today, even
+    though existing_holdings never reduces `remaining_cash` itself --
+    holdings aren't fresh cash, they're already-deployed capital.
+
+    Callers running more than one strategy's own allocate_capital() call
+    against the SAME real existing_holdings within one page load (see
+    dip_buy_analyzer.py's primary + secondary sections) should note neither
+    cap coordinates ACROSS those calls -- existing_holdings isn't updated
+    between them, so each call is evaluated against your actual holdings,
+    not against what another strategy hypothetically proposed the same run.
+    Same documented limitation the sector cap has always had.
 
     Returns the updated DataFrame and total capital spent (today's fresh
     cash only, not counting existing holdings)."""
@@ -74,8 +93,14 @@ def allocate_capital(
         if max_sector_allocation_pct and max_sector_allocation_pct > 0
         else None
     )
+    total_deployed_cap_dollars = (
+        max_total_deployed_pct * portfolio_value
+        if max_total_deployed_pct and max_total_deployed_pct > 0
+        else None
+    )
 
     remaining_cash = total_cash
+    total_deployed_so_far = sum(existing_holdings.values())
     sector_spent: dict[str, float] = {}
     if sector_cap_dollars is not None:
         for ticker, amount in existing_holdings.items():
@@ -102,7 +127,13 @@ def allocate_capital(
                 signals[i] = "Sector Limit Reached"
                 continue
 
+        if total_deployed_cap_dollars is not None:
+            if total_deployed_so_far + cost > total_deployed_cap_dollars:
+                signals[i] = "Portfolio Limit Reached"
+                continue
+
         remaining_cash -= cost
+        total_deployed_so_far += cost
         if sector:
             sector_spent[sector] = sector_spent.get(sector, 0.0) + cost
 

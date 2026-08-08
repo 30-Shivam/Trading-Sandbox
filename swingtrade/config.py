@@ -75,6 +75,12 @@ class TradingConfig:
     max_sector_allocation_pct: float = 0.40  # cap any one sector at this fraction
                                               # of total_cash in allocate_capital;
                                               # 0 (or negative) disables the cap
+    max_total_deployed_pct: float = 0.0    # cap total spend (per allocate_capital
+                                            # call) at this fraction of portfolio
+                                            # value; 0 (or negative) disables the
+                                            # cap -- ships disabled so existing
+                                            # active configs are unaffected until
+                                            # explicitly opted in
 
     # Settlement (Phase 3)
     max_holding_days: int = 15             # mark EXPIRED if neither stop nor target
