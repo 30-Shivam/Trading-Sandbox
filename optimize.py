@@ -105,10 +105,24 @@ day's price gain CONFIRMED by unusually high volume, no fresh-high
 requirement at all -- built specifically to fire more often than any prior
 strategy, see swingtrade.compute_momentum_burst_levels; shipped
 experimental with a mixed untuned-defaults result -- beats random-entry
-timing on holdout/aggregate, loses on tune -- see improvements.txt item 35,
-this search is the follow-up that answers whether tuning resolves that) --
-everything above (WFO, recency weighting, correlation-adjustment,
-ticker-holdout, champion/challenger) applies identically to all six.
+timing on holdout/aggregate, loses on tune -- see improvements.txt item 35;
+tuning made it WORSE, not better -- holdout sharpe went net negative, the
+textbook overfitting signature -- see item 36; deprioritized); --strategy
+squeeze_breakout searches squeeze_breakout_zscore_max/
+squeeze_breakout_lookback_days/squeeze_breakout_gain_pct_min/
+atr_take_profit_multiplier/stop_loss_atr_multiplier (fires on a real price
+expansion following a recent volatility CONTRACTION -- a squeeze, reusing
+Squeeze_Zscore already computed for breakout's own optional filter -- no
+fresh-high requirement, no volume confirmation, see
+swingtrade.compute_squeeze_breakout_levels; shipped experimental with a
+CLEAN untuned-defaults result -- beats random-entry timing on ALL cuts
+under BOTH entry-fill models, see improvements.txt item 38, this search
+tests whether tuning can improve an already-solid candidate rather than
+rescue a fragile one) -- everything above (WFO, recency weighting,
+correlation-adjustment, ticker-holdout, champion/challenger) applies
+identically to all seven. Uses config.squeeze_breakout_entry_fill's own
+default ("limit") -- entry-fill mode itself is not part of this search
+space, same as every other strategy's fixed structural choices.
 
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
@@ -118,6 +132,7 @@ Usage:
     python optimize.py --trials 30 --strategy pullback           # search the pullback signal instead
     python optimize.py --trials 30 --strategy breakout_retest    # search the breakout-retest signal instead
     python optimize.py --trials 30 --strategy week52_high        # search the 52-week-high signal instead
+    python optimize.py --trials 30 --strategy squeeze_breakout   # search the squeeze-breakout signal instead
     python optimize.py --trials 30 --strategy momentum_burst     # search the momentum-burst signal instead
 """
 
@@ -270,6 +285,32 @@ MOMENTUM_BURST_VOLUME_RATIO_RANGE = (1.0, 5.0)
 # Upper bound (5.0x) is a genuinely demanding spike. 2.0's default sits
 # within this range.
 
+# Squeeze-breakout strategy's own search space. Same lean shape as
+# momentum_burst (3 new dimensions + the two shared ATR/stop fields) --
+# unlike momentum_burst, this strategy's untuned defaults already showed a
+# CLEAN win on every cut under both entry-fill models (see improvements.txt
+# item 38), so this search tests whether tuning can improve on an
+# already-solid candidate, not rescue a fragile one.
+SQUEEZE_BREAKOUT_ZSCORE_MAX_RANGE = (-3.0, -0.25)
+# Squeeze_Zscore is a genuine z-score (realistically spans roughly -3 to
+# +3, same reasoning as BREAKOUT_SQUEEZE_ZSCORE_MAX_RANGE). Constrained to
+# the negative half only -- unlike breakout's own OPTIONAL
+# breakout_squeeze_zscore_max filter (which can go all the way to +100,
+# fully disabled), this field IS the trigger's contraction-detection leg,
+# so a positive/near-zero value wouldn't represent a genuine squeeze at
+# all. Upper bound (-0.25) is a mild-but-real contraction; lower bound
+# (-3.0) an extremely tight one. -1.0's default sits well within this range.
+SQUEEZE_BREAKOUT_LOOKBACK_DAYS_RANGE = (2, 15)
+# Lower bound (2) requires the squeeze to be very recent; upper bound (15,
+# three trading weeks) is generous -- squeezes can persist a while before
+# releasing. 5's default sits well within this range.
+SQUEEZE_BREAKOUT_GAIN_PCT_RANGE = (0.5, 6.0)
+# Lower bound (0.5%) lets Optuna find "barely needs to be an expansion"
+# almost-loose; upper bound (6.0%) requires a genuinely large single-day
+# move -- lower ceiling than MOMENTUM_BURST_GAIN_PCT_RANGE's 10.0% since
+# this strategy has no volume co-requirement to also demand a big move.
+# 2.0's default sits well within this range.
+
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
 # tune them would just teach it to zero out the very realism they exist to add.
@@ -418,13 +459,27 @@ def build_objective(
                 "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
                 "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
             }
-        else:
+        elif strategy == "momentum_burst":
             params = {
                 "momentum_burst_gain_pct_min": trial.suggest_float(
                     "momentum_burst_gain_pct_min", *MOMENTUM_BURST_GAIN_PCT_RANGE
                 ),
                 "momentum_burst_volume_ratio_min": trial.suggest_float(
                     "momentum_burst_volume_ratio_min", *MOMENTUM_BURST_VOLUME_RATIO_RANGE
+                ),
+                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
+                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+            }
+        else:
+            params = {
+                "squeeze_breakout_zscore_max": trial.suggest_float(
+                    "squeeze_breakout_zscore_max", *SQUEEZE_BREAKOUT_ZSCORE_MAX_RANGE
+                ),
+                "squeeze_breakout_lookback_days": trial.suggest_int(
+                    "squeeze_breakout_lookback_days", *SQUEEZE_BREAKOUT_LOOKBACK_DAYS_RANGE
+                ),
+                "squeeze_breakout_gain_pct_min": trial.suggest_float(
+                    "squeeze_breakout_gain_pct_min", *SQUEEZE_BREAKOUT_GAIN_PCT_RANGE
                 ),
                 "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
                 "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
@@ -504,7 +559,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--strategy",
-        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst"],
+        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout"],
         default="rsi",
         help="Which signal to search parameters for. Default: rsi.",
     )
