@@ -383,7 +383,7 @@ def load_secondary_config(version: int) -> tuple[swingtrade.TradingConfig | None
 
 def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> pd.DataFrame:
     """Dispatch to the right add_*_trade_score() for config.strategy --
-    covers all seven strategies (previously this dispatch only handled
+    covers all eight strategies (previously this dispatch only handled
     "breakout" vs. everything-else, silently mis-scoring pullback/
     breakout_retest/week52_high rows as RSI; fixed alongside the same gap
     in market_data.score_bundle_for_strategy())."""
@@ -399,6 +399,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_momentum_burst_trade_score(df, config)
     elif config.strategy == "squeeze_breakout":
         return swingtrade.add_squeeze_breakout_trade_score(df, config)
+    elif config.strategy == "adx_trend_entry":
+        return swingtrade.add_adx_trend_entry_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -553,6 +555,8 @@ def render_experimental_section(
         trigger_columns = ["Day_Gain_Pct", "Volume_Ratio"]
     elif config.strategy == "squeeze_breakout":
         trigger_columns = ["Day_Gain_Pct", "Recent_Min_Squeeze_Zscore"]
+    elif config.strategy == "adx_trend_entry":
+        trigger_columns = ["ADX", "Short_MA"]
     else:
         trigger_columns = []
     display_columns = [

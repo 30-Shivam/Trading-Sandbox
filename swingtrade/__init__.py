@@ -13,10 +13,12 @@ from .backtest import (
     generate_folds,
     run_backtest,
     run_walk_forward,
+    simulate_adx_trend_entry_signals,
     simulate_breakout_retest_signals,
     simulate_breakout_signals,
     simulate_momentum_burst_signals,
     simulate_pullback_signals,
+    simulate_random_adx_trend_entry_entries,
     simulate_random_breakout_entries,
     simulate_random_breakout_retest_entries,
     simulate_random_entries,
@@ -33,6 +35,7 @@ from .backtest import (
 )
 from .config import DEFAULT_CONFIG, TradingConfig, loosened_breakout_config
 from .levels import (
+    compute_adx_trend_entry_levels,
     compute_breakout_levels,
     compute_breakout_retest_levels,
     compute_levels,
@@ -44,6 +47,7 @@ from .levels import (
     review_holding,
 )
 from .scoring import (
+    add_adx_trend_entry_trade_score,
     add_breakout_retest_trade_score,
     add_breakout_trade_score,
     add_momentum_burst_trade_score,
@@ -66,6 +70,7 @@ __all__ = [
     "compute_week52_levels",
     "compute_momentum_burst_levels",
     "compute_squeeze_breakout_levels",
+    "compute_adx_trend_entry_levels",
     "is_market_uptrend",
     "review_holding",
     "add_trade_score",
@@ -75,6 +80,7 @@ __all__ = [
     "add_week52_trade_score",
     "add_momentum_burst_trade_score",
     "add_squeeze_breakout_trade_score",
+    "add_adx_trend_entry_trade_score",
     "signal_for_score",
     "allocate_capital",
     "size_by_risk",
@@ -96,6 +102,8 @@ __all__ = [
     "simulate_random_momentum_burst_entries",
     "simulate_squeeze_breakout_signals",
     "simulate_random_squeeze_breakout_entries",
+    "simulate_adx_trend_entry_signals",
+    "simulate_random_adx_trend_entry_entries",
     "run_backtest",
     "summarize_trades",
     "summarize_trades_weighted",

@@ -64,11 +64,13 @@ import pandas as pd
 
 from .config import DEFAULT_CONFIG, TradingConfig
 from .levels import (
+    adx_trend_entry_levels_from_frame,
     breakout_levels_from_frame,
     breakout_retest_levels_from_frame,
     levels_from_rsi_frame,
     market_uptrend_from_frame,
     momentum_burst_levels_from_frame,
+    precompute_adx_trend_entry_frame,
     precompute_breakout_frame,
     precompute_breakout_retest_frame,
     precompute_momentum_burst_frame,
@@ -1418,10 +1420,15 @@ def simulate_squeeze_breakout_signals(
     start rather than retrofitted later. Same ATR-multiple stop/target
     sizing as every other strategy.
 
-    `market_ohlcv` is accepted for signature consistency with the other
-    six simulate_*() functions but unused here -- no Relative_Strength
-    concept in this v1, same as pullback/breakout_retest/week52_high/
-    momentum_burst.
+    `market_ohlcv` enables the optional Phase 2 Relative_Strength filter
+    (see swingtrade/config.py's squeeze_breakout_relative_strength_min) --
+    same role as simulate_breakout_signals()'s/simulate_adx_trend_entry_signals()'s
+    own market_df threading. Phase 2 also gates on RSI-overbought/
+    Volume_Ratio/ADX/OBV_Zscore, all disabled by default (see
+    add_squeeze_breakout_trade_score()'s docstring for the full list) --
+    kept in sync with that function so live and backtested definitions
+    can't silently disagree, same discipline breakout's/adx_trend_entry's
+    own filters use.
 
     `ohlcv` needs the same leading-history buffer as the other strategies
     -- see LOOKBACK_BUFFER_BARS.
@@ -1433,7 +1440,7 @@ def simulate_squeeze_breakout_signals(
     eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
 
     market_frame = precompute_rsi_frame(market_ohlcv, config)
-    frame = precompute_squeeze_breakout_frame(ohlcv, config)
+    frame = precompute_squeeze_breakout_frame(ohlcv, config, market_df=market_ohlcv)
 
     for as_of in eligible_dates:
         try:
@@ -1449,6 +1456,21 @@ def simulate_squeeze_breakout_signals(
             continue
 
         if not levels["Squeeze_Signal"]:
+            continue
+        rsi = levels.get("RSI")
+        if rsi is not None and rsi >= config.squeeze_breakout_rsi_overbought_threshold:
+            continue
+        rel_strength = levels.get("Relative_Strength")
+        if rel_strength is not None and rel_strength < config.squeeze_breakout_relative_strength_min:
+            continue
+        volume_ratio = levels.get("Volume_Ratio")
+        if volume_ratio is not None and volume_ratio < config.squeeze_breakout_volume_ratio_min:
+            continue
+        adx = levels.get("ADX")
+        if adx is not None and adx < config.squeeze_breakout_adx_min:
+            continue
+        obv_zscore = levels.get("OBV_Zscore")
+        if obv_zscore is not None and obv_zscore < config.squeeze_breakout_obv_zscore_min:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]
@@ -1584,6 +1606,218 @@ def simulate_random_squeeze_breakout_entries(
     return trades
 
 
+def simulate_adx_trend_entry_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """ADX-trend-entry counterpart to simulate_signals()/simulate_breakout_signals()/
+    simulate_pullback_signals()/simulate_breakout_retest_signals()/simulate_week52_signals()/
+    simulate_momentum_burst_signals()/simulate_squeeze_breakout_signals() --
+    buys while ADX signals a genuinely trending state AND price is above a
+    short-term MA for direction, in a confirmed macro uptrend. A
+    continuous STATE (like week52_high/squeeze_breakout), so it can fire
+    on many consecutive days while a trend persists.
+
+    Same no-look-ahead discipline, same entry-timing realism.
+    config.adx_trend_entry_entry_fill selects the fill model, same toggle
+    momentum_burst_entry_fill/squeeze_breakout_entry_fill added: "limit"
+    (default) is a resting LIMIT order at today's own Close via
+    _find_entry_fill(); "next_open" buys the very next session's Open
+    unconditionally via _find_next_open_fill() -- built in from the start
+    here too, per the lesson from momentum_burst/squeeze_breakout
+    (improvements.txt items 36-38). Same ATR-multiple stop/target sizing
+    as every other strategy.
+
+    `market_ohlcv` enables the optional Phase 2 Relative_Strength filter
+    (see swingtrade/config.py's adx_trend_entry_relative_strength_min) --
+    same role as simulate_breakout_signals()'s own market_df threading.
+    Phase 2 also gates on RSI-overbought/Volume_Ratio/OBV_Zscore/
+    Squeeze_Zscore, all disabled by default (see
+    add_adx_trend_entry_trade_score()'s docstring for the full list) --
+    kept in sync with that function so live and backtested definitions
+    can't silently disagree, same discipline breakout's own six filters use.
+
+    `ohlcv` needs the same leading-history buffer as the other strategies
+    -- see LOOKBACK_BUFFER_BARS.
+    """
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_adx_trend_entry_frame(ohlcv, config, market_df=market_ohlcv)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = adx_trend_entry_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        if not levels["ADX_Trend_Signal"]:
+            continue
+        rsi = levels.get("RSI")
+        if rsi is not None and rsi >= config.adx_trend_entry_rsi_overbought_threshold:
+            continue
+        rel_strength = levels.get("Relative_Strength")
+        if rel_strength is not None and rel_strength < config.adx_trend_entry_relative_strength_min:
+            continue
+        volume_ratio = levels.get("Volume_Ratio")
+        if volume_ratio is not None and volume_ratio < config.adx_trend_entry_volume_ratio_min:
+            continue
+        obv_zscore = levels.get("OBV_Zscore")
+        if obv_zscore is not None and obv_zscore < config.adx_trend_entry_obv_zscore_min:
+            continue
+        squeeze_zscore = levels.get("Squeeze_Zscore")
+        if squeeze_zscore is not None and squeeze_zscore > config.adx_trend_entry_squeeze_zscore_max:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.adx_trend_entry_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "ADX_Trend_Entry",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_adx_trend_entry_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_adx_trend_entry_signals() --
+    same idea as the other seven simulate_random_*_entries() functions,
+    using this strategy's own gates (macro uptrend, liquidity via
+    compute_adx_trend_entry_levels) and the SAME
+    config.adx_trend_entry_entry_fill-selected fill mechanic, so it
+    isolates whether ADX-trend-entry TIMING adds value over a random day
+    using the identical Buy_Price formula (that day's own Close) and
+    entry/exit structure. `n_trades` should be
+    simulate_adx_trend_entry_signals()'s real signal count for this
+    ticker/window, so trade volume is matched. This is the critical
+    validation gate for this strategy -- see benchmark_random_entry.py."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_adx_trend_entry_frame(ohlcv, config)
+
+    candidates = []  # (as_of, buy_price, atr) for every day that passed the macro/liquidity gates, trending or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = adx_trend_entry_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.adx_trend_entry_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_ADX_Trend_Entry",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
 def run_backtest(
     ticker_data: dict[str, pd.DataFrame],
     market_data: pd.DataFrame,
@@ -1612,9 +1846,11 @@ def run_backtest(
     (simulate_week52_signals, near a trailing 52-week high; earnings_data
     also ignored, same reasoning), "momentum_burst"
     (simulate_momentum_burst_signals, single-day price+volume burst;
-    earnings_data also ignored, same reasoning), or "squeeze_breakout"
+    earnings_data also ignored, same reasoning), "squeeze_breakout"
     (simulate_squeeze_breakout_signals, volatility contraction followed
-    by expansion; earnings_data also ignored, same reasoning)."""
+    by expansion; earnings_data also ignored, same reasoning), or
+    "adx_trend_entry" (simulate_adx_trend_entry_signals, ADX-confirmed
+    trending state; earnings_data also ignored, same reasoning)."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     all_trades = []
@@ -1649,11 +1885,15 @@ def run_backtest(
             trades = simulate_squeeze_breakout_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
             )
+        elif strategy == "adx_trend_entry":
+            trades = simulate_adx_trend_entry_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
-                "'momentum_burst', or 'squeeze_breakout')"
+                "'momentum_burst', 'squeeze_breakout', or 'adx_trend_entry')"
             )
         all_trades.extend(trades)
     return all_trades

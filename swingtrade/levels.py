@@ -1159,6 +1159,10 @@ def momentum_burst_levels_from_frame(
         "Stop_Loss": stop_loss,
         "RRR": rrr,
         "Distance_to_Buy_Pct": distance_to_buy_pct,
+        # How far today's gain clears its own minimum bar -- see
+        # add_momentum_burst_trade_score, replaces Distance_to_Buy_Pct
+        # (always 0 here) as the score's ticker-differentiating term.
+        "Signal_Strength_Pct": round(day_gain_pct - config.momentum_burst_gain_pct_min, 2),
         "Next_Earnings_Date": next_earnings_date_out,
         "Catalyst_Warning": catalyst_warning,
         "Top_Headline": top_headline,
@@ -1260,6 +1264,12 @@ def squeeze_breakout_levels_from_frame(
         last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"],
         last_row["RSI"], last_row["Recent_Min_Squeeze_Zscore"], last_row["Day_Gain_Pct"],
     )
+    # Phase 2 sharpening filters (improvements.txt item 42/43) -- ADX/
+    # Volume_Ratio/OBV_Zscore informational, same treatment breakout's own
+    # optional filters use (missing/NaN never excludes on its own).
+    adx, last_volume, avg_volume_prior, obv_zscore = (
+        last_row["ADX"], last_row["Volume"], last_row["AvgVolume_Prior"], last_row["OBV_Zscore"],
+    )
     if pd.isna(last_close):
         raise RuntimeError("insufficient history: no Close price for the most recent bar")
     if pd.isna(sma_trend):
@@ -1277,6 +1287,12 @@ def squeeze_breakout_levels_from_frame(
     # RSI is informational only for squeeze_breakout (not used for
     # gating) -- same treatment as every other trend-following strategy.
     rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+    adx = None if pd.isna(adx) else round(float(adx), 2)
+    obv_zscore = None if pd.isna(obv_zscore) else round(float(obv_zscore), 3)
+    if pd.isna(avg_volume_prior) or float(avg_volume_prior) == 0:
+        volume_ratio = None
+    else:
+        volume_ratio = round(float(last_volume) / float(avg_volume_prior), 3)
 
     last_close, sma_trend, atr, avg_volume, day_gain_pct, recent_min_squeeze = (
         float(last_close), float(sma_trend), float(atr), float(avg_volume),
@@ -1324,12 +1340,26 @@ def squeeze_breakout_levels_from_frame(
         catalyst_warning = False
         next_earnings_date_out = None
 
+    # Relative_Strength (Phase 2 filter) needs market_df -- only present in
+    # the frame if precompute_squeeze_breakout_frame() was called with it
+    # (see breakout_levels_from_frame's/adx_trend_entry_levels_from_frame's
+    # identical pattern).
+    relative_strength = None
+    if "Relative_Strength" in frame.columns:
+        rs_val = last_row["Relative_Strength"]
+        if pd.notna(rs_val):
+            relative_strength = round(float(rs_val), 4)
+
     return {
         "Ticker": ticker,
         "As_Of": last_date.date(),
         "Last_Close": round(last_close, 2),
         "RSI": rsi,
         "ATR": round(atr, 2),
+        "ADX": adx,
+        "Relative_Strength": relative_strength,
+        "Volume_Ratio": volume_ratio,
+        "OBV_Zscore": obv_zscore,
         "Day_Gain_Pct": round(day_gain_pct, 2),
         "Recent_Min_Squeeze_Zscore": round(recent_min_squeeze, 3),
         "Squeeze_Signal": squeeze_signal,
@@ -1338,6 +1368,10 @@ def squeeze_breakout_levels_from_frame(
         "Stop_Loss": stop_loss,
         "RRR": rrr,
         "Distance_to_Buy_Pct": distance_to_buy_pct,
+        # How far today's gain clears its own minimum bar -- see
+        # add_squeeze_breakout_trade_score, replaces Distance_to_Buy_Pct
+        # (always 0 here) as the score's ticker-differentiating term.
+        "Signal_Strength_Pct": round(day_gain_pct - config.squeeze_breakout_gain_pct_min, 2),
         "Next_Earnings_Date": next_earnings_date_out,
         "Catalyst_Warning": catalyst_warning,
         "Top_Headline": top_headline,
@@ -1350,6 +1384,7 @@ def compute_squeeze_breakout_levels(
     config: TradingConfig = DEFAULT_CONFIG,
     next_earnings_date=None,
     top_headline: str = "",
+    market_df: pd.DataFrame | None = None,
 ) -> dict:
     """Compute squeeze-breakout levels for one ticker's OHLCV history -- a
     seventh strategy, built to fire MORE OFTEN than momentum_burst (which
@@ -1387,10 +1422,214 @@ def compute_squeeze_breakout_levels(
     this v1 -- this strategy is dashboard-only/experimental until it
     passes the same random-entry-timing validation every other strategy
     here was held to (see benchmark_random_entry.py).
+
+    `market_df` (added alongside the optional sharpening filters --
+    improvements.txt item 42/43) is needed for Relative_Strength; None
+    when not supplied, same backward-compatible treatment
+    compute_breakout_levels()/compute_adx_trend_entry_levels() use.
     """
-    frame = precompute_squeeze_breakout_frame(df, config)
+    frame = precompute_squeeze_breakout_frame(df, config, market_df=market_df)
     as_of = frame.index[-1]
     return squeeze_breakout_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
+def precompute_adx_trend_entry_frame(
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    market_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Vectorized precompute of every column adx_trend_entry_levels_from_frame()
+    needs -- built ON TOP of precompute_breakout_frame() (reused wholesale:
+    ADX/SMA_TREND/RSI/ATR/AvgVolume/etc. are identical to what breakout
+    already computes -- ADX in particular is the SAME column breakout's
+    own optional breakout_adx_min filter already uses, not recomputed
+    here).
+
+    Adds one new column: Short_MA = a short-term rolling mean of Close
+    (config.adx_trend_entry_ma_window) -- used only for directional
+    confirmation (ADX itself measures trend STRENGTH, not direction)."""
+    df = precompute_breakout_frame(df, config, market_df=market_df)
+    df["Short_MA"] = df["Close"].rolling(window=config.adx_trend_entry_ma_window).mean()
+    return df
+
+
+def adx_trend_entry_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract compute_adx_trend_entry_levels()'s dict for one row of a
+    frame already built by precompute_adx_trend_entry_frame() -- the
+    O(1)-per-row counterpart a walk-forward loop calls once per `as_of`.
+    Business logic is verbatim compute_adx_trend_entry_levels(), just
+    reading from a precomputed row.
+    """
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, rsi, adx, short_ma, last_volume, avg_volume_prior = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"],
+        last_row["RSI"], last_row["ADX"], last_row["Short_MA"],
+        last_row["Volume"], last_row["AvgVolume_Prior"],
+    )
+    obv_zscore, squeeze_zscore = last_row["OBV_Zscore"], last_row["Squeeze_Zscore"]
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+    if pd.isna(adx):
+        raise RuntimeError(f"insufficient history to compute {config.adx_window}-day ADX")
+    if pd.isna(short_ma):
+        raise RuntimeError(f"insufficient history to compute {config.adx_trend_entry_ma_window}-day short MA")
+    # RSI is informational only for adx_trend_entry's CORE signal (not used
+    # for gating there) -- same treatment as every other trend-following
+    # strategy. It IS used by the optional Phase 2 filters below (applied
+    # downstream in add_adx_trend_entry_trade_score()/
+    # simulate_adx_trend_entry_signals(), same "informational unless the
+    # filter is explicitly enabled" pattern breakout's own six filters use).
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+    # Same informational treatment for the volume ratio (Phase 2 filter --
+    # see breakout_levels_from_frame's identical inline computation).
+    if pd.isna(avg_volume_prior) or float(avg_volume_prior) == 0:
+        volume_ratio = None
+    else:
+        volume_ratio = round(float(last_volume) / float(avg_volume_prior), 3)
+    # Same informational treatment for OBV/squeeze z-scores (Phase 2 filters).
+    obv_zscore = None if pd.isna(obv_zscore) else round(float(obv_zscore), 3)
+    squeeze_zscore = None if pd.isna(squeeze_zscore) else round(float(squeeze_zscore), 3)
+
+    last_close, sma_trend, atr, avg_volume, adx, short_ma = (
+        float(last_close), float(sma_trend), float(atr), float(avg_volume), float(adx), float(short_ma),
+    )
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    adx_trend_signal = bool(adx >= config.adx_trend_entry_threshold and last_close > short_ma)
+
+    # Buy_Price = today's own Close -- this is a continuous-STATE
+    # confirmation (same convention as week52_high/momentum_burst/
+    # squeeze_breakout), not a specific price level to wait for.
+    # Distance_to_Buy_Pct is therefore always 0 by construction, same
+    # uninformative-but-schema-compatible treatment those strategies
+    # already established.
+    buy_price = round(last_close, 2)
+    distance_to_buy_pct = 0.0
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    # Relative_Strength (Phase 2 filter) needs market_df -- only present
+    # in the frame if precompute_adx_trend_entry_frame() was called with
+    # it (see breakout_levels_from_frame's identical pattern).
+    relative_strength = None
+    if "Relative_Strength" in frame.columns:
+        rs_val = last_row["Relative_Strength"]
+        if pd.notna(rs_val):
+            relative_strength = round(float(rs_val), 4)
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "ADX": round(adx, 2),
+        "Short_MA": round(short_ma, 2),
+        "ADX_Trend_Signal": adx_trend_signal,
+        "Relative_Strength": relative_strength,
+        "Volume_Ratio": volume_ratio,
+        "OBV_Zscore": obv_zscore,
+        "Squeeze_Zscore": squeeze_zscore,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": distance_to_buy_pct,
+        # How far ADX clears its own minimum "trending" bar -- see
+        # add_adx_trend_entry_trade_score, replaces Distance_to_Buy_Pct
+        # (always 0 here) as the score's ticker-differentiating term.
+        "Signal_Strength_Pct": round(adx - config.adx_trend_entry_threshold, 2),
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_adx_trend_entry_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+    market_df: pd.DataFrame | None = None,
+) -> dict:
+    """Compute ADX-trend-entry levels for one ticker's OHLCV history -- a
+    ninth strategy, a continuous STATE (like week52_high/squeeze_breakout,
+    not a discrete event): fires whenever ADX is at/above
+    adx_trend_entry_threshold (genuinely trending, independent of
+    direction) AND price is above a short-term MA (direction
+    confirmation). Core trigger stayed lean through Phase 1 validation
+    (see improvements.txt item 40 -- real, if modest, edge); Phase 2 (same
+    item) added the SAME family of optional "sharpening" filters breakout
+    (v19) itself accumulated over its own real history -- RSI-overbought,
+    Relative_Strength, Volume_Ratio, OBV_Zscore, Squeeze_Zscore -- all
+    disabled by default (0/off = today's exact Phase-1 behavior), applied
+    as ADDITIONAL gates downstream in add_adx_trend_entry_trade_score()/
+    simulate_adx_trend_entry_signals(), NOT baked into ADX_Trend_Signal
+    itself, mirroring breakout's own architecture exactly (see
+    breakout_levels_from_frame()/add_breakout_trade_score()).
+
+    Buy_Price is today's own Close (see adx_trend_entry_levels_from_frame's
+    inline comment for why -- same convention as week52_high/momentum_burst/
+    squeeze_breakout, NOT a resting level to wait for). `market_df`
+    (optional), if given, enables the Relative_Strength filter -- same
+    role as compute_breakout_levels()'s own `market_df` parameter.
+
+    The returned dict is schema-compatible with every other strategy's
+    (Buy_Price, Sell_Price, Stop_Loss, RRR, Distance_to_Buy_Pct,
+    Catalyst_Warning, etc. all present) -- only add_adx_trend_entry_trade_score
+    (swingtrade/scoring.py) differs downstream. RSI/Relative_Strength/
+    Volume_Ratio/OBV_Zscore/Squeeze_Zscore are informational unless their
+    matching filter field is changed from its disabled default.
+
+    Thin wrapper over precompute_adx_trend_entry_frame()/adx_trend_entry_levels_from_frame()
+    -- kept as a single-call convenience for the live dashboard, matching
+    every other strategy's same rationale. NOT called from ingest.py in
+    this v1 -- this strategy is dashboard-only/experimental until it
+    passes the same random-entry-timing validation every other strategy
+    here was held to (see benchmark_random_entry.py).
+    """
+    frame = precompute_adx_trend_entry_frame(df, config, market_df=market_df)
+    as_of = frame.index[-1]
+    return adx_trend_entry_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
 def review_holding(

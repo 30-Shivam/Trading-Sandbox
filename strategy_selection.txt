@@ -1,0 +1,133 @@
+STRATEGY SELECTION -- where things stand and what to try next
+Written 2026-08-10, end of the RRR-ceiling/consolidation investigation (see improvements.txt items 42-43 for the full detailed history).
+
+=== WHAT'S ACTUALLY VALIDATED RIGHT NOW ===
+
+Two candidates, and only two, have a real, holdout-positive, non-thin-sample
+edge as of today:
+
+- breakout, candidate v43 (System_Config). v19's own already-tuned filter
+  params (breakout_lookback_days, RSI/relative-strength/volume/ADX/OBV/
+  squeeze thresholds), with ONLY atr_take_profit_multiplier/
+  stop_loss_atr_multiplier changed to 2.0/1.0 (RRR=2.0 -- clears the live
+  scoring ceiling, which v19 itself cannot). Tune sharpe 0.15 (213 trades,
+  157.9 effective), holdout sharpe 0.139 (52 trades, 44.5 effective). Real
+  but roughly half of v19's own headline (illusory, non-fireable) numbers.
+
+- squeeze_breakout, candidate v39. Untuned defaults, RRR=3.0 (also
+  ceiling-clearing). Beats its own random-entry baseline on ALL/TUNE/
+  HOLDOUT (0.040/0.034/0.039 vs 0.021/0.027/-0.004) -- the only one of
+  momentum_burst/squeeze_breakout/adx_trend_entry that does, confirmed via
+  a direct 5-year/253-ticker real-vs-random benchmark run 2026-08-09/10.
+
+Neither has been promoted. v19/v27/v28 remain active/wired exactly as
+before -- this file does not recommend touching them without a separate,
+explicit decision.
+
+Everything else tried this session (breakout_retest v27/v44,
+week52_high v28/v45, momentum_burst v29/v35/v38, adx_trend_entry
+v34/v37/v40, and six separate Optuna re-tune attempts on breakout/
+squeeze_breakout: v41, v42, v46, v47, v48, and squeeze_breakout's second
+pinned attempt which produced no candidate at all) is REJECTED or
+disproven. See improvements.txt items 42-43 for the specific numbers on
+each.
+
+=== WHY FURTHER TUNING OF THESE TWO KEEPS FAILING ===
+
+Six independent Optuna searches (two strategies, three different search
+configurations: free tp/sl, tp/sl pinned at old MIN_TRADES_FOR_SCORE=15,
+tp/sl pinned at corrected MIN_TRADES_FOR_SCORE=50) have now ALL either
+overfit (strong tune result, negative/collapsed holdout) or failed to
+find any sufficiently-sampled candidate at all. The diagnosed cause: a
+253-ticker watchlist (~190 after the tune/holdout split) is a genuinely
+small universe to run a 6-8-dimensional continuous parameter search over.
+Optuna reliably finds SOME combination of filter thresholds that looks
+great on ~20-70 tune trades -- that's enough trials (100 per run) hunting
+a small enough sample that a lucky-looking spike is nearly guaranteed to
+exist somewhere in the search space, and it essentially never generalizes
+to the 63 holdout tickers Optuna never touched.
+
+This is not a sign the whole approach is broken -- the holdout check has
+caught every single overfit candidate, which is the pipeline doing its
+job. It IS a sign that "give Optuna free rein over several filter
+thresholds simultaneously, on this ticker count" is not currently a
+productive way to improve on v43/v39's already-validated baselines.
+
+=== RECOMMENDATIONS ===
+
+1. SHIP v43 and v39 as the two consolidated strategies, as-is. Both are
+   real, both are modest, neither needs further filter tuning attempted
+   the way it's been attempted six times already. This is the safe,
+   evidence-backed default if nothing else below gets picked up.
+
+2. If more edge is wanted from THESE SAME TWO strategies specifically,
+   address the actual bottleneck instead of re-running the same search:
+   - Expand the ticker universe substantially (watchlist.txt currently
+     has 253 names). More tickers directly increases the effective
+     sample size any given filter combination gets evaluated against,
+     which is the root cause identified above -- this is the single
+     highest-leverage fix if pursued.
+   - OR replace the multi-dimensional Optuna search with a coarse,
+     ONE-FILTER-AT-A-TIME grid search (a handful of discrete threshold
+     values per filter, holding all others at their disabled default),
+     mirroring how breakout's OWN six filters were actually discovered
+     historically (added and validated incrementally, not searched
+     jointly from a blank slate). Far fewer degrees of freedom, far
+     harder to spuriously overfit, though slower to explore the full
+     space.
+   - Whichever is tried, keep MIN_TRADES_FOR_SCORE at 50 (already fixed
+     in optimize.py) and re-verify any winning candidate directly (real
+     vs. random walk-forward comparison) before trusting it, exactly as
+     this session's validation pipeline already requires
+     ([[strategy-validation-pipeline]] step 5).
+
+3. If instead the better use of effort is a NEW strategy family (since
+   iterating on the breakout/squeeze_breakout lineage has hit diminishing
+   returns this session), candidates worth exploring, roughly in order of
+   how different they are from everything tried so far (all feasible with
+   the existing yfinance-OHLCV-only data pipeline -- no options/order-flow
+   data available):
+   - Post-earnings-announcement drift (PEAD): buy into the days following
+     a strong earnings beat + gap, a well-documented academic anomaly
+     orthogonal to every technical/momentum signal tried this session.
+     `next_earnings_date`/headline data is already fetched per ticker
+     (see market_data.py) -- would need historical earnings-surprise data
+     added, which this system doesn't currently have a source for.
+   - Sector/relative-strength rotation: a portfolio-level strategy (hold
+     the N strongest sector-relative performers, rebalance periodically)
+     rather than a per-ticker daily signal -- a materially different time
+     scale and risk shape from everything tried so far. `sector_lookup`
+     (watchlist.py) and Relative_Strength (already computed) are both
+     already available building blocks.
+   - Volatility-regime conditioning as a REFINEMENT layer on v43/v39
+     rather than a new strategy: only take breakout/squeeze_breakout
+     signals when a broad market volatility regime (e.g. a rolling
+     realized-vol percentile on SPY, already fetched as the market-uptrend
+     proxy) is in a specific state. Cheap to test (one new boolean gate,
+     no new data source), and conceptually different from anything tried
+     (a market-regime filter, not a per-ticker indicator threshold).
+   - Mean-reversion pairs/relative value (long the laggard, short or
+     avoid the leader within a correlated pair/sector) -- fundamentally
+     different risk profile (market-neutral-ish) from the trend-following
+     family tried exclusively this session. Bigger lift: needs pair-
+     selection/correlation infrastructure that doesn't exist yet.
+
+4. Whatever gets tried next, apply the full pipeline from the start
+   ([[strategy-validation-pipeline]], now 9 steps including the RRR-vs-
+   scoring-ceiling check added this session) -- in particular, check
+   RRR-vs-scoring-ceiling compatibility (step 9) and use
+   MIN_TRADES_FOR_SCORE>=50 BEFORE spending real tuning time, not after
+   discovering a strategy can't fire live or a tuned result doesn't
+   generalize, the way this session had to discover both the hard way.
+
+=== NOT RECOMMENDED ===
+
+- Re-running the exact same multi-dimensional Optuna filter search on
+  breakout/squeeze_breakout a seventh time without changing either the
+  ticker universe size or the search dimensionality. Six attempts under
+  three different configurations have all failed the same way -- there's
+  no reason to expect a seventh identical attempt to behave differently.
+- Touching v19/v27/v28's `active`/live-dashboard status based on this
+  file alone -- that's a separate, explicit capital-allocation decision
+  for the user to make, not something this investigation resolves on its
+  own.

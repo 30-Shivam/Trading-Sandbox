@@ -156,7 +156,23 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 REQUEST_DELAY_SEC = 0.5
 
-MIN_TRADES_FOR_SCORE = 15    # penalize candidates with too few pooled trades to trust
+MIN_TRADES_FOR_SCORE = 50    # penalize candidates with too few pooled trades to trust --
+                              # raised from 15 (2026-08-10, see improvements.txt item 43)
+                              # after discovering EVERY winning trial across 5 separate
+                              # tuning attempts this session (breakout/squeeze_breakout,
+                              # with and without tp/sl pinned) converged to a TUNE
+                              # effective_trade_count clustered in the high-teens/twenties
+                              # -- just above the old 15-trade floor. With 100 trials all
+                              # competing to maximize sharpe_like and no penalty for merely
+                              # clearing the floor, Optuna was structurally incentivized to
+                              # find the smallest sample that dodged the penalty (small
+                              # samples have the highest sharpe variance, so that's where
+                              # lucky-looking spikes live) -- and holdout caught every one
+                              # of them (sharpe went negative on 3 of 5). 50 is still well
+                              # below what a genuinely non-overfit config achieves (v43's
+                              # breakout got 157.9 tune-effective, v39's squeeze_breakout
+                              # got 2491.2) but high enough to rule out the observed
+                              # 17-29 overfit zone outright.
 UNDER_SAMPLED_PENALTY = -10.0  # well below any realistic sharpe_like, but finite (no inf/NaN into Optuna)
 UNDER_SAMPLED_DRAWDOWN_PENALTY = 100.0  # --multi-objective only: worst-possible (100%) drawdown for an
                                          # under-sampled trial, so it's dominated on both axes rather than
@@ -169,15 +185,29 @@ UNDER_SAMPLED_DRAWDOWN_PENALTY = 100.0  # --multi-objective only: worst-possible
 # sweet spot. Widened accordingly; atr_take_profit_multiplier landed interior
 # (2.13 of 1.0-3.0) so it's untouched.
 RSI_OVERSOLD_RANGE = (15.0, 70.0)
-ATR_TAKE_PROFIT_RANGE = (1.0, 3.0)
-# Upper bound widened 3.0 -> 5.0: the breakout search has now pinned
-# stop_loss_atr_multiplier at exactly 3.0 in TWO separate searches
-# (candidates v14 and v16) -- two data points is a stronger signal than
-# one that the old ceiling was cutting off the true optimum, the same
-# boundary-pinning pattern that showed up earlier this session for RSI.
-# Shared between both strategies' search spaces; harmless for RSI (no
-# evidence it wants a wider stop than its already-interior ~2.18 optimum).
-STOP_LOSS_ATR_RANGE = (0.25, 5.0)
+# RRR_FLOOR + these two ranges replaced a version that let
+# atr_take_profit_multiplier/stop_loss_atr_multiplier be sampled
+# independently -- discovered (2026-08-09) that this let Optuna land on a
+# config that wins on backtested $ P&L while being structurally unable to
+# ever log a live signal or allocate capital: swingtrade/scoring.py's
+# Trade_Score formula treats RRR (= atr_take_profit_multiplier /
+# stop_loss_atr_multiplier, a config constant, not ticker-specific) as a
+# 0-40-point term, and signal_buy_threshold=60 is mathematically
+# unreachable below RRR=1.6 no matter how good Distance_to_Buy_Pct is.
+# v19/v27/v28 all landed below 1.6 (0.29-0.41) from independent sampling
+# -- three real, capital-allocating strategies that had silently never
+# logged a signal since being tuned. See improvements.txt for the full
+# incident.
+RRR_FLOOR = 1.6
+ATR_TAKE_PROFIT_RANGE = (1.0, 5.0)  # widened from (1.0, 3.0) so there's
+                                     # real search room above stop_loss_atr_multiplier*RRR_FLOOR
+                                     # across the whole STOP_LOSS_ATR_RANGE below
+STOP_LOSS_ATR_RANGE = (0.5, 2.5)    # narrowed from (0.25, 5.0) -- at the
+                                     # old 5.0 upper bound, RRR_FLOOR would
+                                     # require atr_take_profit_multiplier >= 8.0,
+                                     # an unrealistically distant target that
+                                     # would rarely ever get hit before
+                                     # max_holding_days
 EXTENDED_DECLINE_PENALTY_PER_DAY_RANGE = (0.0, 4.0)
 EXTENDED_DECLINE_PENALTY_CAP_RANGE = (0.0, 50.0)
 
@@ -386,6 +416,8 @@ def build_objective(
     ticker_data: dict, market_data: pd.DataFrame, folds: list, end: pd.Timestamp, half_life_days: float,
     sector_lookup: dict[str, str], strategy: str = "rsi", max_workers: int | None = None,
     multi_objective: bool = False,
+    pin_atr_take_profit_multiplier: float | None = None,
+    pin_stop_loss_atr_multiplier: float | None = None,
 ):
     """`multi_objective=False` (default) is byte-for-byte the original
     single-scalar-objective behavior -- unchanged, so every existing script/
@@ -398,13 +430,45 @@ def build_objective(
     searches for the Pareto front (configs where no other trial is BOTH a
     higher sharpe_like AND a lower drawdown) instead of a single winner --
     see main()'s post-search handling for how one candidate still gets
-    selected from that front to actually write to System_Config."""
+    selected from that front to actually write to System_Config.
+
+    `pin_atr_take_profit_multiplier`/`pin_stop_loss_atr_multiplier`: when
+    BOTH are given, tp/sl stop being search dimensions entirely -- every
+    trial gets this exact, identical payoff shape, and Optuna only tunes
+    the strategy's other (filter/trigger) params. Added after breakout's
+    own re-tune (2026-08-09/10, see improvements.txt item 42) proved that
+    letting Optuna freely search tp/sl (even RRR_FLOOR-constrained)
+    simultaneously with every filter threshold gives it enough freedom to
+    cherry-pick a tiny, overfit, sometimes holdout-negative sample -- the
+    fix that actually worked was pinning tp/sl at a separately-verified
+    value and searching nothing else in that dimension. If only one or
+    neither is given, falls back to the RRR_FLOOR-respecting sampling
+    below unchanged."""
     def objective(trial: optuna.Trial):
+        # Shared by every strategy branch below -- hoisted out of the
+        # per-strategy dicts (used to be 7 duplicated independent-sampling
+        # call-site pairs) so RRR_FLOOR is enforced by construction in
+        # exactly one place. See RRR_FLOOR's own comment above for why:
+        # sampling these two independently let Optuna land on configs that
+        # win on backtested $ P&L while being structurally unable to ever
+        # clear swingtrade/scoring.py's signal_buy_threshold live.
+        if pin_atr_take_profit_multiplier is not None and pin_stop_loss_atr_multiplier is not None:
+            stop_loss_atr_multiplier = pin_stop_loss_atr_multiplier
+            atr_take_profit_multiplier = pin_atr_take_profit_multiplier
+            trial.set_user_attr("pinned_tp_sl", True)
+        else:
+            stop_loss_atr_multiplier = trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE)
+            atr_take_profit_multiplier = trial.suggest_float(
+                "atr_take_profit_multiplier",
+                max(ATR_TAKE_PROFIT_RANGE[0], stop_loss_atr_multiplier * RRR_FLOOR),
+                ATR_TAKE_PROFIT_RANGE[1],
+            )
+
         if strategy == "rsi":
             params = {
                 "rsi_oversold_threshold": trial.suggest_float("rsi_oversold_threshold", *RSI_OVERSOLD_RANGE),
-                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
-                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
                 "extended_decline_penalty_per_day": trial.suggest_float(
                     "extended_decline_penalty_per_day", *EXTENDED_DECLINE_PENALTY_PER_DAY_RANGE
                 ),
@@ -415,8 +479,8 @@ def build_objective(
         elif strategy == "breakout":
             params = {
                 "breakout_lookback_days": trial.suggest_int("breakout_lookback_days", *BREAKOUT_LOOKBACK_RANGE),
-                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
-                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
                 "breakout_rsi_overbought_threshold": trial.suggest_float(
                     "breakout_rsi_overbought_threshold", *BREAKOUT_RSI_OVERBOUGHT_RANGE
                 ),
@@ -441,23 +505,23 @@ def build_objective(
                     "pullback_ma_slope_window", *PULLBACK_MA_SLOPE_WINDOW_RANGE
                 ),
                 "pullback_band_pct": trial.suggest_float("pullback_band_pct", *PULLBACK_BAND_PCT_RANGE),
-                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
-                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
         elif strategy == "breakout_retest":
             params = {
                 "breakout_lookback_days": trial.suggest_int("breakout_lookback_days", *BREAKOUT_LOOKBACK_RANGE),
                 "retest_window_days": trial.suggest_int("retest_window_days", *RETEST_WINDOW_DAYS_RANGE),
                 "retest_band_pct": trial.suggest_float("retest_band_pct", *RETEST_BAND_PCT_RANGE),
-                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
-                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
         elif strategy == "week52_high":
             params = {
                 "week52_lookback_days": trial.suggest_int("week52_lookback_days", *WEEK52_LOOKBACK_DAYS_RANGE),
                 "week52_nearness_pct": trial.suggest_float("week52_nearness_pct", *WEEK52_NEARNESS_PCT_RANGE),
-                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
-                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
         elif strategy == "momentum_burst":
             params = {
@@ -467,8 +531,8 @@ def build_objective(
                 "momentum_burst_volume_ratio_min": trial.suggest_float(
                     "momentum_burst_volume_ratio_min", *MOMENTUM_BURST_VOLUME_RATIO_RANGE
                 ),
-                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
-                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
         else:
             params = {
@@ -481,8 +545,26 @@ def build_objective(
                 "squeeze_breakout_gain_pct_min": trial.suggest_float(
                     "squeeze_breakout_gain_pct_min", *SQUEEZE_BREAKOUT_GAIN_PCT_RANGE
                 ),
-                "atr_take_profit_multiplier": trial.suggest_float("atr_take_profit_multiplier", *ATR_TAKE_PROFIT_RANGE),
-                "stop_loss_atr_multiplier": trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE),
+                # Phase 2 sharpening filters (improvements.txt item 42/43) --
+                # reuse breakout's own range constants directly, same
+                # underlying indicators, no need for per-strategy duplicates.
+                "squeeze_breakout_rsi_overbought_threshold": trial.suggest_float(
+                    "squeeze_breakout_rsi_overbought_threshold", *BREAKOUT_RSI_OVERBOUGHT_RANGE
+                ),
+                "squeeze_breakout_relative_strength_min": trial.suggest_float(
+                    "squeeze_breakout_relative_strength_min", *BREAKOUT_RELATIVE_STRENGTH_RANGE
+                ),
+                "squeeze_breakout_volume_ratio_min": trial.suggest_float(
+                    "squeeze_breakout_volume_ratio_min", *BREAKOUT_VOLUME_RATIO_RANGE
+                ),
+                "squeeze_breakout_adx_min": trial.suggest_float(
+                    "squeeze_breakout_adx_min", *BREAKOUT_ADX_MIN_RANGE
+                ),
+                "squeeze_breakout_obv_zscore_min": trial.suggest_float(
+                    "squeeze_breakout_obv_zscore_min", *BREAKOUT_OBV_ZSCORE_MIN_RANGE
+                ),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
         candidate = swingtrade.TradingConfig(**{
             **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": strategy, **params,
@@ -602,7 +684,24 @@ def main():
              "to actually write as a candidate. Off by default -- the original single-objective "
              "search is unchanged unless you pass this.",
     )
+    parser.add_argument(
+        "--pin-atr-take-profit-multiplier", type=float, default=None,
+        help="Pin atr_take_profit_multiplier to this exact value for every trial (must be passed "
+             "together with --pin-stop-loss-atr-multiplier) -- tp/sl stops being searched at all, "
+             "Optuna only tunes the strategy's other params. See build_objective()'s docstring for "
+             "why: letting Optuna search tp/sl AND every filter simultaneously can cherry-pick a "
+             "tiny overfit sample even within the RRR_FLOOR-constrained space.",
+    )
+    parser.add_argument(
+        "--pin-stop-loss-atr-multiplier", type=float, default=None,
+        help="Pin stop_loss_atr_multiplier to this exact value -- see --pin-atr-take-profit-multiplier.",
+    )
     args = parser.parse_args()
+
+    if (args.pin_atr_take_profit_multiplier is None) != (args.pin_stop_loss_atr_multiplier is None):
+        print("[ERROR] --pin-atr-take-profit-multiplier and --pin-stop-loss-atr-multiplier "
+              "must be passed together, or not at all.", file=sys.stderr)
+        sys.exit(1)
 
     try:
         storage.ensure_indexes()
@@ -691,6 +790,8 @@ def main():
         build_objective(
             tune_ticker_data, market_data, folds, end, args.recency_half_life_days, sector_lookup, args.strategy,
             max_workers=args.max_workers, multi_objective=args.multi_objective,
+            pin_atr_take_profit_multiplier=args.pin_atr_take_profit_multiplier,
+            pin_stop_loss_atr_multiplier=args.pin_stop_loss_atr_multiplier,
         ),
         n_trials=args.trials, show_progress_bar=False,
     )

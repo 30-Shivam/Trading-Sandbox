@@ -198,8 +198,9 @@ def score_bundle_for_strategy(
     `market_df` for Relative_Strength), "pullback" (compute_pullback_levels),
     "breakout_retest" (compute_breakout_retest_levels), "week52_high"
     (compute_week52_levels), "momentum_burst" (compute_momentum_burst_levels),
-    or "squeeze_breakout" (compute_squeeze_breakout_levels) -- the
-    returned dicts are schema-compatible across all seven (see
+    "squeeze_breakout" (compute_squeeze_breakout_levels), or
+    "adx_trend_entry" (compute_adx_trend_entry_levels) -- the returned
+    dicts are schema-compatible across all eight (see
     compute_breakout_levels' docstring). Pure computation, no network calls
     -- safe and cheap to call once per strategy against the SAME bundle."""
     results = []
@@ -230,7 +231,13 @@ def score_bundle_for_strategy(
                 )
             elif config.strategy == "squeeze_breakout":
                 levels = swingtrade.compute_squeeze_breakout_levels(
-                    ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
+                    ticker, df, config, next_earnings_date=next_earnings,
+                    top_headline=top_headline, market_df=market_df,
+                )
+            elif config.strategy == "adx_trend_entry":
+                levels = swingtrade.compute_adx_trend_entry_levels(
+                    ticker, df, config, next_earnings_date=next_earnings,
+                    top_headline=top_headline, market_df=market_df,
                 )
             else:
                 levels = swingtrade.compute_levels(

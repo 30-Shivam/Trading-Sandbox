@@ -22,7 +22,15 @@ class TradingConfig:
     rsi_window: int = 14                   # RSI lookback (trading days)
     atr_window: int = 14                   # ATR lookback (trading days)
     rsi_oversold_threshold: float = 45     # buy signal requires RSI below this
-    atr_take_profit_multiplier: float = 1.5  # sell_price = buy_price + multiplier * ATR
+    atr_take_profit_multiplier: float = 2.0  # sell_price = buy_price + multiplier * ATR
+                                            # (RRR = this / stop_loss_atr_multiplier
+                                            # = 2.0 -- kept comfortably above
+                                            # optimize.py's RRR_FLOOR=1.6 so any
+                                            # untuned config starts able to
+                                            # actually clear signal_buy_threshold;
+                                            # see improvements.txt for the
+                                            # v19/v27/v28 incident this avoids
+                                            # repeating for brand-new configs)
     stop_loss_atr_multiplier: float = 1.0    # stop_loss = buy_price - multiplier * ATR
 
     # Macro trend / liquidity gates
@@ -341,6 +349,19 @@ class TradingConfig:
                                             # improvements.txt for why
                                             # "next_open" may better model
                                             # a genuine momentum-chase entry
+    momentum_burst_strength_cap_pct: float = 5.0  # add_momentum_burst_trade_score's
+                                            # Signal_Strength_Pct (Day_Gain_Pct
+                                            # minus momentum_burst_gain_pct_min,
+                                            # i.e. how far today's gain clears
+                                            # its own minimum bar) earns full
+                                            # score points at/above this excess
+                                            # -- an 8%+ day (3% min + 5pp) reads
+                                            # as maximally strong. Replaces
+                                            # Distance_to_Buy_Pct, which is
+                                            # always 0 for this strategy (see
+                                            # momentum_burst_levels_from_frame)
+                                            # and so could never differentiate
+                                            # tickers -- see improvements.txt.
 
     # Squeeze-breakout strategy (swingtrade/levels.compute_squeeze_breakout_levels,
     # swingtrade/backtest.simulate_squeeze_breakout_signals) -- a seventh
@@ -389,6 +410,96 @@ class TradingConfig:
                                             # expansion" signal shape that
                                             # made the fill choice matter
                                             # for momentum_burst
+    squeeze_breakout_strength_cap_pct: float = 5.0  # same role as
+                                            # momentum_burst_strength_cap_pct
+                                            # -- add_squeeze_breakout_trade_score's
+                                            # Signal_Strength_Pct (Day_Gain_Pct
+                                            # minus squeeze_breakout_gain_pct_min)
+                                            # earns full score points at/above
+                                            # this excess (a 7%+ day, 2% min +
+                                            # 5pp). Replaces Distance_to_Buy_Pct,
+                                            # always 0 for this strategy.
+
+    # squeeze_breakout's own "sharpening" filters -- same five dimensions
+    # adx_trend_entry's Phase 2 added (breakout's own six minus whichever
+    # one is already THIS strategy's core trigger -- here, Squeeze_Zscore
+    # itself, not an add-on filter). Reuses the identical already-computed
+    # columns (RSI/Relative_Strength/Volume_Ratio/ADX/OBV_Zscore), applied
+    # the same way breakout's/adx_trend_entry's filters are: as additional
+    # gates in add_squeeze_breakout_trade_score() AND
+    # simulate_squeeze_breakout_signals() (kept in sync so live and
+    # backtested definitions can't disagree), NOT baked into Squeeze_Signal
+    # itself. Every default below is the identical "practical no-op" value
+    # breakout's own filters use -- 0/off changes nothing until explicitly
+    # tuned. Added specifically to be Optuna-searchable under the
+    # RRR_FLOOR-safe, tp/sl-PINNED regime (see optimize.py's
+    # --pin-atr-take-profit-multiplier) -- see improvements.txt item 42 for
+    # why every prior filter/tune on this strategy needed re-doing.
+    squeeze_breakout_rsi_overbought_threshold: float = 100.0
+    squeeze_breakout_relative_strength_min: float = -100.0
+    squeeze_breakout_volume_ratio_min: float = 0.0
+    squeeze_breakout_adx_min: float = 0.0
+    squeeze_breakout_obv_zscore_min: float = -100.0
+
+    # ADX-trend-entry strategy (swingtrade/levels.compute_adx_trend_entry_levels,
+    # swingtrade/backtest.simulate_adx_trend_entry_signals) -- a ninth
+    # signal, a continuous STATE (like week52_high/squeeze_breakout, not a
+    # discrete event): fires whenever ADX (already computed, config.adx_window)
+    # is at/above a "genuinely trending" threshold AND price is above a
+    # short-term MA for direction (ADX alone measures trend STRENGTH,
+    # independent of direction). Deliberately lean v1, mirroring every
+    # other strategy's own launch -- reuses breakout's OWN eventual history
+    # as the template: v19 didn't launch with its six optional "sharpening"
+    # filters below (breakout_rsi_overbought_threshold etc.) either, they
+    # were added incrementally AFTER it was already a trusted baseline.
+    # Real, non-disabled defaults -- these DEFINE the trigger.
+    adx_trend_entry_threshold: float = 25.0  # ADX must be at/above this --
+                                            # the classic "trending" reading
+                                            # in technical-analysis terms
+                                            # (25 = trending, 40+ = strong
+                                            # trend)
+    adx_trend_entry_ma_window: int = 10    # short-term SMA window for
+                                            # directional confirmation
+                                            # (deliberately its own field,
+                                            # not shared with ma_window/
+                                            # pullback_ma_window -- every
+                                            # strategy owns its own window)
+    adx_trend_entry_entry_fill: str = "limit"  # same "limit" vs.
+                                            # "next_open" toggle as
+                                            # momentum_burst_entry_fill/
+                                            # squeeze_breakout_entry_fill,
+                                            # built in from the start here
+                                            # too
+    adx_trend_entry_strength_cap: float = 15.0  # same role as
+                                            # momentum_burst_strength_cap_pct
+                                            # -- add_adx_trend_entry_trade_score's
+                                            # Signal_Strength_Pct (ADX minus
+                                            # adx_trend_entry_threshold) earns
+                                            # full score points at/above this
+                                            # excess (ADX 40+, a "very strong
+                                            # trend" TA reading, off a 25
+                                            # threshold). Replaces
+                                            # Distance_to_Buy_Pct, always 0
+                                            # for this strategy.
+
+    # adx_trend_entry's own "sharpening" filters -- Phase 2, added only
+    # after the lean v1 above cleared the random-entry-timing bar (see
+    # improvements.txt item 40). Deliberately the SAME five dimensions
+    # breakout's own filters cover (relative strength, volume, OBV,
+    # squeeze -- ADX itself is already this strategy's core trigger, not
+    # an add-on filter here), reusing the identical already-computed
+    # columns (Relative_Strength/Volume_Ratio/OBV_Zscore/Squeeze_Zscore),
+    # applied the SAME way breakout's filters are: as additional gates in
+    # add_adx_trend_entry_trade_score() AND simulate_adx_trend_entry_signals()
+    # (kept in sync so live and backtested definitions can't disagree),
+    # NOT baked into ADX_Trend_Signal itself. Every default below is the
+    # identical "practical no-op" value breakout's own filters use -- 0/off
+    # changes nothing until explicitly tuned.
+    adx_trend_entry_rsi_overbought_threshold: float = 100.0
+    adx_trend_entry_relative_strength_min: float = -100.0
+    adx_trend_entry_volume_ratio_min: float = 0.0
+    adx_trend_entry_obv_zscore_min: float = -100.0
+    adx_trend_entry_squeeze_zscore_max: float = 100.0
 
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,

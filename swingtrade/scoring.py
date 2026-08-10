@@ -269,12 +269,18 @@ def add_momentum_burst_trade_score(df: pd.DataFrame, config: TradingConfig = DEF
     still sum to 100.
 
     Distance_to_Buy_Pct is always 0 for this strategy (Buy_Price IS
-    Last_Close, see momentum_burst_levels_from_frame) -- the distance
-    component is therefore always maxed at its full weight, same behavior
-    week52_high shows on a fresh-high day; Trade_Score here is effectively
-    driven by RRR alone. Kept as the same two-term formula (rather than a
-    bespoke RRR-only one) for consistency with every other strategy's
-    scoring shape.
+    Last_Close, see momentum_burst_levels_from_frame) -- it stays in the
+    returned dict for schema compatibility but is NOT used in this
+    formula. In its place, Signal_Strength_Pct (how far today's
+    Day_Gain_Pct clears momentum_burst_gain_pct_min -- see
+    momentum_burst_levels_from_frame) fills the second term, using the
+    same clip-then-scale shape rrr_score already uses (bigger is better,
+    capped at momentum_burst_strength_cap_pct) so every eligible ticker's
+    score actually differentiates by real signal strength instead of
+    landing on one fixed value (see improvements.txt for the incident that
+    prompted this -- the old Distance_to_Buy_Pct-based formula gave every
+    eligible ticker the exact same score, RRR being a config constant
+    too).
 
     Hard gate, not just a scoring input: a ticker whose Momentum_Signal is
     False (didn't clear BOTH the gain and volume thresholds, or is outside
@@ -285,13 +291,13 @@ def add_momentum_burst_trade_score(df: pd.DataFrame, config: TradingConfig = DEF
 
     rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
 
-    distance_clipped = df["Distance_to_Buy_Pct"].clip(lower=0, upper=config.distance_score_cap_pct)
-    distance_score = (1 - distance_clipped / config.distance_score_cap_pct) * config.distance_score_weight
+    strength_clipped = df["Signal_Strength_Pct"].clip(lower=0, upper=config.momentum_burst_strength_cap_pct)
+    strength_score = (strength_clipped / config.momentum_burst_strength_cap_pct) * config.distance_score_weight
 
     total_weight = config.rrr_score_weight + config.distance_score_weight
     rescale = (100 / total_weight) if total_weight > 0 else 0.0
 
-    raw_score = ((rrr_score + distance_score) * rescale).clip(lower=0)
+    raw_score = ((rrr_score + strength_score) * rescale).clip(lower=0)
 
     df["Trade_Score"] = raw_score.where(df["Momentum_Signal"], 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
@@ -311,30 +317,123 @@ def add_squeeze_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = D
     still sum to 100.
 
     Distance_to_Buy_Pct is always 0 for this strategy (Buy_Price IS
-    Last_Close, see squeeze_breakout_levels_from_frame) -- same
-    always-maxed distance-component behavior momentum_burst/week52_high
-    already show; Trade_Score here is effectively driven by RRR alone.
-    Kept as the same two-term formula for consistency with every other
-    strategy's scoring shape.
+    Last_Close, see squeeze_breakout_levels_from_frame) -- it stays in the
+    returned dict for schema compatibility but is NOT used in this
+    formula. In its place, Signal_Strength_Pct (how far today's
+    Day_Gain_Pct clears squeeze_breakout_gain_pct_min -- see
+    squeeze_breakout_levels_from_frame) fills the second term, same
+    clip-then-scale shape as rrr_score (bigger is better, capped at
+    squeeze_breakout_strength_cap_pct) -- see improvements.txt for why:
+    the old Distance_to_Buy_Pct-based formula gave every eligible ticker
+    the exact same fixed score.
 
     Hard gate, not just a scoring input: a ticker whose Squeeze_Signal is
     False (no genuine recent squeeze, or today's gain didn't clear the
     bar, or outside the macro-uptrend/liquidity gates -- see
     compute_squeeze_breakout_levels) gets Trade_Score=0/Ignore, full stop
     -- same "not eligible at all" semantics as every other strategy's
-    hard gate, not merely a low score."""
+    hard gate, not merely a low score.
+
+    Phase 2 (improvements.txt item 42/43): also gates out tickers whose RSI
+    is at/above config.squeeze_breakout_rsi_overbought_threshold, whose
+    Relative_Strength is below config.squeeze_breakout_relative_strength_min,
+    whose Volume_Ratio is below config.squeeze_breakout_volume_ratio_min,
+    whose ADX is below config.squeeze_breakout_adx_min, or whose OBV_Zscore
+    is below config.squeeze_breakout_obv_zscore_min -- all five kept in
+    sync with simulate_squeeze_breakout_signals so live and backtested
+    definitions can't silently disagree, and all five default to a
+    practical no-op (missing/NaN values also never exclude a ticker on
+    their own), same "disabled until explicitly tuned" treatment as
+    breakout's own six filters / adx_trend_entry's five."""
     df = df.copy()
 
     rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
 
-    distance_clipped = df["Distance_to_Buy_Pct"].clip(lower=0, upper=config.distance_score_cap_pct)
-    distance_score = (1 - distance_clipped / config.distance_score_cap_pct) * config.distance_score_weight
+    strength_clipped = df["Signal_Strength_Pct"].clip(lower=0, upper=config.squeeze_breakout_strength_cap_pct)
+    strength_score = (strength_clipped / config.squeeze_breakout_strength_cap_pct) * config.distance_score_weight
 
     total_weight = config.rrr_score_weight + config.distance_score_weight
     rescale = (100 / total_weight) if total_weight > 0 else 0.0
 
-    raw_score = ((rrr_score + distance_score) * rescale).clip(lower=0)
+    raw_score = ((rrr_score + strength_score) * rescale).clip(lower=0)
 
-    df["Trade_Score"] = raw_score.where(df["Squeeze_Signal"], 0.0).round(1)
+    not_overbought = df["RSI"].isna() | (df["RSI"] < config.squeeze_breakout_rsi_overbought_threshold)
+    strong_enough = df["Relative_Strength"].isna() | (df["Relative_Strength"] >= config.squeeze_breakout_relative_strength_min)
+    enough_volume = df["Volume_Ratio"].isna() | (df["Volume_Ratio"] >= config.squeeze_breakout_volume_ratio_min)
+    strong_trend = df["ADX"].isna() | (df["ADX"] >= config.squeeze_breakout_adx_min)
+    obv_ok = df["OBV_Zscore"].isna() | (df["OBV_Zscore"] >= config.squeeze_breakout_obv_zscore_min)
+    eligible = (
+        df["Squeeze_Signal"] & not_overbought & strong_enough & enough_volume & strong_trend & obv_ok
+    )
+
+    df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
+    df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
+    return df
+
+
+def add_adx_trend_entry_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    """ADX-trend-entry counterpart to add_trade_score()/add_breakout_trade_score()/
+    add_pullback_trade_score()/add_breakout_retest_trade_score()/add_week52_trade_score()/
+    add_momentum_burst_trade_score()/add_squeeze_breakout_trade_score() -- blends
+    RRR and Distance_to_Buy_Pct into a 0-100 Trade_Score for rows produced
+    by compute_adx_trend_entry_levels(), reusing signal_for_score()'s
+    thresholds so an adx_trend_entry Trade_Score means the same thing on
+    the same 0-100 scale as every other strategy.
+
+    No RSI component, same reasoning as the other trend-following
+    strategies. rrr_score_weight/distance_score_weight are rescaled to
+    still sum to 100.
+
+    Distance_to_Buy_Pct is always 0 for this strategy (Buy_Price IS
+    Last_Close, see adx_trend_entry_levels_from_frame) -- it stays in the
+    returned dict for schema compatibility but is NOT used in this
+    formula. In its place, Signal_Strength_Pct (how far ADX clears
+    adx_trend_entry_threshold -- see adx_trend_entry_levels_from_frame)
+    fills the second term, same clip-then-scale shape as rrr_score
+    (bigger is better, capped at adx_trend_entry_strength_cap) -- see
+    improvements.txt for why: the old Distance_to_Buy_Pct-based formula
+    gave every eligible ticker the exact same fixed score, discovered
+    during live dashboard testing (a stock's actual trend strength never
+    reached the ranking at all).
+
+    Hard gate, not just a scoring input: a ticker whose ADX_Trend_Signal
+    is False (ADX below threshold, price below the short MA, or outside
+    the macro-uptrend/liquidity gates -- see compute_adx_trend_entry_levels)
+    gets Trade_Score=0/Ignore, full stop -- same "not eligible at all"
+    semantics as every other strategy's hard gate, not merely a low score.
+
+    Phase 2 (improvements.txt item 40): also gates out tickers whose RSI is
+    at/above config.adx_trend_entry_rsi_overbought_threshold, whose
+    Relative_Strength is below config.adx_trend_entry_relative_strength_min,
+    whose Volume_Ratio is below config.adx_trend_entry_volume_ratio_min,
+    whose OBV_Zscore is below config.adx_trend_entry_obv_zscore_min, or
+    whose Squeeze_Zscore is above config.adx_trend_entry_squeeze_zscore_max
+    -- all five kept in sync with simulate_adx_trend_entry_signals so live
+    and backtested definitions can't silently disagree, and all five
+    default to a practical no-op (missing/NaN values also never exclude a
+    ticker on their own), same "disabled until explicitly tuned" treatment
+    as breakout's own six filters (add_breakout_trade_score)."""
+    df = df.copy()
+
+    rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+
+    strength_clipped = df["Signal_Strength_Pct"].clip(lower=0, upper=config.adx_trend_entry_strength_cap)
+    strength_score = (strength_clipped / config.adx_trend_entry_strength_cap) * config.distance_score_weight
+
+    total_weight = config.rrr_score_weight + config.distance_score_weight
+    rescale = (100 / total_weight) if total_weight > 0 else 0.0
+
+    raw_score = ((rrr_score + strength_score) * rescale).clip(lower=0)
+
+    not_overbought = df["RSI"].isna() | (df["RSI"] < config.adx_trend_entry_rsi_overbought_threshold)
+    strong_enough = df["Relative_Strength"].isna() | (df["Relative_Strength"] >= config.adx_trend_entry_relative_strength_min)
+    enough_volume = df["Volume_Ratio"].isna() | (df["Volume_Ratio"] >= config.adx_trend_entry_volume_ratio_min)
+    obv_ok = df["OBV_Zscore"].isna() | (df["OBV_Zscore"] >= config.adx_trend_entry_obv_zscore_min)
+    squeezed = df["Squeeze_Zscore"].isna() | (df["Squeeze_Zscore"] <= config.adx_trend_entry_squeeze_zscore_max)
+    eligible = (
+        df["ADX_Trend_Signal"] & not_overbought & strong_enough & enough_volume & obv_ok & squeezed
+    )
+
+    df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
     return df

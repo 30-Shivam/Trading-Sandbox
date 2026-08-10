@@ -68,6 +68,18 @@ and does NOT require volume confirmation (unlike momentum_burst) -- this
 IS the critical validation gate for that strategy too, checked under BOTH
 entry-fill models from the start (see --squeeze-breakout-entry-fill and
 improvements.txt's validation-pipeline step 7).
+--strategy adx_trend_entry tests the ADX-trend-entry signal (buy while
+ADX -- config.adx_window -- is at/above config.adx_trend_entry_threshold
+AND price is above a short-term MA -- config.adx_trend_entry_ma_window --
+for direction, in a confirmed macro uptrend -- swingtrade.simulate_adx_trend_entry_signals
+/ simulate_random_adx_trend_entry_entries), a continuous STATE like
+week52_high/squeeze_breakout rather than a discrete event, so it can fire
+on many consecutive days a trend persists. Deliberately lean v1, mirroring
+breakout's OWN real history as the template -- v19 didn't launch with its
+six optional "sharpening" filters either, they were added incrementally
+after it was already trusted; the same treatment is a planned follow-up
+for this strategy if this lean version clears the same bar. Checked under
+BOTH entry-fill models from the start too (see --adx-trend-entry-entry-fill).
 
 Applies the same ticker-holdout split as optimize.py (--holdout-frac,
 --holdout-seed) so the comparison also holds up (or doesn't) on tickers
@@ -130,7 +142,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--strategy",
-        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout"],
+        choices=[
+            "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
+            "momentum_burst", "squeeze_breakout", "adx_trend_entry",
+        ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
     )
@@ -149,6 +164,12 @@ def main():
     parser.add_argument(
         "--squeeze-breakout-entry-fill", choices=["limit", "next_open"], default=None,
         help="Override config.squeeze_breakout_entry_fill (--strategy squeeze_breakout only) -- "
+             "same 'limit' vs. 'next_open' choice as --momentum-burst-entry-fill, see that flag's "
+             "help. Default: whatever the tested config already has ('limit').",
+    )
+    parser.add_argument(
+        "--adx-trend-entry-entry-fill", choices=["limit", "next_open"], default=None,
+        help="Override config.adx_trend_entry_entry_fill (--strategy adx_trend_entry only) -- "
              "same 'limit' vs. 'next_open' choice as --momentum-burst-entry-fill, see that flag's "
              "help. Default: whatever the tested config already has ('limit').",
     )
@@ -182,6 +203,9 @@ def main():
     if args.squeeze_breakout_entry_fill is not None:
         config = swingtrade.TradingConfig(**{**config.to_dict(), "squeeze_breakout_entry_fill": args.squeeze_breakout_entry_fill})
         config_label += f" (squeeze_breakout_entry_fill overridden to {args.squeeze_breakout_entry_fill})"
+    if args.adx_trend_entry_entry_fill is not None:
+        config = swingtrade.TradingConfig(**{**config.to_dict(), "adx_trend_entry_entry_fill": args.adx_trend_entry_entry_fill})
+        config_label += f" (adx_trend_entry_entry_fill overridden to {args.adx_trend_entry_entry_fill})"
     print(f"Testing config: {config_label} -- strategy={args.strategy}")
     if args.strategy == "rsi":
         print(f"  rsi_oversold_threshold={config.rsi_oversold_threshold}, "
@@ -214,11 +238,17 @@ def main():
               f"momentum_burst_entry_fill={config.momentum_burst_entry_fill}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
-    else:
+    elif args.strategy == "squeeze_breakout":
         print(f"  squeeze_breakout_zscore_max={config.squeeze_breakout_zscore_max}, "
               f"squeeze_breakout_lookback_days={config.squeeze_breakout_lookback_days}, "
               f"squeeze_breakout_gain_pct_min={config.squeeze_breakout_gain_pct_min}, "
               f"squeeze_breakout_entry_fill={config.squeeze_breakout_entry_fill}, "
+              f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
+              f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
+    else:
+        print(f"  adx_trend_entry_threshold={config.adx_trend_entry_threshold}, "
+              f"adx_trend_entry_ma_window={config.adx_trend_entry_ma_window}, "
+              f"adx_trend_entry_entry_fill={config.adx_trend_entry_entry_fill}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
 
@@ -271,9 +301,12 @@ def main():
     elif args.strategy == "momentum_burst":
         real_fn, random_fn = swingtrade.simulate_momentum_burst_signals, swingtrade.simulate_random_momentum_burst_entries
         real_label = "Momentum_Burst-timed"
-    else:
+    elif args.strategy == "squeeze_breakout":
         real_fn, random_fn = swingtrade.simulate_squeeze_breakout_signals, swingtrade.simulate_random_squeeze_breakout_entries
         real_label = "Squeeze_Breakout-timed"
+    else:
+        real_fn, random_fn = swingtrade.simulate_adx_trend_entry_signals, swingtrade.simulate_random_adx_trend_entry_entries
+        real_label = "ADX_Trend_Entry-timed"
 
     real_trades = []
     random_trades = []

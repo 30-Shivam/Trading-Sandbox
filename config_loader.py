@@ -18,6 +18,7 @@ import swingtrade
 SECONDARY_STRATEGY_VERSIONS = {
     "Breakout Retest": 27,
     "52-Week High": 28,
+    "Squeeze Breakout": 39,
 }
 
 # Fixed candidate System_Config versions for EXPERIMENTAL strategies --
@@ -28,10 +29,14 @@ SECONDARY_STRATEGY_VERSIONS = {
 # allocation path -- see dip_buy_analyzer.py's "Daily Signals" tab and
 # improvements.txt item 34/35. A strategy only moves from here to
 # SECONDARY_STRATEGY_VERSIONS once it's been promoted after passing
-# validation, the same graduation breakout_retest/week52_high went through.
+# validation, the same graduation breakout_retest/week52_high went
+# through -- squeeze_breakout (v39) graduated 2026-08-10 per explicit user
+# request (improvements.txt item 43/44): the only Daily Signals candidate
+# that beat its own random-entry baseline on ALL/TUNE/HOLDOUT, now made
+# capital-eligible with its own secondary dashboard section.
 EXPERIMENTAL_STRATEGY_VERSIONS = {
-    "Momentum Burst": 29,
-    "Squeeze Breakout": 31,
+    "Momentum Burst": 38,
+    "ADX Trend Entry": 40,
 }
 
 
