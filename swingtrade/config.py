@@ -501,6 +501,54 @@ class TradingConfig:
     adx_trend_entry_obv_zscore_min: float = -100.0
     adx_trend_entry_squeeze_zscore_max: float = 100.0
 
+    # Moving-average-crossover strategy (swingtrade/levels.compute_ma_crossover_levels,
+    # swingtrade/backtest.simulate_ma_crossover_signals) -- a genuinely
+    # different mechanical trigger from every strategy tried in this
+    # project so far: fires the day a short-term SMA crosses ABOVE a
+    # long-term SMA (trend CONFIRMATION via relative moving-average
+    # positioning), not a price-level breakout (breakout/breakout_retest/
+    # week52_high), not RSI-based mean-reversion (rsi/pullback), not a
+    # volatility-regime shift (squeeze_breakout), not a raw trend-strength
+    # threshold (adx_trend_entry). Built specifically because every
+    # momentum/strength-family signal tried this session lost to
+    # random-entry timing once properly checked (see improvements.txt item
+    # 47) -- squeeze_breakout, the one strategy that DOES beat random, is
+    # a volatility-regime signal, not a momentum one, which is the whole
+    # motivation for trying something mechanically unrelated here.
+    #
+    # RRR fields set explicitly floor-compliant (2.0/1.0, matching
+    # DEFAULT_CONFIG) from this candidate's very first version -- unlike
+    # breakout's v43, which inherited v19's non-compliant ratio and had to
+    # be fixed after promotion (improvements.txt item 44), this strategy
+    # never gets an RRR that can't clear signal_buy_threshold in the first
+    # place. See optimize.py's RRR_FLOOR for why 1.6 is the hard minimum;
+    # 2.0 here matches the project's own established safe default.
+    ma_crossover_short_window: int = 20   # short SMA lookback (trading days)
+    ma_crossover_long_window: int = 50    # long SMA lookback (trading days) --
+                                           # the cross itself is short crossing
+                                           # ABOVE long, checked against
+                                           # yesterday's relative position so
+                                           # it only fires on the actual
+                                           # crossover day, not every day the
+                                           # short SMA merely stays above
+    ma_crossover_entry_fill: str = "limit"  # same "limit" vs. "next_open"
+                                           # toggle every same-day-trigger
+                                           # strategy gets from the start --
+                                           # see momentum_burst_entry_fill's
+                                           # own comment for the full
+                                           # rationale
+    ma_crossover_strength_cap_pct: float = 2.0  # add_ma_crossover_trade_score's
+                                           # Signal_Strength_Pct (the
+                                           # crossover's own gap, short SMA
+                                           # minus long SMA as a % of price)
+                                           # earns full score points at/above
+                                           # this excess -- replaces
+                                           # Distance_to_Buy_Pct, always 0 for
+                                           # this strategy (Buy_Price IS
+                                           # Last_Close, same convention
+                                           # momentum_burst/squeeze_breakout/
+                                           # adx_trend_entry already use)
+
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,
     # trend-following), "pullback" (simulate_pullback_signals,

@@ -239,6 +239,11 @@ def score_bundle_for_strategy(
                     ticker, df, config, next_earnings_date=next_earnings,
                     top_headline=top_headline, market_df=market_df,
                 )
+            elif config.strategy == "ma_crossover":
+                levels = swingtrade.compute_ma_crossover_levels(
+                    ticker, df, config, next_earnings_date=next_earnings,
+                    top_headline=top_headline, market_df=market_df,
+                )
             else:
                 levels = swingtrade.compute_levels(
                     ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline

@@ -68,11 +68,13 @@ from .levels import (
     breakout_levels_from_frame,
     breakout_retest_levels_from_frame,
     levels_from_rsi_frame,
+    ma_crossover_levels_from_frame,
     market_uptrend_from_frame,
     momentum_burst_levels_from_frame,
     precompute_adx_trend_entry_frame,
     precompute_breakout_frame,
     precompute_breakout_retest_frame,
+    precompute_ma_crossover_frame,
     precompute_momentum_burst_frame,
     precompute_pullback_frame,
     precompute_rsi_frame,
@@ -1818,6 +1820,200 @@ def simulate_random_adx_trend_entry_entries(
     return trades
 
 
+def simulate_ma_crossover_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Moving-average-crossover counterpart to every other simulate_*_signals()
+    this session -- buys the day a short-term SMA crosses ABOVE a
+    long-term SMA, in a confirmed macro uptrend. A genuinely different
+    mechanical trigger from breakout (price-level high), squeeze_breakout
+    (volatility-regime shift), or adx_trend_entry (raw trend-strength
+    threshold) -- see swingtrade/config.py's own comment on this strategy
+    for the full motivation (every momentum/strength-family signal tried
+    this session lost to random-entry timing once properly checked).
+
+    Same no-look-ahead discipline, same entry-timing realism.
+    config.ma_crossover_entry_fill selects the fill model, same toggle
+    every same-day-trigger strategy gets from the start: "limit" (default)
+    is a resting LIMIT order at today's own Close via _find_entry_fill();
+    "next_open" buys the very next session's Open unconditionally via
+    _find_next_open_fill(). Same ATR-multiple stop/target sizing as every
+    other strategy.
+
+    Deliberately lean v1, no optional sharpening filters -- this is a NEW
+    signal with no prior history to inherit filters from, and this
+    project's own established discipline (see improvements.txt) is to
+    validate the base trigger via the random-entry benchmark BEFORE
+    adding any filters, not after.
+
+    `ohlcv` needs the same leading-history buffer as the other strategies
+    -- see LOOKBACK_BUFFER_BARS.
+    """
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_ma_crossover_frame(ohlcv, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = ma_crossover_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        if not levels["MA_Crossover_Signal"]:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.ma_crossover_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "MA_Crossover",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_ma_crossover_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_ma_crossover_signals() -- same
+    idea as every other simulate_random_*_entries() this session, using
+    this strategy's own gates (macro uptrend, liquidity via
+    compute_ma_crossover_levels) and the SAME
+    config.ma_crossover_entry_fill-selected fill mechanic, so it isolates
+    whether MA-crossover TIMING adds value over a random day using the
+    identical Buy_Price formula (that day's own Close) and entry/exit
+    structure. `n_trades` should be simulate_ma_crossover_signals()'s real
+    signal count for this ticker/window, so trade volume is matched.
+    THIS IS THE CRITICAL VALIDATION GATE for this strategy -- see
+    benchmark_random_entry.py. Deliberately checked BEFORE any filter or
+    tuning work, not after."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_ma_crossover_frame(ohlcv, config)
+
+    candidates = []  # (as_of, buy_price, atr) for every day that passed the macro/liquidity gates, crossover or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        try:
+            levels = ma_crossover_levels_from_frame(ticker, frame, as_of, config)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.ma_crossover_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = settle_trade(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_MA_Crossover",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": False,
+            **result,
+        })
+
+    return trades
+
+
 def run_backtest(
     ticker_data: dict[str, pd.DataFrame],
     market_data: pd.DataFrame,
@@ -1889,11 +2085,15 @@ def run_backtest(
             trades = simulate_adx_trend_entry_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
             )
+        elif strategy == "ma_crossover":
+            trades = simulate_ma_crossover_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
-                "'momentum_burst', 'squeeze_breakout', or 'adx_trend_entry')"
+                "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', or 'ma_crossover')"
             )
         all_trades.extend(trades)
     return all_trades

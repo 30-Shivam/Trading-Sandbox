@@ -437,3 +437,49 @@ def add_adx_trend_entry_trade_score(df: pd.DataFrame, config: TradingConfig = DE
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
     return df
+
+
+def add_ma_crossover_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    """Moving-average-crossover counterpart to every other add_*_trade_score()
+    this session -- blends RRR and Distance_to_Buy_Pct into a 0-100
+    Trade_Score for rows produced by compute_ma_crossover_levels(), reusing
+    signal_for_score()'s thresholds so this Trade_Score means the same
+    thing on the same 0-100 scale as every other strategy.
+
+    No RSI component, same reasoning as the other trend-following
+    strategies. rrr_score_weight/distance_score_weight are rescaled to
+    still sum to 100.
+
+    Distance_to_Buy_Pct is always 0 for this strategy (Buy_Price IS
+    Last_Close, see ma_crossover_levels_from_frame) -- it stays in the
+    returned dict for schema compatibility but is NOT used in this
+    formula. In its place, Signal_Strength_Pct (the crossover's own gap,
+    short MA minus long MA as a % of price) fills the second term, same
+    clip-then-scale shape as rrr_score (bigger is better, capped at
+    ma_crossover_strength_cap_pct).
+
+    Hard gate, not just a scoring input: a ticker whose
+    MA_Crossover_Signal is False (no crossover today, or outside the
+    macro-uptrend/liquidity gates -- see compute_ma_crossover_levels)
+    gets Trade_Score=0/Ignore, full stop -- same "not eligible at all"
+    semantics as every other strategy's hard gate, not merely a low
+    score. Deliberately lean v1, no optional sharpening filters yet --
+    mirrors every other strategy's own launch pattern (build lean,
+    validate via the random-entry benchmark FIRST, add filters only if
+    that clears the bar -- see improvements.txt for why this project
+    holds to that order strictly now)."""
+    df = df.copy()
+
+    rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+
+    strength_clipped = df["Signal_Strength_Pct"].clip(lower=0, upper=config.ma_crossover_strength_cap_pct)
+    strength_score = (strength_clipped / config.ma_crossover_strength_cap_pct) * config.distance_score_weight
+
+    total_weight = config.rrr_score_weight + config.distance_score_weight
+    rescale = (100 / total_weight) if total_weight > 0 else 0.0
+
+    raw_score = ((rrr_score + strength_score) * rescale).clip(lower=0)
+
+    df["Trade_Score"] = raw_score.where(df["MA_Crossover_Signal"], 0.0).round(1)
+    df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
+    return df

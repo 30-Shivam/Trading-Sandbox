@@ -15,9 +15,18 @@ import swingtrade
 # dip_buy_analyzer.py (the dashboard's secondary sections) and ingest.py
 # (the headless scheduled scan) so the two can never silently drift apart
 # on which candidate versions are "the" secondary strategies.
+#
+# Breakout Retest (v27) and 52-Week High (v28) removed 2026-08-11 per
+# explicit user request ("remove all the losing strategies off the
+# dashboard") -- both strategies' apparent edges evaporated once forced
+# into any RRR shape that could actually clear the live scoring ceiling
+# (v44/v45, improvements.txt item 42/43): win rates collapsed to
+# statistically indistinguishable from DEFAULT_CONFIG's own unfiltered
+# baseline, regardless of which end of the RRR moved. v27/v28 themselves
+# (at their original, non-fireable RRR) are UNCHANGED in Mongo -- this is
+# purely a dashboard/capital-eligibility removal, not a data deletion; the
+# strategies could be re-added here if a genuine refinement is ever found.
 SECONDARY_STRATEGY_VERSIONS = {
-    "Breakout Retest": 27,
-    "52-Week High": 28,
     "Squeeze Breakout": 39,
 }
 
@@ -34,10 +43,16 @@ SECONDARY_STRATEGY_VERSIONS = {
 # request (improvements.txt item 43/44): the only Daily Signals candidate
 # that beat its own random-entry baseline on ALL/TUNE/HOLDOUT, now made
 # capital-eligible with its own secondary dashboard section.
-EXPERIMENTAL_STRATEGY_VERSIONS = {
-    "Momentum Burst": 38,
-    "ADX Trend Entry": 40,
-}
+#
+# Momentum Burst (v38) and ADX Trend Entry (v40) removed 2026-08-11, same
+# "remove all the losing strategies" request -- both lost to their own
+# random-entry baseline on HOLDOUT in the real 5-year benchmark comparison
+# run 2026-08-09/10 (momentum_burst additionally flat/negative on every
+# cut). Empty for now -- nothing currently in the Daily Signals tab until
+# a genuine replacement is found; the tab itself still renders (just shows
+# nothing experimental), and the underlying strategy code/Mongo candidates
+# are untouched, only removed from this dict.
+EXPERIMENTAL_STRATEGY_VERSIONS = {}
 
 
 def load_active_config() -> tuple[swingtrade.TradingConfig, str]:

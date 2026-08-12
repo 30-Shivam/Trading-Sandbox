@@ -184,7 +184,19 @@ DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for flat position siz
 DEFAULT_RISK_AMOUNT = 25         # default $ sidebar value for risk-based position sizing
 MAX_LLM_CANDIDATES = 10          # cap on the "LLM Agent" tab's per-page-load evaluation
                                   # count -- cost/rate-limit control, see llm_agent.py
-DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash
+DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash --
+                                  # used by the secondary-strategy cash pools (currently
+                                  # just Squeeze Breakout, v39)
+DEFAULT_PRIMARY_CASH = 0         # default $ sidebar value for the PRIMARY (breakout,
+                                  # v43) cash pool specifically -- deliberately 0, not
+                                  # DEFAULT_TOTAL_CASH, since 2026-08-11: breakout (v43)
+                                  # was found to lose to random-entry timing on every
+                                  # variant tested (improvements.txt items 44/47), so
+                                  # nothing should size against it by default. Still
+                                  # shown/scanned (useful context while a replacement is
+                                  # sought) -- just requires deliberately typing in an
+                                  # amount to actually allocate capital, rather than
+                                  # defaulting to $5,000 every session.
 
 SCAN_CACHE_TTL_SEC = 900         # how long a scan result stays cached (15 min)
 
@@ -401,6 +413,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_squeeze_breakout_trade_score(df, config)
     elif config.strategy == "adx_trend_entry":
         return swingtrade.add_adx_trend_entry_trade_score(df, config)
+    elif config.strategy == "ma_crossover":
+        return swingtrade.add_ma_crossover_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -647,9 +661,13 @@ def main():
         total_cash = st.number_input(
             "Total Available Cash ($)",
             min_value=0.0,
-            value=float(DEFAULT_TOTAL_CASH),
+            value=float(DEFAULT_PRIMARY_CASH),
             step=100.0,
             help="Capital pool spent greedily down the Trade_Score-ranked Buy/Strong Buy list; "
+                 "defaults to $0 -- breakout (v43) lost to random-entry timing on every variant "
+                 "tested (2026-08-11, improvements.txt items 44/47), so nothing sizes against it "
+                 "unless you deliberately enter an amount. Type in a value if you want to size a "
+                 "trade anyway. "
                  "trades that no longer fit are marked Insufficient Funds, trades that would "
                  "over-concentrate one sector are marked Sector Limit Reached, and trades that "
                  "would push TOTAL spend past a portfolio-wide cap are marked Portfolio Limit "

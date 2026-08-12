@@ -1632,6 +1632,187 @@ def compute_adx_trend_entry_levels(
     return adx_trend_entry_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def precompute_ma_crossover_frame(
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    market_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Vectorized precompute of every column ma_crossover_levels_from_frame()
+    needs -- built ON TOP of precompute_breakout_frame() wholesale, like
+    every other strategy this session (SMA_TREND/RSI/ATR/AvgVolume/ADX/
+    OBV_Zscore/Squeeze_Zscore all reused for free).
+
+    Adds two new columns (short/long SMA) plus their own .shift(1)
+    counterparts -- MA_Short_Prev/MA_Long_Prev are needed to detect the
+    ACTUAL crossover day (short was <= long yesterday, short > long today),
+    not just "short is currently above long," which would fire on every
+    day the relationship holds rather than only the day it changes."""
+    df = precompute_breakout_frame(df, config, market_df=market_df)
+    df["MA_Short"] = df["Close"].rolling(window=config.ma_crossover_short_window).mean()
+    df["MA_Long"] = df["Close"].rolling(window=config.ma_crossover_long_window).mean()
+    df["MA_Short_Prev"] = df["MA_Short"].shift(1)
+    df["MA_Long_Prev"] = df["MA_Long"].shift(1)
+    return df
+
+
+def ma_crossover_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract compute_ma_crossover_levels()'s dict for one row of a frame
+    already built by precompute_ma_crossover_frame() -- the O(1)-per-row
+    counterpart a walk-forward loop calls once per `as_of`. Business logic
+    is verbatim compute_ma_crossover_levels(), just reading from a
+    precomputed row.
+    """
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, rsi = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"], last_row["RSI"],
+    )
+    ma_short, ma_long, ma_short_prev, ma_long_prev = (
+        last_row["MA_Short"], last_row["MA_Long"], last_row["MA_Short_Prev"], last_row["MA_Long_Prev"],
+    )
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+    if pd.isna(ma_short):
+        raise RuntimeError(f"insufficient history to compute {config.ma_crossover_short_window}-day short MA")
+    if pd.isna(ma_long):
+        raise RuntimeError(f"insufficient history to compute {config.ma_crossover_long_window}-day long MA")
+    if pd.isna(ma_short_prev) or pd.isna(ma_long_prev):
+        raise RuntimeError("insufficient history: no prior day's MA values to detect a crossover")
+    # RSI is informational only, same treatment as every other
+    # trend-following strategy this session.
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+
+    last_close, sma_trend, atr, avg_volume, ma_short, ma_long, ma_short_prev, ma_long_prev = (
+        float(last_close), float(sma_trend), float(atr), float(avg_volume),
+        float(ma_short), float(ma_long), float(ma_short_prev), float(ma_long_prev),
+    )
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    # The actual crossover event: short was AT OR BELOW long yesterday,
+    # short is ABOVE long today -- fires exactly once per cross, not on
+    # every subsequent day the short MA merely stays above the long one.
+    crossover_signal = bool(ma_short_prev <= ma_long_prev and ma_short > ma_long)
+
+    # Buy_Price = today's own Close -- same "already happening, buy near
+    # the current price" convention week52_high/momentum_burst/
+    # squeeze_breakout/adx_trend_entry all use for a same-day trigger, not
+    # a resting level to wait for. Distance_to_Buy_Pct is therefore always
+    # 0 by construction, same schema-compatible-but-uninformative
+    # treatment those strategies already established.
+    buy_price = round(last_close, 2)
+    distance_to_buy_pct = 0.0
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    # How far the crossover's own gap (short MA minus long MA, as a % of
+    # price) clears zero -- replaces Distance_to_Buy_Pct (always 0 here)
+    # as the score's ticker-differentiating term, same pattern
+    # momentum_burst/squeeze_breakout/adx_trend_entry already established.
+    signal_strength_pct = round((ma_short - ma_long) / last_close * 100, 3)
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "MA_Short": round(ma_short, 2),
+        "MA_Long": round(ma_long, 2),
+        "MA_Crossover_Signal": crossover_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": distance_to_buy_pct,
+        "Signal_Strength_Pct": signal_strength_pct,
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_ma_crossover_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+    market_df: pd.DataFrame | None = None,
+) -> dict:
+    """Compute moving-average-crossover levels for one ticker's OHLCV
+    history -- a genuinely different mechanical trigger from every
+    strategy tried in this project: fires the day a short-term SMA
+    crosses ABOVE a long-term SMA (trend CONFIRMATION via relative
+    moving-average positioning), not a price-level breakout, not
+    RSI-based, not a volatility-regime shift, not a raw trend-strength
+    threshold. See swingtrade/config.py's own comment on this strategy
+    for the full motivation.
+
+    MA_Crossover_Signal requires the short SMA to have been AT OR BELOW
+    the long SMA yesterday and ABOVE it today -- a discrete event (like
+    breakout), fires once per cross, not every day the relationship
+    merely holds.
+
+    Buy_Price is today's own Close (see ma_crossover_levels_from_frame's
+    inline comment for why -- same convention as week52_high/
+    momentum_burst/squeeze_breakout/adx_trend_entry).
+
+    The returned dict is schema-compatible with every other strategy's
+    (Buy_Price, Sell_Price, Stop_Loss, RRR, Distance_to_Buy_Pct,
+    Catalyst_Warning, etc. all present) -- only add_ma_crossover_trade_score
+    (swingtrade/scoring.py) differs downstream. RSI is informational only,
+    same treatment as the others.
+
+    Thin wrapper over precompute_ma_crossover_frame()/
+    ma_crossover_levels_from_frame() -- kept as a single-call convenience
+    for the live dashboard, matching every other strategy's same
+    rationale. NOT wired into any dashboard tab yet, NOT called from
+    ingest.py -- this strategy is pending its own random-entry-timing
+    validation (see benchmark_random_entry.py) before being trusted with
+    even experimental/tracked-only status, let alone capital.
+    """
+    frame = precompute_ma_crossover_frame(df, config, market_df=market_df)
+    as_of = frame.index[-1]
+    return ma_crossover_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def review_holding(
     ticker: str,
     df: pd.DataFrame,

@@ -144,7 +144,7 @@ def main():
         "--strategy",
         choices=[
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
-            "momentum_burst", "squeeze_breakout", "adx_trend_entry",
+            "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -170,6 +170,12 @@ def main():
     parser.add_argument(
         "--adx-trend-entry-entry-fill", choices=["limit", "next_open"], default=None,
         help="Override config.adx_trend_entry_entry_fill (--strategy adx_trend_entry only) -- "
+             "same 'limit' vs. 'next_open' choice as --momentum-burst-entry-fill, see that flag's "
+             "help. Default: whatever the tested config already has ('limit').",
+    )
+    parser.add_argument(
+        "--ma-crossover-entry-fill", choices=["limit", "next_open"], default=None,
+        help="Override config.ma_crossover_entry_fill (--strategy ma_crossover only) -- "
              "same 'limit' vs. 'next_open' choice as --momentum-burst-entry-fill, see that flag's "
              "help. Default: whatever the tested config already has ('limit').",
     )
@@ -206,6 +212,9 @@ def main():
     if args.adx_trend_entry_entry_fill is not None:
         config = swingtrade.TradingConfig(**{**config.to_dict(), "adx_trend_entry_entry_fill": args.adx_trend_entry_entry_fill})
         config_label += f" (adx_trend_entry_entry_fill overridden to {args.adx_trend_entry_entry_fill})"
+    if args.ma_crossover_entry_fill is not None:
+        config = swingtrade.TradingConfig(**{**config.to_dict(), "ma_crossover_entry_fill": args.ma_crossover_entry_fill})
+        config_label += f" (ma_crossover_entry_fill overridden to {args.ma_crossover_entry_fill})"
     print(f"Testing config: {config_label} -- strategy={args.strategy}")
     if args.strategy == "rsi":
         print(f"  rsi_oversold_threshold={config.rsi_oversold_threshold}, "
@@ -245,10 +254,16 @@ def main():
               f"squeeze_breakout_entry_fill={config.squeeze_breakout_entry_fill}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
-    else:
+    elif args.strategy == "adx_trend_entry":
         print(f"  adx_trend_entry_threshold={config.adx_trend_entry_threshold}, "
               f"adx_trend_entry_ma_window={config.adx_trend_entry_ma_window}, "
               f"adx_trend_entry_entry_fill={config.adx_trend_entry_entry_fill}, "
+              f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
+              f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
+    else:
+        print(f"  ma_crossover_short_window={config.ma_crossover_short_window}, "
+              f"ma_crossover_long_window={config.ma_crossover_long_window}, "
+              f"ma_crossover_entry_fill={config.ma_crossover_entry_fill}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
 
@@ -304,9 +319,12 @@ def main():
     elif args.strategy == "squeeze_breakout":
         real_fn, random_fn = swingtrade.simulate_squeeze_breakout_signals, swingtrade.simulate_random_squeeze_breakout_entries
         real_label = "Squeeze_Breakout-timed"
-    else:
+    elif args.strategy == "adx_trend_entry":
         real_fn, random_fn = swingtrade.simulate_adx_trend_entry_signals, swingtrade.simulate_random_adx_trend_entry_entries
         real_label = "ADX_Trend_Entry-timed"
+    else:
+        real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
+        real_label = "MA_Crossover-timed"
 
     real_trades = []
     random_trades = []
