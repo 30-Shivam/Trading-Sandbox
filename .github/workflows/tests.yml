@@ -1,0 +1,32 @@
+name: Tests
+
+# Fast regression suite (see tests/) -- runs on every push/PR, separate
+# from daily_run.yml's own once-a-day schedule, specifically so a bad
+# push gets a signal within minutes instead of waiting for (or silently
+# failing) the next scheduled run. Added after two real, silent
+# production bugs (a stale MongoDB index, and ingest.py's scoring
+# dispatch falling out of sync with dip_buy_analyzer.py's copy) went
+# unnoticed for a while -- see improvements.txt. tests/test_strategy_dispatch_parity.py
+# and tests/test_mongo_indexes.py directly target those two bug classes.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest tests/ -v
+        env:
+          # Mongo-touching tests (test_mongo_indexes.py, test_config_candidates_load.py)
+          # are strictly read-only and skip gracefully (not fail) if this
+          # isn't set -- see each test module's own docstring.
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}

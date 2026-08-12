@@ -9,3 +9,4 @@ optuna>=4.9
 google-genai>=1.0
 openai>=1.0
 requests>=2.33
+pytest>=8.0

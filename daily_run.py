@@ -4,12 +4,19 @@ improvements.txt's NOT DONE list) without needing full containerization.
 Runs ingest.py then settle_trades.py back-to-back as SUBPROCESSES (isolated
 from this process, so a crash or sys.exit() in either can't take
 daily_run.py down with it -- their real exit code is all that matters
-here), and reports EVERY run (success or failure) via notifications.py
-(Discord webhook) -- a short status line plus the full combined stdout/
-stderr of both steps as an attached text file, so Discord doubles as your
-observability layer even when this runs somewhere (Task Scheduler) that
-doesn't otherwise capture output anywhere visible. Failures still get the
-same treatment, just with a FAILED status line instead of OK.
+here), and reports EVERY run (success or failure) via notifications.py --
+a short status line plus the full combined stdout/stderr of both steps,
+sent through TWO independent channels: a Discord webhook (if
+DISCORD_WEBHOOK_URL is configured) and GitHub Actions' own step summary
+(always available in CI, zero configuration -- see
+notifications.notify_github_summary()). This two-channel design exists
+because relying on Discord alone had a real, confirmed failure mode: if
+the webhook secret was never set, every run -- including failures -- was
+silently invisible, which is exactly how a real run of consecutive
+scheduled-run failures went unnoticed until a human happened to check
+manually (see improvements.txt). A failed run also prints a GitHub Actions
+`::error::` annotation, which is what feeds GitHub's own optional
+"email me when a scheduled workflow fails" account setting.
 
 Meant to be triggered once a day (weekdays, after US market close) by
 GitHub Actions or Windows Task Scheduler -- see TUTORIAL.md section 9 for
@@ -75,6 +82,18 @@ def main() -> int:
     full_report = f"{output_ingest}\n\n{output_settle}"
     filename = f"daily_run_{started_at:%Y%m%d_%H%M%S}.txt"
     notifications.notify_with_file(message, filename, full_report)
+    # Second, independent channel -- always live in GitHub Actions (no
+    # DISCORD_WEBHOOK_URL required), specifically so a run of real
+    # failures can never go silently unnoticed again the way it did
+    # before this was added (see improvements.txt).
+    notifications.notify_github_summary(message, full_report)
+    if not all_ok:
+        # A recognized GitHub Actions annotation -- renders as a visible
+        # red error on the run page and is what feeds GitHub's own
+        # "notify me when a scheduled workflow fails" account setting
+        # (Settings -> Notifications -> Actions), the free/zero-code path
+        # to an actual proactive alert on top of the two channels above.
+        print(f"::error title=daily_run.py FAILED::{message}")
 
     return 0 if all_ok else 1
 

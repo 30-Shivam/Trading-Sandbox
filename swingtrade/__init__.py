@@ -61,7 +61,7 @@ from .scoring import (
     add_week52_trade_score,
     signal_for_score,
 )
-from .settlement import settle_trade
+from .settlement import settle_trade, settle_trade_with_trailing
 
 __all__ = [
     "TradingConfig",
@@ -91,6 +91,7 @@ __all__ = [
     "allocate_capital",
     "size_by_risk",
     "settle_trade",
+    "settle_trade_with_trailing",
     "Fold",
     "FoldResult",
     "generate_folds",

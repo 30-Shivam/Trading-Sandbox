@@ -1,28 +1,43 @@
 """Notifications for scheduled/unattended runs (daily_run.py, ingest.py).
 
-Discord-webhook-only for now, chosen for being free and requiring no SMTP
-credentials -- just a webhook URL from a Discord server you control (Server
-Settings -> Integrations -> Webhooks -> New Webhook -> Copy Webhook URL).
-Put it in your local `.env` file as DISCORD_WEBHOOK_URL=... (same file
-MONGODB_URI already lives in) -- never paste a webhook URL into a chat or
-commit it, it's a secret capability token, not just an identifier.
+Discord webhook, chosen for being free and requiring no SMTP credentials
+-- just a webhook URL from a Discord server you control (Server Settings
+-> Integrations -> Webhooks -> New Webhook -> Copy Webhook URL). Put it in
+your local `.env` file as DISCORD_WEBHOOK_URL=... (same file MONGODB_URI
+already lives in) -- never paste a webhook URL into a chat or commit it,
+it's a secret capability token, not just an identifier.
 
 Degrades to a no-op (prints a warning, never raises) if no webhook is
 configured or the request fails -- same fallback philosophy this repo
 already uses for MongoDB/Gemini connectivity. A notification failure must
 never be allowed to mask or replace the original failure it's reporting.
+**This degrade-quietly design has a real, confirmed failure mode of its
+own, though**: if DISCORD_WEBHOOK_URL is simply never configured, every
+run -- including failures -- was silently invisible outside whatever the
+raw job log happened to show, which is exactly how a run of real,
+consecutive scheduled-run failures went unnoticed for a while (see
+improvements.txt). notify_github_summary() below exists specifically to
+give failure reporting a channel that works with zero setup, as a second,
+independent line of defense against exactly that gap.
 
-Two layers of notification exist, deliberately separate:
+Three notification paths exist, deliberately separate:
   1. daily_run.py's own run-status report (every run, OK/FAILED + full
-     combined output as an attachment) -- unchanged by the below, always
-     uses the shared DISCORD_WEBHOOK_URL, for overall job health/crash
-     monitoring regardless of results.
+     combined output as an attachment) -- uses the shared
+     DISCORD_WEBHOOK_URL (if configured) AND, on failure specifically,
+     also writes to GitHub's own step summary (see notify_github_summary()
+     -- always available in GitHub Actions, no configuration needed) --
+     for overall job health/crash monitoring regardless of results.
   2. Per-strategy signal notifications (see ingest.py) -- fire ONLY on days
      a strategy finds a real Strong Buy/Buy, optionally routed to that
      strategy's OWN Discord channel via get_strategy_webhook_url() below,
      falling back to the shared DISCORD_WEBHOOK_URL if that specific
      channel isn't configured -- so every strategy posts somewhere from
      day one, and channels can be split apart incrementally.
+  3. notify_github_summary() -- GitHub Actions step-summary writes, used
+     by (1) above. Requires no secret at all (reads the
+     $GITHUB_STEP_SUMMARY path GitHub itself sets during a run), so it's
+     the one channel that's ALWAYS live in CI regardless of what the user
+     has or hasn't configured.
 """
 
 import json
@@ -105,4 +120,41 @@ def notify_with_file(message: str, filename: str, content: str, webhook_url: str
         return True
     except Exception as exc:
         print(f"[notify] Discord webhook post (with attachment) failed: {exc}")
+        return False
+
+
+GITHUB_STEP_SUMMARY_ENV = "GITHUB_STEP_SUMMARY"
+MAX_GITHUB_SUMMARY_CONTENT_CHARS = 60_000  # GitHub's own step-summary cap is 1MB; this is a
+                                            # generous but sane ceiling for a single run's report
+
+
+def notify_github_summary(message: str, content: str) -> bool:
+    """Writes `message` + `content` to GitHub Actions' own step summary
+    (the file path in $GITHUB_STEP_SUMMARY -- a native Actions feature:
+    anything appended there renders as markdown directly on the workflow
+    run's summary page, visible in the Actions tab with zero webhooks or
+    secrets needed). Exists because Discord-based alerting depends on
+    DISCORD_WEBHOOK_URL actually being configured -- if it isn't, every
+    run (including failures) was silently invisible outside whatever the
+    raw job log happened to show, which is exactly what let a run of real
+    failures go unnoticed. This is a second, independent channel that
+    works out of the box in GitHub Actions specifically, no setup required.
+
+    No-op (returns False, never raises) outside GitHub Actions ($GITHUB_STEP_SUMMARY
+    unset -- e.g. a local run) or on any write failure -- same
+    degrade-quietly philosophy as notify()/notify_with_file(). `content`
+    is capped at MAX_GITHUB_SUMMARY_CONTENT_CHARS (GitHub's own hard limit
+    on step summaries is 1MB total across a whole job; this leaves
+    generous headroom rather than risking silently exceeding it)."""
+    summary_path = os.environ.get(GITHUB_STEP_SUMMARY_ENV)
+    if not summary_path:
+        return False
+    try:
+        trimmed = content[:MAX_GITHUB_SUMMARY_CONTENT_CHARS]
+        truncated_note = "\n\n_(truncated)_" if len(content) > MAX_GITHUB_SUMMARY_CONTENT_CHARS else ""
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(f"## {message}\n\n```\n{trimmed}\n```{truncated_note}\n")
+        return True
+    except Exception as exc:
+        print(f"[notify] GitHub step summary write failed: {exc}")
         return False

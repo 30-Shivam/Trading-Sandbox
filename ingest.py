@@ -12,15 +12,26 @@ loop (Phase 5) of data whenever nobody looked. Running this on a schedule
 (cron locally, GitHub Actions' daily_run.yml in production) makes signal
 generation independent of the UI.
 
-Scans THREE strategies every run, same as dip_buy_analyzer.py: the active
-System_Config (config_loader.load_active_config()) plus the two validated
-secondary strategies (config_loader.SECONDARY_STRATEGY_VERSIONS --
-breakout_retest v27, week52_high v28, see improvements.txt items 27/28),
-all against ONE shared fetch of the watchlist's OHLCV data
-(market_data.fetch_ticker_bundle()) so running three strategies costs one
-network round-trip, not three. A secondary strategy that fails to load
-(e.g. its System_Config document is ever deleted) is skipped with a
-warning, not a fatal error -- the primary scan still runs regardless.
+Scans the active System_Config (config_loader.load_active_config()) plus
+every strategy in config_loader.SECONDARY_STRATEGY_VERSIONS (currently
+squeeze_breakout v39 and ma_crossover v49 -- see improvements.txt; this
+dict is the single shared source of truth with dip_buy_analyzer.py, so
+whichever strategies are capital-eligible on the dashboard are exactly
+the ones scanned here too), all against ONE shared fetch of the
+watchlist's OHLCV data (market_data.fetch_ticker_bundle()) so running N
+strategies costs one network round-trip, not N. A secondary strategy that
+fails to load (e.g. its System_Config document is ever deleted) is
+skipped with a warning, not a fatal error -- the primary scan still runs
+regardless.
+
+Also runs the LLM Agent (see llm_agent.py) if GEMINI_API_KEY/GROQ_API_KEY
+are configured -- previously dashboard-only, meaning it only evaluated
+and logged a signal on days someone happened to open the dashboard,
+starving its own prospective validation trust floor (20-30 settled
+trades, 4-6 weeks) of data. Same candidate-selection logic as the
+dashboard's "LLM Agent" tab (tickers any mechanical strategy flagged
+above Ignore, capped at MAX_LLM_CANDIDATES, ranked by Trade_Score) --
+never capital-allocated, same as the dashboard.
 
 Not rewritten in Go (amendment #1) -- see market_data.py's docstring.
 
@@ -42,9 +53,11 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import yfinance as yf
 
 import ai_context
 import config_loader
+import llm_agent
 import market_data
 import notifications
 import storage
@@ -54,13 +67,22 @@ from watchlist import read_tickers
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 DEFAULT_POSITION_BUDGET = 250.0
+MAX_LLM_CANDIDATES = 10  # same cap as dip_buy_analyzer.py's LLM Agent tab -- cost/rate-limit
+                          # control, see llm_agent.py's module docstring
 
 
 def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> pd.DataFrame:
     """Dispatch to the right add_*_trade_score() for config.strategy --
-    covers all five strategies (previously this dispatch only handled
-    "breakout" vs. everything-else here, the same latent gap already fixed
-    in market_data.py/dip_buy_analyzer.py this session)."""
+    covers all eight strategies, kept byte-for-byte in sync with
+    dip_buy_analyzer.py's own _score_for_strategy() (a real, previously
+    undetected gap: this copy was last updated when breakout_retest/
+    week52_high were the only secondaries, and was never extended when
+    squeeze_breakout/ma_crossover were promoted into
+    config_loader.SECONDARY_STRATEGY_VERSIONS -- any day either strategy
+    had a real signal, run_secondary_strategy() would crash with
+    KeyError: 'Oversold_Streak_Days' before ever reaching MongoDB, since
+    the old fallback (swingtrade.add_trade_score(), the RSI scorer) expects
+    columns those strategies' levels dicts don't carry. See improvements.txt."""
     if config.strategy == "breakout":
         return swingtrade.add_breakout_trade_score(df, config)
     elif config.strategy == "pullback":
@@ -69,6 +91,14 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_breakout_retest_trade_score(df, config)
     elif config.strategy == "week52_high":
         return swingtrade.add_week52_trade_score(df, config)
+    elif config.strategy == "momentum_burst":
+        return swingtrade.add_momentum_burst_trade_score(df, config)
+    elif config.strategy == "squeeze_breakout":
+        return swingtrade.add_squeeze_breakout_trade_score(df, config)
+    elif config.strategy == "adx_trend_entry":
+        return swingtrade.add_adx_trend_entry_trade_score(df, config)
+    elif config.strategy == "ma_crossover":
+        return swingtrade.add_ma_crossover_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -145,6 +175,115 @@ def run_secondary_strategy(
             print(f"  {ticker}: {reason}")
 
     return results_df
+
+
+def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade.TradingConfig) -> None:
+    """Headless counterpart to dip_buy_analyzer.py's "LLM Agent" tab --
+    same candidate-selection logic (tickers any mechanical strategy
+    flagged above Ignore today, capped at MAX_LLM_CANDIDATES, ranked by
+    highest Trade_Score), same context-building (fundamentals, headlines,
+    macro snapshot, qualitative snapshot -- see market_data.get_qualitative_snapshot()),
+    same llm_agent.evaluate_ticker() call, same Trade_Signals logging
+    convention (strategy="llm_agent", "Hold" mapped to "Watch" since it
+    isn't in the shared Strong Buy/Buy/Watch/Ignore vocabulary). NEVER
+    capital-allocated -- Shares_To_Buy/Est_Cost are always 0, no cash pool,
+    no allocate_capital() call, same as the dashboard tab.
+
+    Silently does nothing if llm_agent.is_available() is False (no keys
+    configured) -- callers should still call this unconditionally, same
+    "degrade quietly" philosophy as everything else optional in this
+    pipeline."""
+    if not llm_agent.is_available():
+        print("LLM Agent: unavailable (set GEMINI_API_KEY and/or GROQ_API_KEY to enable).")
+        return
+
+    candidates: dict[str, dict] = {}
+    for strategy_label, df in all_signal_frames.items():
+        if df is None or df.empty:
+            continue
+        interesting = df[df["Signal"] != "Ignore"]
+        for _, row in interesting.iterrows():
+            entry = candidates.setdefault(row["Ticker"], {"scores": {}, "row": row})
+            entry["scores"][strategy_label] = float(row["Trade_Score"])
+
+    ranked_candidates = sorted(
+        candidates.items(), key=lambda item: max(item[1]["scores"].values()), reverse=True
+    )[:MAX_LLM_CANDIDATES]
+
+    if not ranked_candidates:
+        print("LLM Agent: no tickers scored above Ignore under any mechanical strategy today -- nothing to evaluate.")
+        return
+
+    print(f"LLM Agent: evaluating {len(ranked_candidates)} ticker(s) flagged by at least one "
+          "mechanical strategy today, highest mechanical Trade_Score first.")
+    llm_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "llm_agent"})
+    macro_snapshot = market_data.get_macro_snapshot()
+
+    llm_rows = []
+    for ticker, entry in ranked_candidates:
+        row = entry["row"]
+        fundamentals = {}
+        try:
+            info = yf.Ticker(ticker).info
+            fundamentals = {k: info[k] for k in ("trailingPE", "marketCap", "sector") if info.get(k) is not None}
+        except Exception:
+            pass
+        context = {
+            "last_close": float(row["Last_Close"]),
+            "rsi": float(row["RSI"]) if pd.notna(row.get("RSI")) else None,
+            "atr": float(row["ATR"]),
+            "mechanical_scores": entry["scores"],
+            "catalyst_warning": bool(row.get("Catalyst_Warning", False)),
+            "next_earnings_date": row.get("Next_Earnings_Date"),
+            "headlines": market_data.get_multi_headlines(ticker),
+            "fundamentals": fundamentals,
+            "macro": macro_snapshot,
+            "qualitative": market_data.get_qualitative_snapshot(ticker),
+        }
+
+        verdict = llm_agent.evaluate_ticker(ticker, context)
+        if verdict is None:
+            print(f"  {ticker}: LLM evaluation failed or returned an unusable response.")
+            continue
+
+        agreement_note = (
+            f", providers agreed ({verdict['secondary_provider']})" if verdict["provider_agreement"] is True
+            else f", providers DISAGREED ({verdict['secondary_provider']} said {verdict['secondary_decision']}, "
+                 "defaulted to the more conservative call)" if verdict["provider_agreement"] is False else ""
+        )
+        print(f"  {ticker}: {verdict['decision']} (confidence {verdict['confidence']:.0f}/100, "
+              f"news_sentiment={verdict['news_sentiment']}{agreement_note}) -- {verdict['rationale']}")
+
+        if verdict["decision"] in ("Buy", "Hold"):
+            atr = context["atr"]
+            buy_price = round(context["last_close"], 2)
+            sell_price = round(buy_price + llm_config.atr_take_profit_multiplier * atr, 2)
+            stop_loss = round(buy_price - llm_config.stop_loss_atr_multiplier * atr, 2)
+            risk = buy_price - stop_loss
+            rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+            llm_rows.append({
+                "Ticker": ticker, "As_Of": row["As_Of"], "Signal": verdict["decision"],
+                "Trade_Score": verdict["confidence"], "Last_Close": context["last_close"],
+                "Buy_Price": buy_price, "Sell_Price": sell_price, "Stop_Loss": stop_loss,
+                "RRR": rrr, "RSI": context["rsi"], "ATR": atr,
+                "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
+                "Next_Earnings_Date": context["next_earnings_date"],
+                "Catalyst_Warning": context["catalyst_warning"], "Top_Headline": "",
+                "Provider_Agreement": verdict["provider_agreement"],
+                "Secondary_Provider": verdict["secondary_provider"],
+                "Secondary_Decision": verdict["secondary_decision"],
+                "Secondary_Confidence": verdict["secondary_confidence"],
+            })
+
+    if llm_rows:
+        llm_df = pd.DataFrame(llm_rows)
+        llm_df["Signal"] = llm_df["Signal"].replace("Hold", "Watch")
+        try:
+            logged = storage.log_trade_signals(llm_df, llm_config.to_dict())
+            print(f"LLM Agent: logged {logged['actionable']} actionable + {logged['research']} "
+                  "research signal(s) to MongoDB (strategy=llm_agent, never capital-allocated).")
+        except Exception as exc:
+            print(f"[WARN] LLM Agent signal logging failed: {exc}", file=sys.stderr)
 
 
 def run(
@@ -224,7 +363,7 @@ def run(
             "config scored Ignore -- see storage/signals.py)."
         )
 
-    all_signal_rows = [results_df]
+    all_signal_frames = {f"Primary ({config.strategy})": results_df}
     for label, version in config_loader.SECONDARY_STRATEGY_VERSIONS.items():
         secondary_config, source = config_loader.load_config_by_version(version)
         if secondary_config is None:
@@ -234,19 +373,21 @@ def run(
             f"{label} (v{version})", secondary_config, bundle, market_df, position_budget, risk_amount,
         )
         if not secondary_df.empty:
-            all_signal_rows.append(secondary_df)
+            all_signal_frames[f"{label} (v{version})"] = secondary_df
 
     if with_ai_context:
         if not ai_context.is_available():
             print("[WARN] --with-ai-context requested but unavailable (set GEMINI_API_KEY).", file=sys.stderr)
         else:
-            for df in all_signal_rows:
+            for df in all_signal_frames.values():
                 signal_rows = df[df["Signal"].isin(["Strong Buy", "Buy"])]
                 for _, row in signal_rows.iterrows():
                     headlines = market_data.get_multi_headlines(row["Ticker"])
                     summary = ai_context.summarize_ticker_context(row["Ticker"], row["Signal"], headlines)
                     if summary:
                         print(f"\n[{row['Ticker']} ({row['Signal']})] {summary}")
+
+    run_llm_agent(all_signal_frames, config)
 
     if skipped:
         print(f"Skipped {len(skipped)} ticker(s) (primary scan -- fetch + scoring failures):")

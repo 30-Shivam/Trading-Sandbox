@@ -939,9 +939,17 @@ def main():
                             if hold_verdict is None:
                                 st.caption("LLM evaluation failed or returned an unusable response for this ticker.")
                             else:
+                                agreement_note = (
+                                    f" ({hold_verdict['secondary_provider']} agreed)"
+                                    if hold_verdict["provider_agreement"] is True
+                                    else f" (providers disagreed -- {hold_verdict['secondary_provider']} said "
+                                         f"{hold_verdict['secondary_decision']}, defaulted to the more "
+                                         "conservative call)"
+                                    if hold_verdict["provider_agreement"] is False else ""
+                                )
                                 st.write(
                                     f"**{hold_verdict['action']}** (confidence: {hold_verdict['confidence']:.0f}/100) "
-                                    f"-- news sentiment: **{hold_verdict['news_sentiment']}**"
+                                    f"-- news sentiment: **{hold_verdict['news_sentiment']}**{agreement_note}"
                                 )
                                 st.write(hold_verdict["rationale"])
 
@@ -1157,9 +1165,15 @@ def main():
                         if verdict is None:
                             st.caption("LLM evaluation failed or returned an unusable response for this ticker.")
                             continue
+                        agreement_note = (
+                            f" ({verdict['secondary_provider']} agreed)" if verdict["provider_agreement"] is True
+                            else f" (providers disagreed -- {verdict['secondary_provider']} said "
+                                 f"{verdict['secondary_decision']}, defaulted to the more conservative call)"
+                            if verdict["provider_agreement"] is False else ""
+                        )
                         st.write(
                             f"**{verdict['decision']}** (confidence: {verdict['confidence']:.0f}/100) -- "
-                            f"news sentiment: **{verdict['news_sentiment']}**"
+                            f"news sentiment: **{verdict['news_sentiment']}**{agreement_note}"
                         )
                         st.write(verdict["rationale"])
 
@@ -1178,6 +1192,10 @@ def main():
                                 "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
                                 "Next_Earnings_Date": context["next_earnings_date"],
                                 "Catalyst_Warning": context["catalyst_warning"], "Top_Headline": "",
+                                "Provider_Agreement": verdict["provider_agreement"],
+                                "Secondary_Provider": verdict["secondary_provider"],
+                                "Secondary_Decision": verdict["secondary_decision"],
+                                "Secondary_Confidence": verdict["secondary_confidence"],
                             })
 
                 if llm_rows and storage_ok:

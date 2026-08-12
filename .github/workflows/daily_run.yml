@@ -38,6 +38,14 @@ jobs:
           DISCORD_WEBHOOK_URL_BREAKOUT: ${{ secrets.DISCORD_WEBHOOK_URL_BREAKOUT }}
           DISCORD_WEBHOOK_URL_BREAKOUT_RETEST: ${{ secrets.DISCORD_WEBHOOK_URL_BREAKOUT_RETEST }}
           DISCORD_WEBHOOK_URL_WEEK52_HIGH: ${{ secrets.DISCORD_WEBHOOK_URL_WEEK52_HIGH }}
+          # LLM Agent (see llm_agent.py, ingest.py's run_llm_agent()) -- either
+          # one alone is enough (Gemini primary, Groq fallback). Without both,
+          # llm_agent.is_available() is False and this step silently no-ops,
+          # same as every other optional secret here -- add these as repo
+          # secrets (Settings -> Secrets and variables -> Actions) to actually
+          # start accumulating real llm_agent Trade_Signals on the schedule.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           # Only needed if your Mongo setup uses a non-default database name
           # (the default is "swingtrade" -- see storage/mongo.py). If you add
           # a MONGODB_DB_NAME repo secret, uncomment the line below to pass

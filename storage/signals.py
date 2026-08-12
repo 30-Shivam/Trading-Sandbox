@@ -58,6 +58,17 @@ Document shape (one per ticker per trading day):
         "shares_to_buy": float, "est_cost": float,
         "next_earnings_date": str | None,
         "catalyst_warning": bool,
+        "provider_agreement": bool | None,  # llm_agent.py rows only -- True if
+                                      # Gemini/Groq agreed, False if they
+                                      # disagreed (the more conservative call
+                                      # won), None if only one provider was
+                                      # available. Always None for every
+                                      # mechanical strategy's rows.
+        "secondary_provider": str | None,  # "gemini" | "groq" | None -- whichever
+                                      # provider's call did NOT become the
+                                      # final decision, llm_agent.py rows only.
+        "secondary_decision": str | None,  # that provider's own decision/action
+        "secondary_confidence": float | None,  # that provider's own confidence
         "config_snapshot": dict,     # swingtrade.TradingConfig.to_dict() at trigger time
         "settled": bool,             # flipped by the Phase 3 settlement job
         "confirmed_filled": bool,    # absent/False until confirm_fill() is called --
@@ -155,6 +166,16 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
         "catalyst_warning": bool(_native(row["Catalyst_Warning"])),
         "oversold_streak_days": _native(row.get("Oversold_Streak_Days")),
         "extended_decline_warning": bool(_native(row.get("Extended_Decline_Warning", False))),
+        # Dual-provider LLM cross-validation (llm_agent.py's _resolve_dual())
+        # -- present only for strategy="llm_agent" rows, None for every
+        # other strategy's rows (these keys simply aren't in `row` for
+        # mechanical signals, and .get() returns None cleanly). Kept here
+        # so a future analysis of settled llm_agent trades can check
+        # whether provider agreement correlated with better outcomes.
+        "provider_agreement": _native(row.get("Provider_Agreement")),
+        "secondary_provider": _native(row.get("Secondary_Provider")),
+        "secondary_decision": _native(row.get("Secondary_Decision")),
+        "secondary_confidence": _native(row.get("Secondary_Confidence")),
         "config_snapshot": config_snapshot,
         "settled": False,
         "updated_at": now,

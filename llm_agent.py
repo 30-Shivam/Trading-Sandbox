@@ -92,6 +92,14 @@ VALID_DECISIONS = ("Buy", "Hold", "Avoid")
 VALID_SENTIMENTS = ("Bullish", "Bearish", "Neutral")
 VALID_HOLD_ACTIONS = ("Hold For More", "Take Profit")
 
+# Lower value = more conservative -- the call _resolve_dual() picks when
+# the two providers disagree. Extends evaluate_holding()'s own existing
+# "default to caution unless the evidence is real and specific" philosophy
+# to also cover cross-provider disagreement, not just a single model's
+# uncertainty.
+CONSERVATIVE_ORDER_DECISION = {"Avoid": 0, "Hold": 1, "Buy": 2}
+CONSERVATIVE_ORDER_HOLD_ACTION = {"Take Profit": 0, "Hold For More": 1}
+
 
 def _gemini_available() -> bool:
     if not os.environ.get("GEMINI_API_KEY"):
@@ -434,6 +442,71 @@ def _call_groq(prompt: str, parse_fn=_parse_response) -> dict | None:
         return None
 
 
+def _resolve_dual(
+    gemini_result: dict | None, groq_result: dict | None, decision_key: str, conservative_order: dict,
+) -> dict | None:
+    """Combine both providers' results into one final result, extended with
+    `provider_agreement`/`secondary_provider`/`secondary_decision`/
+    `secondary_confidence` -- shared by evaluate_ticker()/evaluate_holding()
+    since the combination logic is identical, only `decision_key`
+    ("decision" vs. "action") and `conservative_order` (which value counts
+    as "more cautious" for that schema) differ.
+
+    - Only one provider has a result (the other unconfigured or failed):
+      that result unchanged, `provider_agreement=None`,
+      `secondary_provider=None` -- today's original single-provider
+      behavior, preserved exactly for anyone still running with only one
+      key configured.
+    - Both agree: use it, `confidence` = average of the two (a genuine
+      second confirmation earns a confidence bump/blend, not just a copy
+      of one model's own number), `provider_agreement=True`.
+    - Both disagree: use whichever call is MORE CONSERVATIVE per
+      `conservative_order` (confidence = that provider's own, NOT
+      averaged -- averaging a confident "Buy" with a confident "Avoid"
+      would produce a meaningless middle number), `provider_agreement=False`,
+      rationale explicitly notes both providers' reasoning so a human
+      reviewing later can see exactly what was disputed.
+
+    Every existing key (`decision`/`action`, `confidence`, `rationale`,
+    `news_sentiment`) is preserved on the returned dict -- these four new
+    keys are purely additive, so nothing that only reads the original
+    schema breaks."""
+    if gemini_result is None and groq_result is None:
+        return None
+    if gemini_result is None:
+        return {**groq_result, "provider_agreement": None, "secondary_provider": None,
+                "secondary_decision": None, "secondary_confidence": None}
+    if groq_result is None:
+        return {**gemini_result, "provider_agreement": None, "secondary_provider": None,
+                "secondary_decision": None, "secondary_confidence": None}
+
+    gemini_decision = gemini_result[decision_key]
+    groq_decision = groq_result[decision_key]
+
+    if gemini_decision == groq_decision:
+        combined_confidence = round((gemini_result["confidence"] + groq_result["confidence"]) / 2, 1)
+        return {
+            **gemini_result, "confidence": combined_confidence, "provider_agreement": True,
+            "secondary_provider": "groq", "secondary_decision": groq_decision,
+            "secondary_confidence": groq_result["confidence"],
+        }
+
+    if conservative_order[gemini_decision] <= conservative_order[groq_decision]:
+        primary, secondary, secondary_label = gemini_result, groq_result, "groq"
+    else:
+        primary, secondary, secondary_label = groq_result, gemini_result, "gemini"
+
+    combined_rationale = (
+        f"Providers disagreed -- defaulted to the more conservative call. "
+        f"Gemini: {gemini_result['rationale']} | Groq: {groq_result['rationale']}"
+    )
+    return {
+        **primary, "rationale": combined_rationale, "provider_agreement": False,
+        "secondary_provider": secondary_label, "secondary_decision": secondary[decision_key],
+        "secondary_confidence": secondary["confidence"],
+    }
+
+
 def evaluate_ticker(ticker: str, context: dict) -> dict | None:
     """Ask an LLM for a genuine Buy/Hold/Avoid judgment on `ticker`, given
     `context` -- a dict of whatever's already been computed this page
@@ -453,33 +526,31 @@ def evaluate_ticker(ticker: str, context: dict) -> dict | None:
     for the expected shape; each sub-section is independently optional,
     safely omitted entirely by any caller that doesn't have one).
 
-    Tries Gemini (primary) first; falls back to Groq only if Gemini is
-    unavailable or its call fails/returns an unusable response -- see the
-    module docstring for why Gemini is primary (better published limits
-    AND the already-proven integration, not just picked by default).
+    Calls BOTH Gemini and Groq whenever both are configured/available (not
+    fallback-only) and combines them via _resolve_dual() -- two independent
+    models agreeing is a stronger decision than either alone, and their
+    DISAGREEING is itself useful information, not noise to discard. Falls
+    back to whichever single provider IS available if only one is
+    configured, unchanged from the original single-provider behavior.
 
     Returns {"decision": "Buy"|"Hold"|"Avoid", "confidence": 0-100,
-    "news_sentiment": "Bullish"|"Bearish"|"Neutral", "rationale": str} or
-    None (never raises) if BOTH providers are
-    unavailable/fail -- a flaky or unconfigured LLM call must never break
-    a scan that would otherwise succeed, same philosophy as
-    ai_context.summarize_ticker_context().
+    "news_sentiment": "Bullish"|"Bearish"|"Neutral", "rationale": str,
+    "provider_agreement": bool | None, "secondary_provider": str | None,
+    "secondary_decision": str | None, "secondary_confidence": float | None}
+    or None (never raises) if BOTH providers are unavailable/fail -- a
+    flaky or unconfigured LLM call must never break a scan that would
+    otherwise succeed, same philosophy as ai_context.summarize_ticker_context().
+    See _resolve_dual()'s own docstring for exactly how the four new keys
+    are derived.
 
     This is explicitly a SECOND OPINION, not a blind scan: the prompt
     frames the ticker as one a mechanical system already flagged, and asks
     the model to weigh in given that context plus recent headlines and
     basic fundamentals -- not to discover candidates on its own."""
     prompt, _ = _build_prompt(ticker, context)
-
-    if _gemini_available():
-        result = _call_gemini(prompt)
-        if result is not None:
-            return result
-
-    if _groq_available():
-        return _call_groq(prompt)
-
-    return None
+    gemini_result = _call_gemini(prompt) if _gemini_available() else None
+    groq_result = _call_groq(prompt) if _groq_available() else None
+    return _resolve_dual(gemini_result, groq_result, "decision", CONSERVATIVE_ORDER_DECISION)
 
 
 def evaluate_holding(ticker: str, context: dict) -> dict | None:
@@ -500,23 +571,21 @@ def evaluate_holding(ticker: str, context: dict) -> dict | None:
     real, per _build_holding_prompt()'s own prompt text) -- collapsing
     them into one schema would blur that intentional asymmetry.
 
-    Same provider-fallback logic as evaluate_ticker() (Gemini primary,
-    Groq fallback), same "never raises, None on total failure" contract.
-    NEVER affects position sizing or any capital-allocation path -- purely
+    Same dual-provider behavior as evaluate_ticker() (both called whenever
+    both are available, combined via _resolve_dual() using
+    CONSERVATIVE_ORDER_HOLD_ACTION -- "Take Profit" wins a disagreement,
+    consistent with this function's own single-model default-to-caution
+    framing), same "never raises, None on total failure" contract. NEVER
+    affects position sizing or any capital-allocation path -- purely
     informational, shown alongside (never replacing) the mechanical
     SELL (target hit) recommendation it was called for.
 
     Returns {"action": "Hold For More"|"Take Profit", "confidence": 0-100,
-    "news_sentiment": "Bullish"|"Bearish"|"Neutral", "rationale": str} or
-    None."""
+    "news_sentiment": "Bullish"|"Bearish"|"Neutral", "rationale": str,
+    "provider_agreement": bool | None, "secondary_provider": str | None,
+    "secondary_decision": str | None, "secondary_confidence": float | None}
+    or None. See _resolve_dual()'s own docstring for the four new keys."""
     prompt = _build_holding_prompt(ticker, context)
-
-    if _gemini_available():
-        result = _call_gemini(prompt, parse_fn=_parse_holding_response)
-        if result is not None:
-            return result
-
-    if _groq_available():
-        return _call_groq(prompt, parse_fn=_parse_holding_response)
-
-    return None
+    gemini_result = _call_gemini(prompt, parse_fn=_parse_holding_response) if _gemini_available() else None
+    groq_result = _call_groq(prompt, parse_fn=_parse_holding_response) if _groq_available() else None
+    return _resolve_dual(gemini_result, groq_result, "action", CONSERVATIVE_ORDER_HOLD_ACTION)

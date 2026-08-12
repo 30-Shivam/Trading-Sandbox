@@ -85,7 +85,7 @@ from .levels import (
     week52_levels_from_frame,
 )
 from .scoring import add_trade_score
-from .settlement import settle_trade
+from .settlement import settle_trade, settle_trade_with_trailing
 
 ENTRY_SIGNALS = ("Strong Buy", "Buy")
 LOOKBACK_BUFFER_BARS = 60   # extra trailing bars beyond sma_trend_window, for indicator warmup safety
@@ -196,6 +196,30 @@ def _find_next_open_fill(bars_after_signal: pd.DataFrame):
     if bars_after_signal.empty:
         return None
     return bars_after_signal.index[0], float(bars_after_signal.iloc[0]["Open"])
+
+
+def _settle(
+    buy_price: float, stop_loss: float, sell_price: float, atr: float,
+    bars_since_entry: pd.DataFrame, config: TradingConfig,
+) -> dict:
+    """Shared dispatch used by the 3 currently-active strategies' simulate
+    functions (breakout, squeeze_breakout, ma_crossover -- both real and
+    random-entry counterparts) -- routes to settle_trade_with_trailing()
+    when config.trailing_stop_enabled, else the original settle_trade(),
+    so each call site doesn't need to repeat this branch inline. The 4
+    dormant strategies (pullback/breakout_retest/week52_high/momentum_burst/
+    adx_trend_entry) still call settle_trade() directly, unaffected by
+    trailing_stop_enabled -- see swingtrade/config.py's own field comment
+    for why this is scoped to the active 3 only."""
+    if config.trailing_stop_enabled:
+        return settle_trade_with_trailing(
+            buy_price=buy_price, stop_loss=stop_loss, sell_price=sell_price, atr=atr,
+            bars_since_entry=bars_since_entry, config=config,
+        )
+    return settle_trade(
+        buy_price=buy_price, stop_loss=stop_loss, sell_price=sell_price,
+        bars_since_entry=bars_since_entry, config=config,
+    )
 
 
 def simulate_signals(
@@ -527,10 +551,11 @@ def simulate_breakout_signals(
         sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
 
         bars_since_entry = ohlcv[ohlcv.index > entry_date]
-        result = settle_trade(
+        result = _settle(
             buy_price=entry_price,
             stop_loss=stop_loss,
             sell_price=sell_price,
+            atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
         )
@@ -617,10 +642,11 @@ def simulate_random_breakout_entries(
         sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
 
         bars_since_entry = ohlcv[ohlcv.index > entry_date]
-        result = settle_trade(
+        result = _settle(
             buy_price=entry_price,
             stop_loss=stop_loss,
             sell_price=sell_price,
+            atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
         )
@@ -1502,10 +1528,11 @@ def simulate_squeeze_breakout_signals(
         sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
 
         bars_since_entry = ohlcv[ohlcv.index > entry_date]
-        result = settle_trade(
+        result = _settle(
             buy_price=entry_price,
             stop_loss=stop_loss,
             sell_price=sell_price,
+            atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
         )
@@ -1605,10 +1632,11 @@ def simulate_random_squeeze_breakout_entries(
         sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
 
         bars_since_entry = ohlcv[ohlcv.index > entry_date]
-        result = settle_trade(
+        result = _settle(
             buy_price=entry_price,
             stop_loss=stop_loss,
             sell_price=sell_price,
+            atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
         )
@@ -1928,10 +1956,11 @@ def simulate_ma_crossover_signals(
         sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
 
         bars_since_entry = ohlcv[ohlcv.index > entry_date]
-        result = settle_trade(
+        result = _settle(
             buy_price=entry_price,
             stop_loss=stop_loss,
             sell_price=sell_price,
+            atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
         )
@@ -2029,10 +2058,11 @@ def simulate_random_ma_crossover_entries(
         sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
 
         bars_since_entry = ohlcv[ohlcv.index > entry_date]
-        result = settle_trade(
+        result = _settle(
             buy_price=entry_price,
             stop_loss=stop_loss,
             sell_price=sell_price,
+            atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
         )

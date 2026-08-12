@@ -107,6 +107,22 @@ class TradingConfig:
                                             # US-equity brokers -- override if yours
                                             # charges per-share/flat fees
 
+    # Trailing-stop exit (swingtrade/settlement.settle_trade_with_trailing) --
+    # shared exit infrastructure, not a per-strategy filter, so ONE pair of
+    # fields applies uniformly to whichever strategy's simulate_*_signals()
+    # honors trailing_stop_enabled (currently breakout/squeeze_breakout/
+    # ma_crossover, the 3 active strategies -- see backtest.py). A trade
+    # behaves exactly as it does today (fixed stop_loss/sell_price) until
+    # sell_price is first reached; only then does it start trailing instead
+    # of exiting automatically -- see settle_trade_with_trailing()'s own
+    # docstring for the full design rationale. False (disabled) is the
+    # practical no-op default, same convention as every other optional
+    # exit/filter field in this codebase.
+    trailing_stop_enabled: bool = False
+    trailing_stop_atr_multiplier: float = 1.5  # how far below the running
+                                            # post-target high the trailing
+                                            # stop sits, in ATR multiples
+
     # Entry-fill timing realism (backtest only -- see swingtrade/backtest.py's
     # simulate_signals). A signal can only be known AFTER the day's close it
     # was computed from, so the earliest a real limit order could possibly
