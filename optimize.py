@@ -149,7 +149,7 @@ import pandas as pd
 
 import storage
 import swingtrade
-from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_history
+from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history
 from watchlist import read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -418,6 +418,7 @@ def build_objective(
     multi_objective: bool = False,
     pin_atr_take_profit_multiplier: float | None = None,
     pin_stop_loss_atr_multiplier: float | None = None,
+    earnings_data: dict[str, pd.DatetimeIndex] | None = None,
 ):
     """`multi_objective=False` (default) is byte-for-byte the original
     single-scalar-objective behavior -- unchanged, so every existing script/
@@ -571,8 +572,8 @@ def build_objective(
         })
 
         fold_results = swingtrade.run_walk_forward(
-            ticker_data, market_data, folds, candidate, sector_lookup=sector_lookup, strategy=strategy,
-            max_workers=max_workers,
+            ticker_data, market_data, folds, candidate, earnings_data=earnings_data,
+            sector_lookup=sector_lookup, strategy=strategy, max_workers=max_workers,
         )
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
@@ -696,6 +697,15 @@ def main():
         "--pin-stop-loss-atr-multiplier", type=float, default=None,
         help="Pin stop_loss_atr_multiplier to this exact value -- see --pin-atr-take-profit-multiplier.",
     )
+    parser.add_argument(
+        "--with-catalyst", action="store_true",
+        help="Fetch historical earnings dates (one extra yfinance call per ticker, see "
+             "run_backtest.fetch_earnings_dates) so Catalyst_Warning is computed honestly "
+             "instead of always False during this search. Only affects --strategy "
+             "squeeze_breakout currently (the only strategy here whose simulate_*_signals() "
+             "accepts earnings_dates) -- a no-op flag for every other --strategy value. Off "
+             "by default, same convention as run_backtest.py's own --with-catalyst.",
+    )
     args = parser.parse_args()
 
     if (args.pin_atr_take_profit_multiplier is None) != (args.pin_stop_loss_atr_multiplier is None):
@@ -743,6 +753,16 @@ def main():
         print("[ERROR] No ticker data available.", file=sys.stderr)
         sys.exit(1)
 
+    earnings_data = {}
+    if args.with_catalyst and args.strategy == "squeeze_breakout":
+        print(f"\nFetching historical earnings dates for {len(ticker_data)} ticker(s)...")
+        for i, ticker in enumerate(ticker_data):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_SEC)
+            earnings_data[ticker] = fetch_earnings_dates(ticker)
+        found = sum(1 for d in earnings_data.values() if len(d) > 0)
+        print(f"Got earnings history for {found}/{len(ticker_data)} ticker(s).")
+
     folds = swingtrade.generate_folds(start, end, args.in_sample_days, args.out_sample_days, args.step_days)
     print(f"Generated {len(folds)} walk-forward fold(s).")
     if not folds:
@@ -767,8 +787,8 @@ def main():
 
     baseline_config = swingtrade.TradingConfig(**{**swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": args.strategy})
     baseline_results = swingtrade.run_walk_forward(
-        tune_ticker_data, market_data, folds, baseline_config, sector_lookup=sector_lookup, strategy=args.strategy,
-        max_workers=args.max_workers,
+        tune_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
+        sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
     )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
@@ -792,6 +812,7 @@ def main():
             max_workers=args.max_workers, multi_objective=args.multi_objective,
             pin_atr_take_profit_multiplier=args.pin_atr_take_profit_multiplier,
             pin_stop_loss_atr_multiplier=args.pin_stop_loss_atr_multiplier,
+            earnings_data=earnings_data,
         ),
         n_trials=args.trials, show_progress_bar=False,
     )
@@ -845,14 +866,14 @@ def main():
     holdout_metrics = {}
     if holdout_ticker_data:
         holdout_baseline_results = swingtrade.run_walk_forward(
-            holdout_ticker_data, market_data, folds, baseline_config, sector_lookup=sector_lookup,
-            strategy=args.strategy, max_workers=args.max_workers,
+            holdout_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
+            sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
         )
         holdout_baseline_metrics = summarize_weighted(holdout_baseline_results, end, args.recency_half_life_days)
 
         holdout_candidate_results = swingtrade.run_walk_forward(
-            holdout_ticker_data, market_data, folds, candidate_config, sector_lookup=sector_lookup,
-            strategy=args.strategy, max_workers=args.max_workers,
+            holdout_ticker_data, market_data, folds, candidate_config, earnings_data=earnings_data,
+            sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
         )
         holdout_candidate_metrics = summarize_weighted(holdout_candidate_results, end, args.recency_half_life_days)
 

@@ -344,7 +344,11 @@ def add_squeeze_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = D
     definitions can't silently disagree, and all five default to a
     practical no-op (missing/NaN values also never exclude a ticker on
     their own), same "disabled until explicitly tuned" treatment as
-    breakout's own six filters / adx_trend_entry's five."""
+    breakout's own six filters / adx_trend_entry's five.
+
+    A sixth optional gate, config.squeeze_breakout_earnings_gate (boolean,
+    default False), excludes a ticker whose Catalyst_Warning is True --
+    kept in sync with simulate_squeeze_breakout_signals the same way."""
     df = df.copy()
 
     rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
@@ -362,8 +366,17 @@ def add_squeeze_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = D
     enough_volume = df["Volume_Ratio"].isna() | (df["Volume_Ratio"] >= config.squeeze_breakout_volume_ratio_min)
     strong_trend = df["ADX"].isna() | (df["ADX"] >= config.squeeze_breakout_adx_min)
     obv_ok = df["OBV_Zscore"].isna() | (df["OBV_Zscore"] >= config.squeeze_breakout_obv_zscore_min)
+    # earnings_gate is a boolean on/off toggle, not a numeric threshold (see
+    # config.squeeze_breakout_earnings_gate) -- disabled (default) means no
+    # exclusion at all, same "missing/NaN never excludes on its own"
+    # treatment as every other filter above when a threshold isn't binding.
+    not_near_earnings = (
+        (df["Catalyst_Warning"].isna() | ~df["Catalyst_Warning"])
+        if config.squeeze_breakout_earnings_gate else True
+    )
     eligible = (
         df["Squeeze_Signal"] & not_overbought & strong_enough & enough_volume & strong_trend & obv_ok
+        & not_near_earnings
     )
 
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
@@ -463,11 +476,14 @@ def add_ma_crossover_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAU
     macro-uptrend/liquidity gates -- see compute_ma_crossover_levels)
     gets Trade_Score=0/Ignore, full stop -- same "not eligible at all"
     semantics as every other strategy's hard gate, not merely a low
-    score. Deliberately lean v1, no optional sharpening filters yet --
-    mirrors every other strategy's own launch pattern (build lean,
-    validate via the random-entry benchmark FIRST, add filters only if
-    that clears the bar -- see improvements.txt for why this project
-    holds to that order strictly now)."""
+    score. Launched lean v1 with no optional sharpening filters (mirrors
+    every other strategy's own launch pattern: build lean, validate via
+    the random-entry benchmark FIRST, add filters only if that clears the
+    bar) -- one optional gate since added, config.ma_crossover_earnings_gate
+    (boolean, default False), excludes a ticker whose Catalyst_Warning is
+    True, kept in sync with simulate_ma_crossover_signals. See
+    improvements.txt for the validation result before ever setting it
+    True on a live config."""
     df = df.copy()
 
     rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
@@ -480,6 +496,15 @@ def add_ma_crossover_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAU
 
     raw_score = ((rrr_score + strength_score) * rescale).clip(lower=0)
 
-    df["Trade_Score"] = raw_score.where(df["MA_Crossover_Signal"], 0.0).round(1)
+    # earnings_gate is a boolean on/off toggle, not a numeric threshold (see
+    # config.ma_crossover_earnings_gate) -- disabled (default) means no
+    # exclusion at all.
+    not_near_earnings = (
+        (df["Catalyst_Warning"].isna() | ~df["Catalyst_Warning"])
+        if config.ma_crossover_earnings_gate else True
+    )
+    eligible = df["MA_Crossover_Signal"] & not_near_earnings
+
+    df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
     return df

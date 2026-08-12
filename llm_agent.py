@@ -74,7 +74,15 @@ real cost/complexity on top of a still-unproven signal.
 import json
 import os
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.5-flash"  # gemini-2.5-flash was retired for this
+                                    # account ("no longer available to new
+                                    # users", a permanent 404, not
+                                    # transient) -- see improvements.txt.
+                                    # 3.5-flash is a "thinking" model by
+                                    # default: without thinking_budget=0
+                                    # below, it can spend its entire
+                                    # max_output_tokens budget on internal
+                                    # reasoning and return truncated JSON.
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 MAX_HEADLINES = 5
@@ -82,6 +90,7 @@ MAX_MACRO_HEADLINES = 5
 MAX_OUTPUT_TOKENS = 400
 VALID_DECISIONS = ("Buy", "Hold", "Avoid")
 VALID_SENTIMENTS = ("Bullish", "Bearish", "Neutral")
+VALID_HOLD_ACTIONS = ("Hold For More", "Take Profit")
 
 
 def _gemini_available() -> bool:
@@ -154,6 +163,107 @@ def _parse_response(text: str) -> dict | None:
     }
 
 
+def _parse_holding_response(text: str) -> dict | None:
+    """Parse and validate a model's JSON response for evaluate_holding() --
+    same validation shape as _parse_response(), just a different `action`
+    vocabulary in place of `decision` (VALID_HOLD_ACTIONS instead of
+    VALID_DECISIONS). Kept as a separate function rather than a parameter
+    on _parse_response() since the two schemas are semantically distinct
+    (a fresh-candidate judgment vs. a hold-past-target judgment), not
+    interchangeable. Returns None (never raises) on any malformed shape."""
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    action = data.get("action")
+    if action not in VALID_HOLD_ACTIONS:
+        return None
+
+    confidence = data.get("confidence")
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= confidence <= 100):
+        return None
+
+    rationale = data.get("rationale")
+    if not isinstance(rationale, str) or not rationale.strip():
+        return None
+
+    news_sentiment = data.get("news_sentiment")
+    if news_sentiment not in VALID_SENTIMENTS:
+        return None
+
+    return {
+        "action": action,
+        "confidence": confidence,
+        "rationale": rationale.strip(),
+        "news_sentiment": news_sentiment,
+    }
+
+
+def _build_qualitative_block(ticker: str, qualitative: dict | None) -> str:
+    """Shared by _build_prompt()/_build_holding_prompt() -- renders
+    market_data.get_qualitative_snapshot()'s dict as one labeled paragraph
+    per sub-section that's actually present, cleanly omitting any
+    sub-section that failed to fetch (each degrades independently -- see
+    get_qualitative_snapshot()'s own docstring) rather than showing a
+    misleading "(unavailable)" for the whole block over one partial
+    failure. Returns "" (not an error) if `qualitative` is falsy entirely,
+    same "optional, cleanly omitted" convention as the macro block."""
+    if not qualitative:
+        return ""
+    parts = []
+
+    analyst = qualitative.get("analyst")
+    if analyst:
+        targets = analyst.get("targets") or {}
+        targets_str = ", ".join(f"{k}={v}" for k, v in targets.items()) or "(unavailable)"
+        trend = analyst.get("trend") or []
+        trend_str = " -> ".join(str(t) for t in trend) or "(unavailable)"
+        actions = analyst.get("recent_actions") or []
+        actions_str = "; ".join(actions) if actions else "(none recent)"
+        parts.append(
+            f"Analyst consensus: price targets [{targets_str}], recommendation trend over the "
+            f"last 4 months (oldest to newest) [{trend_str}], recent upgrades/downgrades: {actions_str}."
+        )
+
+    insider = qualitative.get("insider")
+    if insider:
+        parts.append(
+            f"Insider activity: net recent direction={insider.get('net_direction')}, "
+            f"institutional ownership={insider.get('pct_institutions')}, "
+            f"insider ownership={insider.get('pct_insiders')}."
+        )
+
+    short_interest = qualitative.get("short_interest")
+    if short_interest:
+        parts.append(
+            f"Short interest: {short_interest.get('pct_of_float')}% of float, "
+            f"trend vs. prior month={short_interest.get('trend')}."
+        )
+
+    filings = qualitative.get("filings")
+    if filings:
+        filings_str = "; ".join(
+            f"{f.get('type')} ({f.get('date')}){' [material]' if f.get('type') == '8-K' else ''}"
+            for f in filings
+        )
+        parts.append(f"Recent SEC filings: {filings_str}.")
+
+    options = qualitative.get("options")
+    if options and options.get("put_call_volume_ratio") is not None:
+        parts.append(f"Options positioning: nearest-expiry put/call volume ratio={options.get('put_call_volume_ratio')}.")
+
+    if not parts:
+        return ""
+    return f"\n\nAdditional qualitative context for {ticker} (beyond news/fundamentals above):\n" + "\n".join(parts)
+
+
 def _build_prompt(ticker: str, context: dict) -> tuple[str, int]:
     """Build the (identical, provider-agnostic) prompt from `context` --
     see evaluate_ticker()'s docstring for expected keys. Returns
@@ -190,6 +300,8 @@ def _build_prompt(ticker: str, context: dict) -> tuple[str, int]:
             f"(change {macro.get('vix_change_pct')}%), S&P-level macro headlines:\n{macro_headline_block}"
         )
 
+    qualitative_block = _build_qualitative_block(ticker, context.get("qualitative"))
+
     prompt = (
         f"A mechanical price/volume trading system flagged {ticker} today with the "
         f"following technical readings: Last_Close={context.get('last_close')}, "
@@ -199,7 +311,7 @@ def _build_prompt(ticker: str, context: dict) -> tuple[str, int]:
         f"next earnings date={context.get('next_earnings_date')}. "
         f"Basic fundamentals: {fundamentals_block}. "
         f"Its {len(trimmed_headlines)} most recent news headlines:\n{headline_block}"
-        f"{macro_block}\n\n"
+        f"{macro_block}{qualitative_block}\n\n"
         "Given all of this, is this ticker worth a human's attention as a candidate "
         "swing trade right now? Respond ONLY with a JSON object matching exactly this "
         'shape: {"decision": "Buy" | "Hold" | "Avoid", "confidence": <integer 0-100>, '
@@ -214,10 +326,63 @@ def _build_prompt(ticker: str, context: dict) -> tuple[str, int]:
     return prompt, len(trimmed_headlines)
 
 
-def _call_gemini(prompt: str) -> dict | None:
+def _build_holding_prompt(ticker: str, context: dict) -> str:
+    """Build the prompt for evaluate_holding() -- a DIFFERENT question from
+    _build_prompt()'s "is this worth a human's attention" framing. This
+    position already hit its mechanical ATR target (see review_holding());
+    the question here is specifically whether the evidence supports
+    holding past that target for more profit, or taking the win now.
+    Expected `context` keys: `avg_cost`, `last_close`, `sell_price` (the
+    target that was just hit), `unrealized_pnl_pct`, `headlines`
+    (list[str]), and optionally `macro`/`qualitative` -- same shapes as
+    _build_prompt()'s context, reused directly."""
+    headlines = context.get("headlines") or []
+    trimmed_headlines = headlines[:MAX_HEADLINES]
+    headline_block = "\n".join(f"- {h}" for h in trimmed_headlines) if trimmed_headlines else "(none available)"
+
+    macro = context.get("macro")
+    macro_block = ""
+    if macro:
+        macro_headlines = (macro.get("headlines") or [])[:MAX_MACRO_HEADLINES]
+        macro_headline_block = (
+            "\n".join(f"- {h}" for h in macro_headlines) if macro_headlines else "(none available)"
+        )
+        macro_block = (
+            f"\n\nBroader market backdrop today (shared across every position reviewed, distinct "
+            f"from {ticker}'s own news above): VIX={macro.get('vix')} "
+            f"(change {macro.get('vix_change_pct')}%), S&P-level macro headlines:\n{macro_headline_block}"
+        )
+
+    qualitative_block = _build_qualitative_block(ticker, context.get("qualitative"))
+
+    prompt = (
+        f"A trading position in {ticker} was opened at avg_cost={context.get('avg_cost')} and has "
+        f"just reached its predetermined mechanical profit target: Last_Close={context.get('last_close')} "
+        f"has hit or exceeded Sell_Price={context.get('sell_price')} "
+        f"(unrealized P&L: {context.get('unrealized_pnl_pct')}%). The mechanical system's default "
+        f"action is to sell now and lock in the gain. Its {len(trimmed_headlines)} most recent news "
+        f"headlines:\n{headline_block}"
+        f"{macro_block}{qualitative_block}\n\n"
+        "Given all of this, does the evidence support holding this position PAST its target for "
+        "potentially more profit (genuine continuing strength/momentum, positive catalysts ahead), "
+        "or does it make more sense to take the win now (nothing suggests the move continues, or a "
+        "real risk factor argues for locking in the gain)? Respond ONLY with a JSON object matching "
+        'exactly this shape: {"action": "Hold For More" | "Take Profit", "confidence": <integer '
+        '0-100>, "news_sentiment": "Bullish" | "Bearish" | "Neutral", "rationale": "<2-3 '
+        'plain-language sentences explaining the call>"}. This is a genuine second opinion on an '
+        "ALREADY-PROFITABLE position, not a fresh buy/sell screen -- default to \"Take Profit\" "
+        "unless the evidence for continuation is real and specific, not just generically positive."
+    )
+    return prompt
+
+
+def _call_gemini(prompt: str, parse_fn=_parse_response) -> dict | None:
     """PRIMARY provider -- see module docstring for why. Returns None
-    (never raises) on any failure so evaluate_ticker() can fall through to
-    Groq."""
+    (never raises) on any failure so callers can fall through to Groq.
+    `parse_fn` is pluggable (defaults to _parse_response, the
+    evaluate_ticker() schema) so evaluate_holding() can reuse this exact
+    call machinery with _parse_holding_response instead -- only the
+    expected JSON shape differs, not how either provider is called."""
     try:
         from google import genai
         from google.genai import types
@@ -231,22 +396,24 @@ def _call_gemini(prompt: str) -> dict | None:
             config=types.GenerateContentConfig(
                 max_output_tokens=MAX_OUTPUT_TOKENS,
                 response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         text = (response.text or "").strip()
         if not text:
             return None
-        return _parse_response(text)
+        return parse_fn(text)
     except Exception:
         return None
 
 
-def _call_groq(prompt: str) -> dict | None:
+def _call_groq(prompt: str, parse_fn=_parse_response) -> dict | None:
     """FALLBACK provider -- only tried if Gemini is unavailable or its call
     fails/returns an unusable response. Uses the standard `openai` SDK
     pointed at Groq's OpenAI-compatible endpoint (see GROQ_BASE_URL) --
     Groq's own API is a drop-in match for the Chat Completions shape, no
-    Groq-specific SDK needed. Returns None (never raises) on any failure."""
+    Groq-specific SDK needed. Returns None (never raises) on any failure.
+    `parse_fn` pluggable, see _call_gemini()'s docstring."""
     try:
         import openai
     except ImportError:
@@ -262,7 +429,7 @@ def _call_groq(prompt: str) -> dict | None:
         text = (response.choices[0].message.content or "").strip()
         if not text:
             return None
-        return _parse_response(text)
+        return parse_fn(text)
     except Exception:
         return None
 
@@ -280,7 +447,11 @@ def evaluate_ticker(ticker: str, context: dict) -> dict | None:
     {"vix":..., "vix_change_pct":..., "headlines":[...]} -- the SAME
     snapshot shared across every candidate ticker evaluated this run, not
     fetched per-ticker; safely omitted entirely by any caller that doesn't
-    have one).
+    have one), and optionally `qualitative` (dict from
+    market_data.get_qualitative_snapshot(ticker) -- analyst/insider/
+    short-interest/filings/options context, see that function's docstring
+    for the expected shape; each sub-section is independently optional,
+    safely omitted entirely by any caller that doesn't have one).
 
     Tries Gemini (primary) first; falls back to Groq only if Gemini is
     unavailable or its call fails/returns an unusable response -- see the
@@ -307,5 +478,45 @@ def evaluate_ticker(ticker: str, context: dict) -> dict | None:
 
     if _groq_available():
         return _call_groq(prompt)
+
+    return None
+
+
+def evaluate_holding(ticker: str, context: dict) -> dict | None:
+    """Ask an LLM whether an ALREADY-PROFITABLE position (one that just hit
+    its mechanical ATR target -- see swingtrade.review_holding()) is worth
+    holding PAST that target for more profit, or should be sold now as the
+    mechanical system's default recommendation says. `context` expected
+    keys: `avg_cost`, `last_close`, `sell_price`, `unrealized_pnl_pct`,
+    `headlines` (list[str]), and optionally `macro`/`qualitative` (same
+    shapes as evaluate_ticker()'s context -- see that function's
+    docstring).
+
+    Deliberately a SEPARATE function/schema from evaluate_ticker(), not a
+    parameter on it -- "is this worth buying" and "should I keep holding
+    a winner" are different questions with different default framings
+    (evaluate_ticker has no inherent bias either way; this one explicitly
+    defaults to "Take Profit" unless the evidence for continuation is
+    real, per _build_holding_prompt()'s own prompt text) -- collapsing
+    them into one schema would blur that intentional asymmetry.
+
+    Same provider-fallback logic as evaluate_ticker() (Gemini primary,
+    Groq fallback), same "never raises, None on total failure" contract.
+    NEVER affects position sizing or any capital-allocation path -- purely
+    informational, shown alongside (never replacing) the mechanical
+    SELL (target hit) recommendation it was called for.
+
+    Returns {"action": "Hold For More"|"Take Profit", "confidence": 0-100,
+    "news_sentiment": "Bullish"|"Bearish"|"Neutral", "rationale": str} or
+    None."""
+    prompt = _build_holding_prompt(ticker, context)
+
+    if _gemini_available():
+        result = _call_gemini(prompt, parse_fn=_parse_holding_response)
+        if result is not None:
+            return result
+
+    if _groq_available():
+        return _call_groq(prompt, parse_fn=_parse_holding_response)
 
     return None

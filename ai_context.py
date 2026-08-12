@@ -29,7 +29,14 @@ connectivity.
 
 import os
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.5-flash"  # gemini-2.5-flash was retired for this account
+                            # ("no longer available to new users", a
+                            # permanent 404, not transient) -- see
+                            # improvements.txt for the incident. 3.5-flash
+                            # is a "thinking" model by default: without
+                            # thinking_budget=0 below, it can spend its
+                            # entire max_output_tokens budget on internal
+                            # reasoning and return truncated/empty text.
 MAX_HEADLINES = 5
 MAX_OUTPUT_TOKENS = 300
 
@@ -83,7 +90,10 @@ def summarize_ticker_context(ticker: str, signal: str, headlines: list[str]) -> 
         response = client.models.generate_content(
             model=MODEL,
             contents=prompt,
-            config=types.GenerateContentConfig(max_output_tokens=MAX_OUTPUT_TOKENS),
+            config=types.GenerateContentConfig(
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
         )
         text = (response.text or "").strip()
         return text or None

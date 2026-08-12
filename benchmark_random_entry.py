@@ -109,8 +109,13 @@ import pandas as pd
 import storage
 import swingtrade
 from optimize import split_tickers_holdout
-from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_history
+from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history
 from watchlist import read_ticker_sectors, read_tickers
+
+EARNINGS_AWARE_STRATEGIES = ("squeeze_breakout", "ma_crossover")  # the only simulate_*_signals()/
+                                                                   # simulate_random_*_entries() that
+                                                                   # accept earnings_dates -- see
+                                                                   # swingtrade/backtest.py
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -185,6 +190,15 @@ def main():
     parser.add_argument("--seed", type=int, default=1, help="Seed for the random-entry day selection.")
     parser.add_argument("--holdout-frac", type=float, default=0.25, help="Same ticker-holdout split as optimize.py. 0 disables.")
     parser.add_argument("--holdout-seed", type=int, default=42, help="Same holdout seed as optimize.py's real runs.")
+    parser.add_argument(
+        "--with-catalyst", action="store_true",
+        help="Fetch historical earnings dates (one extra yfinance call per ticker, see "
+             "run_backtest.fetch_earnings_dates) so Catalyst_Warning is computed honestly "
+             "instead of always False. Only affects --strategy squeeze_breakout/ma_crossover "
+             "(the only two whose simulate_*_signals()/simulate_random_*_entries() accept "
+             "earnings_dates) -- a no-op flag for every other --strategy value. Off by default, "
+             "same convention as run_backtest.py's own --with-catalyst.",
+    )
     args = parser.parse_args()
 
     end = pd.Timestamp(args.end) if args.end else pd.Timestamp.now().normalize()
@@ -288,6 +302,16 @@ def main():
         print("[ERROR] No ticker data available.", file=sys.stderr)
         sys.exit(1)
 
+    earnings_data = {}
+    if args.with_catalyst and args.strategy in EARNINGS_AWARE_STRATEGIES:
+        print(f"\nFetching historical earnings dates for {len(ticker_data)} ticker(s)...")
+        for i, ticker in enumerate(ticker_data):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_SEC)
+            earnings_data[ticker] = fetch_earnings_dates(ticker)
+        found = sum(1 for d in earnings_data.values() if len(d) > 0)
+        print(f"Got earnings history for {found}/{len(ticker_data)} ticker(s).")
+
     tune_tickers, holdout_tickers = split_tickers_holdout(
         list(ticker_data.keys()), sector_lookup, args.holdout_frac, args.holdout_seed
     )
@@ -331,14 +355,18 @@ def main():
     real_counts = {}
     print(f"\nSimulating REAL {real_label} strategy and matched-count RANDOM-entry baseline "
           f"for {len(ticker_data)} ticker(s), {start.date()}..{end.date()}...")
+    earnings_kwargs = lambda ticker: (  # noqa: E731 -- only squeeze_breakout/ma_crossover accept earnings_dates
+        {"earnings_dates": earnings_data.get(ticker)} if args.strategy in EARNINGS_AWARE_STRATEGIES else {}
+    )
     for i, (ticker, ohlcv) in enumerate(ticker_data.items()):
         sector = sector_lookup.get(ticker, "Unknown")
-        real = real_fn(ticker, ohlcv, market_data, start, end, config, sector=sector)
+        real = real_fn(ticker, ohlcv, market_data, start, end, config, **earnings_kwargs(ticker), sector=sector)
         real_trades.extend(real)
         real_counts[ticker] = len(real)
 
         rand = random_fn(
-            ticker, ohlcv, market_data, start, end, len(real), rng, config, sector=sector
+            ticker, ohlcv, market_data, start, end, len(real), rng, config,
+            **earnings_kwargs(ticker), sector=sector,
         )
         random_trades.extend(rand)
 

@@ -904,6 +904,47 @@ def main():
                 with st.expander(f"Could not review ({len(review_skipped)})"):
                     st.dataframe(pd.DataFrame(review_skipped, columns=["Ticker", "Reason"]), hide_index=True)
 
+            # LLM second opinion specifically for positions that just hit their
+            # mechanical target -- "should I hold past target for more profit?"
+            # (see llm_agent.evaluate_holding()). Purely informational, never
+            # overrides the mechanical Recommendation above or affects sizing.
+            # Only called for "SELL (target hit)" rows, same "second opinion on
+            # something mechanically flagged" philosophy as the LLM Agent tab
+            # (not a blind evaluation of every holding).
+            if not review_df.empty and llm_agent.is_available():
+                hit_target = review_df[review_df["Recommendation"] == "SELL (target hit)"]
+                if not hit_target.empty:
+                    st.caption(
+                        "LLM second opinion below for position(s) that hit their target -- "
+                        "informational only, never overrides the mechanical recommendation above."
+                    )
+                    macro_snapshot = cached_macro_snapshot()
+                    for _, row in hit_target.iterrows():
+                        ticker = row["Ticker"]
+                        holding_context = {
+                            "avg_cost": float(row["Avg_Cost"]),
+                            "last_close": float(row["Last_Close"]),
+                            "sell_price": float(row["Sell_Price"]),
+                            "unrealized_pnl_pct": float(row["Unrealized_PnL_Pct"]),
+                            "headlines": market_data.get_multi_headlines(ticker),
+                            "macro": macro_snapshot,
+                            "qualitative": market_data.get_qualitative_snapshot(ticker),
+                        }
+                        with st.spinner(f"Getting LLM second opinion on {ticker}..."):
+                            hold_verdict = llm_agent.evaluate_holding(ticker, holding_context)
+                        with st.expander(
+                            f"{ticker} -- mechanical: SELL (target hit) | "
+                            f"LLM: {hold_verdict['action'] if hold_verdict else 'unavailable'}"
+                        ):
+                            if hold_verdict is None:
+                                st.caption("LLM evaluation failed or returned an unusable response for this ticker.")
+                            else:
+                                st.write(
+                                    f"**{hold_verdict['action']}** (confidence: {hold_verdict['confidence']:.0f}/100) "
+                                    f"-- news sentiment: **{hold_verdict['news_sentiment']}**"
+                                )
+                                st.write(hold_verdict["rationale"])
+
         st.subheader("Scan Results")
         display_columns = DISPLAY_COLUMNS_BREAKOUT if config.strategy == "breakout" else DISPLAY_COLUMNS_RSI
         st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
@@ -1106,6 +1147,7 @@ def main():
                         "headlines": market_data.get_multi_headlines(ticker),
                         "fundamentals": fundamentals,
                         "macro": macro_snapshot,
+                        "qualitative": market_data.get_qualitative_snapshot(ticker),
                     }
 
                     with st.spinner(f"Evaluating {ticker}..."):

@@ -1399,6 +1399,7 @@ def simulate_squeeze_breakout_signals(
     window_start,
     window_end,
     config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
     sector: str = "Unknown",
 ) -> list[dict]:
     """Squeeze-breakout counterpart to simulate_signals()/simulate_breakout_signals()/
@@ -1434,6 +1435,15 @@ def simulate_squeeze_breakout_signals(
 
     `ohlcv` needs the same leading-history buffer as the other strategies
     -- see LOOKBACK_BUFFER_BARS.
+
+    `earnings_dates` (optional, tz-aware UTC, see run_backtest.fetch_earnings_dates)
+    lets Catalyst_Warning be computed honestly instead of always False --
+    same role as simulate_signals()'s own `earnings_dates` param. Previously
+    this strategy's backtested Catalyst_Warning was ALWAYS False regardless
+    of real earnings proximity (a genuine, previously-undiscovered gap
+    between what the live dashboard shows and what was actually backtested
+    -- see improvements.txt), since nothing threaded earnings data through
+    here before this parameter was added.
     """
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
@@ -1452,8 +1462,9 @@ def simulate_squeeze_breakout_signals(
         if not market_uptrend:
             continue
 
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
         try:
-            levels = squeeze_breakout_levels_from_frame(ticker, frame, as_of, config)
+            levels = squeeze_breakout_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
         except RuntimeError:
             continue
 
@@ -1473,6 +1484,8 @@ def simulate_squeeze_breakout_signals(
             continue
         obv_zscore = levels.get("OBV_Zscore")
         if obv_zscore is not None and obv_zscore < config.squeeze_breakout_obv_zscore_min:
+            continue
+        if config.squeeze_breakout_earnings_gate and levels["Catalyst_Warning"]:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]
@@ -1508,7 +1521,7 @@ def simulate_squeeze_breakout_signals(
             "signal_buy_price": levels["Buy_Price"],
             "stop_loss": stop_loss,
             "sell_price": sell_price,
-            "catalyst_warning": False,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
             **result,
         })
 
@@ -1524,6 +1537,7 @@ def simulate_random_squeeze_breakout_entries(
     n_trades: int,
     rng,
     config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
     sector: str = "Unknown",
 ) -> list[dict]:
     """Random-entry benchmark for simulate_squeeze_breakout_signals() --
@@ -1536,7 +1550,15 @@ def simulate_random_squeeze_breakout_entries(
     entry/exit structure. `n_trades` should be
     simulate_squeeze_breakout_signals()'s real signal count for this
     ticker/window, so trade volume is matched. This is the critical
-    validation gate for this strategy -- see benchmark_random_entry.py."""
+    validation gate for this strategy -- see benchmark_random_entry.py.
+
+    `earnings_dates` (optional, see simulate_squeeze_breakout_signals())
+    only makes each trade dict's own `catalyst_warning` field honest --
+    the candidate pool itself stays UNFILTERED by earnings proximity
+    (deliberately, same as every other optional filter's precedent: this
+    random baseline answers "does TIMING add value," not "does this
+    optional filter help," so it must not apply any of the strategy's own
+    optional gates, earnings included)."""
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
 
@@ -1545,7 +1567,7 @@ def simulate_random_squeeze_breakout_entries(
     market_frame = precompute_rsi_frame(market_ohlcv, config)
     frame = precompute_squeeze_breakout_frame(ohlcv, config)
 
-    candidates = []  # (as_of, buy_price, atr) for every day that passed the macro/liquidity gates, squeeze or not
+    candidates = []  # (as_of, buy_price, atr, catalyst_warning) for every day that passed the macro/liquidity gates, squeeze or not
     for as_of in eligible_dates:
         try:
             market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
@@ -1554,12 +1576,13 @@ def simulate_random_squeeze_breakout_entries(
         if not market_uptrend:
             continue
 
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
         try:
-            levels = squeeze_breakout_levels_from_frame(ticker, frame, as_of, config)
+            levels = squeeze_breakout_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
         except RuntimeError:
             continue
 
-        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"])))
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
 
     if not candidates or n_trades <= 0:
         return []
@@ -1568,7 +1591,7 @@ def simulate_random_squeeze_breakout_entries(
     chosen.sort(key=lambda c: c[0])
 
     trades = []
-    for as_of, buy_price, atr in chosen:
+    for as_of, buy_price, atr, catalyst_warning in chosen:
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.squeeze_breakout_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -1601,7 +1624,7 @@ def simulate_random_squeeze_breakout_entries(
             "signal_buy_price": buy_price,
             "stop_loss": stop_loss,
             "sell_price": sell_price,
-            "catalyst_warning": False,
+            "catalyst_warning": catalyst_warning,
             **result,
         })
 
@@ -1827,6 +1850,7 @@ def simulate_ma_crossover_signals(
     window_start,
     window_end,
     config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
     sector: str = "Unknown",
 ) -> list[dict]:
     """Moving-average-crossover counterpart to every other simulate_*_signals()
@@ -1854,6 +1878,13 @@ def simulate_ma_crossover_signals(
 
     `ohlcv` needs the same leading-history buffer as the other strategies
     -- see LOOKBACK_BUFFER_BARS.
+
+    `earnings_dates` (optional, tz-aware UTC, see run_backtest.fetch_earnings_dates)
+    lets Catalyst_Warning be computed honestly instead of always False --
+    same role as simulate_signals()'s own `earnings_dates` param. Previously
+    this strategy's backtested Catalyst_Warning was ALWAYS False regardless
+    of real earnings proximity (see improvements.txt for the gap this
+    closes, shared with simulate_squeeze_breakout_signals()).
     """
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
@@ -1872,12 +1903,15 @@ def simulate_ma_crossover_signals(
         if not market_uptrend:
             continue
 
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
         try:
-            levels = ma_crossover_levels_from_frame(ticker, frame, as_of, config)
+            levels = ma_crossover_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
         except RuntimeError:
             continue
 
         if not levels["MA_Crossover_Signal"]:
+            continue
+        if config.ma_crossover_earnings_gate and levels["Catalyst_Warning"]:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]
@@ -1913,7 +1947,7 @@ def simulate_ma_crossover_signals(
             "signal_buy_price": levels["Buy_Price"],
             "stop_loss": stop_loss,
             "sell_price": sell_price,
-            "catalyst_warning": False,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
             **result,
         })
 
@@ -1929,6 +1963,7 @@ def simulate_random_ma_crossover_entries(
     n_trades: int,
     rng,
     config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
     sector: str = "Unknown",
 ) -> list[dict]:
     """Random-entry benchmark for simulate_ma_crossover_signals() -- same
@@ -1942,7 +1977,12 @@ def simulate_random_ma_crossover_entries(
     signal count for this ticker/window, so trade volume is matched.
     THIS IS THE CRITICAL VALIDATION GATE for this strategy -- see
     benchmark_random_entry.py. Deliberately checked BEFORE any filter or
-    tuning work, not after."""
+    tuning work, not after.
+
+    `earnings_dates` (optional, see simulate_squeeze_breakout_signals())
+    only makes each trade dict's own `catalyst_warning` field honest --
+    the candidate pool itself stays UNFILTERED by earnings proximity,
+    same reasoning as simulate_random_squeeze_breakout_entries()."""
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
 
@@ -1951,7 +1991,7 @@ def simulate_random_ma_crossover_entries(
     market_frame = precompute_rsi_frame(market_ohlcv, config)
     frame = precompute_ma_crossover_frame(ohlcv, config)
 
-    candidates = []  # (as_of, buy_price, atr) for every day that passed the macro/liquidity gates, crossover or not
+    candidates = []  # (as_of, buy_price, atr, catalyst_warning) for every day that passed the macro/liquidity gates, crossover or not
     for as_of in eligible_dates:
         try:
             market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
@@ -1960,12 +2000,13 @@ def simulate_random_ma_crossover_entries(
         if not market_uptrend:
             continue
 
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
         try:
-            levels = ma_crossover_levels_from_frame(ticker, frame, as_of, config)
+            levels = ma_crossover_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
         except RuntimeError:
             continue
 
-        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"])))
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
 
     if not candidates or n_trades <= 0:
         return []
@@ -1974,7 +2015,7 @@ def simulate_random_ma_crossover_entries(
     chosen.sort(key=lambda c: c[0])
 
     trades = []
-    for as_of, buy_price, atr in chosen:
+    for as_of, buy_price, atr, catalyst_warning in chosen:
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.ma_crossover_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -2007,7 +2048,7 @@ def simulate_random_ma_crossover_entries(
             "signal_buy_price": buy_price,
             "stop_loss": stop_loss,
             "sell_price": sell_price,
-            "catalyst_warning": False,
+            "catalyst_warning": catalyst_warning,
             **result,
         })
 
@@ -2028,8 +2069,9 @@ def run_backtest(
     [window_start, window_end), settling each against its own subsequent
     history. Returns the combined trade list. `earnings_data` (optional,
     ticker -> tz-aware UTC DatetimeIndex, see run_backtest.fetch_earnings_dates)
-    enables honest Catalyst_Warning simulation for the "rsi" strategy;
-    without it every trade has Catalyst_Warning=False. `sector_lookup`
+    enables honest Catalyst_Warning simulation for "rsi", "squeeze_breakout",
+    and "ma_crossover" -- without it, every trade for those three has
+    Catalyst_Warning=False. `sector_lookup`
     (optional, ticker -> sector, see watchlist.read_ticker_sectors) tags
     each trade for compute_cluster_weights(). `strategy` selects which
     signal to simulate -- "rsi" (simulate_signals, mean-reversion,
@@ -2044,9 +2086,11 @@ def run_backtest(
     (simulate_momentum_burst_signals, single-day price+volume burst;
     earnings_data also ignored, same reasoning), "squeeze_breakout"
     (simulate_squeeze_breakout_signals, volatility contraction followed
-    by expansion; earnings_data also ignored, same reasoning), or
-    "adx_trend_entry" (simulate_adx_trend_entry_signals, ADX-confirmed
-    trending state; earnings_data also ignored, same reasoning)."""
+    by expansion -- earnings_data now honored, see improvements.txt for
+    the gap this closes), "adx_trend_entry" (simulate_adx_trend_entry_signals,
+    ADX-confirmed trending state; earnings_data still ignored), or
+    "ma_crossover" (simulate_ma_crossover_signals, short/long SMA crossover
+    -- earnings_data now honored, same as squeeze_breakout)."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     all_trades = []
@@ -2079,7 +2123,8 @@ def run_backtest(
             )
         elif strategy == "squeeze_breakout":
             trades = simulate_squeeze_breakout_signals(
-                ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
             )
         elif strategy == "adx_trend_entry":
             trades = simulate_adx_trend_entry_signals(
@@ -2087,7 +2132,8 @@ def run_backtest(
             )
         elif strategy == "ma_crossover":
             trades = simulate_ma_crossover_signals(
-                ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
             )
         else:
             raise ValueError(

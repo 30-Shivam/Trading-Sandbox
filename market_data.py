@@ -132,6 +132,181 @@ def get_macro_snapshot() -> dict:
     return {"vix": vix, "vix_change_pct": vix_change_pct, "headlines": get_macro_headlines()}
 
 
+def _get_analyst_data(ticker_obj: yf.Ticker) -> dict | None:
+    """Analyst price targets + recommendation trend (last 4 months, oldest
+    to newest -- shows DIRECTION, not just a snapshot) + the most recent 3
+    upgrades/downgrades. Returns None (not raise) on total failure; a
+    partial result (e.g. targets but no trend) is still returned rather
+    than discarded, since each sub-field is independently useful."""
+    try:
+        targets = dict(ticker_obj.analyst_price_targets or {})
+    except Exception:
+        targets = {}
+
+    trend = []
+    try:
+        recs = ticker_obj.recommendations
+        if recs is not None and not recs.empty:
+            for _, row in recs.iloc[::-1].iterrows():  # oldest -> newest
+                trend.append(
+                    f"{row.get('period')}: strongBuy={row.get('strongBuy')}, buy={row.get('buy')}, "
+                    f"hold={row.get('hold')}, sell={row.get('sell')}, strongSell={row.get('strongSell')}"
+                )
+    except Exception:
+        pass
+
+    recent_actions = []
+    try:
+        ud = ticker_obj.upgrades_downgrades
+        if ud is not None and not ud.empty:
+            for _, row in ud.head(3).iterrows():
+                recent_actions.append(
+                    f"{row.get('Firm')}: {row.get('FromGrade')} -> {row.get('ToGrade')} ({row.get('Action')})"
+                )
+    except Exception:
+        pass
+
+    if not targets and not trend and not recent_actions:
+        return None
+    return {"targets": targets, "trend": trend, "recent_actions": recent_actions}
+
+
+def _get_insider_data(ticker_obj: yf.Ticker) -> dict | None:
+    """Net buy/sell $ direction from the 5 most recent insider transactions
+    (classified by keyword in the Text field -- yfinance has no separate
+    clean buy/sell flag), plus static institutional/insider ownership
+    levels from Ticker.info. Non-market transactions (gifts, awards) are
+    excluded from the net-direction calculation but don't block ownership
+    levels from being returned."""
+    net_direction = None
+    try:
+        txns = ticker_obj.insider_transactions
+        if txns is not None and not txns.empty:
+            buy_value, sell_value = 0.0, 0.0
+            for _, row in txns.head(5).iterrows():
+                text = str(row.get("Text") or "").lower()
+                value = row.get("Value")
+                if value is None or pd.isna(value):
+                    continue
+                if "sale" in text:
+                    sell_value += float(value)
+                elif "purchase" in text or "buy" in text:
+                    buy_value += float(value)
+            if buy_value or sell_value:
+                if buy_value > sell_value * 1.5:
+                    net_direction = "Buying"
+                elif sell_value > buy_value * 1.5:
+                    net_direction = "Selling"
+                else:
+                    net_direction = "Mixed"
+    except Exception:
+        pass
+
+    pct_institutions, pct_insiders = None, None
+    try:
+        info = ticker_obj.info or {}
+        pct_institutions = info.get("heldPercentInstitutions")
+        pct_insiders = info.get("heldPercentInsiders")
+    except Exception:
+        pass
+
+    if net_direction is None and pct_institutions is None and pct_insiders is None:
+        return None
+    return {"net_direction": net_direction, "pct_institutions": pct_institutions, "pct_insiders": pct_insiders}
+
+
+def _get_short_interest(ticker_obj: yf.Ticker) -> dict | None:
+    """Short interest as a % of float, plus its direction vs. the prior
+    month -- a positioning signal distinct in character from news/analyst
+    text. >5% relative change is treated as a real move; smaller than that
+    is "Flat" rather than noise being reported as a trend."""
+    try:
+        info = ticker_obj.info or {}
+        pct_of_float = info.get("shortPercentOfFloat")
+        shares_short = info.get("sharesShort")
+        shares_short_prior = info.get("sharesShortPriorMonth")
+    except Exception:
+        return None
+
+    trend = None
+    if shares_short is not None and shares_short_prior:
+        change_pct = (shares_short - shares_short_prior) / shares_short_prior
+        if change_pct > 0.05:
+            trend = "Increasing"
+        elif change_pct < -0.05:
+            trend = "Decreasing"
+        else:
+            trend = "Flat"
+
+    if pct_of_float is None and trend is None:
+        return None
+    return {"pct_of_float": round(pct_of_float * 100, 2) if pct_of_float is not None else None, "trend": trend}
+
+
+def _get_recent_filings(ticker_obj: yf.Ticker, count: int = 3) -> list[dict]:
+    """Most recent `count` SEC filings (type/date/title) -- a primary-source
+    signal distinct from aggregated news headlines. Returns [] on any
+    failure or if no filings are available."""
+    try:
+        filings = ticker_obj.sec_filings or []
+    except Exception:
+        return []
+    out = []
+    for f in filings[:count]:
+        if not isinstance(f, dict):
+            continue
+        out.append({"type": f.get("type"), "date": str(f.get("date")), "title": f.get("title")})
+    return out
+
+
+def _get_options_sentiment(ticker_obj: yf.Ticker) -> dict | None:
+    """Nearest-expiry put/call VOLUME ratio -- a "smart money" positioning
+    proxy unrelated to news/analyst/insider signal. Returns None if no
+    options chain is available (illiquid/no listed options) or on any
+    fetch failure -- not every ticker has one, and that's not an error."""
+    try:
+        expirations = ticker_obj.options
+        if not expirations:
+            return None
+        chain = ticker_obj.option_chain(expirations[0])
+        call_volume = float(chain.calls["volume"].fillna(0).sum())
+        put_volume = float(chain.puts["volume"].fillna(0).sum())
+    except Exception:
+        return None
+    if call_volume <= 0:
+        return None
+    return {"put_call_volume_ratio": round(put_volume / call_volume, 3)}
+
+
+def get_qualitative_snapshot(ticker: str) -> dict:
+    """Richer, qualitative-beyond-numbers context for the LLM Agent tab and
+    Position Review overlay (see llm_agent.py) -- analyst consensus/trend,
+    insider activity, short interest, recent SEC filings, and options
+    positioning. Each of the five sub-sections degrades INDEPENDENTLY to
+    None/[] on its own fetch failure (never raises, and one sub-fetcher
+    failing never blocks the other four) -- same resilience philosophy as
+    get_macro_snapshot(). One `yf.Ticker` object is built once and reused
+    across all five sub-fetchers, same convention get_next_earnings_date()
+    already established (ticker_obj passed in, not a raw ticker string).
+
+    Returns {"analyst": dict|None, "insider": dict|None,
+    "short_interest": dict|None, "filings": list[dict], "options": dict|None}
+    -- see llm_agent._build_qualitative_block() for how each key renders
+    into the LLM prompt."""
+    try:
+        ticker_obj = yf.Ticker(ticker)
+    except Exception:
+        return {"analyst": None, "insider": None, "short_interest": None, "filings": [], "options": None}
+
+    return {
+        "analyst": _get_analyst_data(ticker_obj),
+        "insider": _get_insider_data(ticker_obj),
+        "short_interest": _get_short_interest(ticker_obj),
+        "filings": _get_recent_filings(ticker_obj),
+        "options": _get_options_sentiment(ticker_obj),
+    }
+
+
 def check_market_uptrend(
     config: swingtrade.TradingConfig, index_ticker: str = MARKET_INDEX_TICKER
 ) -> tuple[bool, float, float]:

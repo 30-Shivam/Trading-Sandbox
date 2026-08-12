@@ -26,8 +26,21 @@ import swingtrade
 # (at their original, non-fireable RRR) are UNCHANGED in Mongo -- this is
 # purely a dashboard/capital-eligibility removal, not a data deletion; the
 # strategies could be re-added here if a genuine refinement is ever found.
+#
+# MA Crossover (v49) promoted 2026-08-11 per explicit user request
+# ("promote this to capital eligible as well") -- the first strategy since
+# squeeze_breakout to clear the full validation pipeline: real-vs-random
+# benchmark passed on all 3 cuts at untuned defaults (item 49), its own
+# core-trigger parameters (short/long window) refined with nothing beating
+# baseline (item 50), entry-fill sensitivity checked under both limit/
+# next_open (edge holds direction under both, doesn't reverse like
+# momentum_burst's did), RRR-vs-scoring-ceiling confirmed compatible
+# (clears signal_buy_threshold, same ceiling shape as active v43), and a
+# live smoke test against the real watchlist confirmed clean dispatch +
+# real per-ticker score differentiation. See improvements.txt item 51.
 SECONDARY_STRATEGY_VERSIONS = {
     "Squeeze Breakout": 39,
+    "MA Crossover": 49,
 }
 
 # Fixed candidate System_Config versions for EXPERIMENTAL strategies --

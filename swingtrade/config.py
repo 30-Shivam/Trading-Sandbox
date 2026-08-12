@@ -440,6 +440,20 @@ class TradingConfig:
     squeeze_breakout_volume_ratio_min: float = 0.0
     squeeze_breakout_adx_min: float = 0.0
     squeeze_breakout_obv_zscore_min: float = -100.0
+    squeeze_breakout_earnings_gate: bool = False  # excludes a ticker whose Catalyst_Warning
+                                                   # is True (within earnings_warning_days of
+                                                   # its next earnings report -- reuses that
+                                                   # shared field/machinery directly instead of
+                                                   # inventing a second earnings-window concept).
+                                                   # Boolean, not a numeric threshold, since
+                                                   # unlike the other filters above there's no
+                                                   # meaningful "how much" to tune -- either the
+                                                   # gate applies or it doesn't. False (disabled)
+                                                   # is the practical no-op default, same
+                                                   # treatment as every other optional filter.
+                                                   # See improvements.txt for the validation
+                                                   # result before ever setting this True on a
+                                                   # live config.
 
     # ADX-trend-entry strategy (swingtrade/levels.compute_adx_trend_entry_levels,
     # swingtrade/backtest.simulate_adx_trend_entry_signals) -- a ninth
@@ -548,6 +562,12 @@ class TradingConfig:
                                            # Last_Close, same convention
                                            # momentum_burst/squeeze_breakout/
                                            # adx_trend_entry already use)
+    ma_crossover_earnings_gate: bool = False  # sibling to
+                                           # squeeze_breakout_earnings_gate --
+                                           # see that field's own comment for
+                                           # the full rationale. False
+                                           # (disabled) is the practical no-op
+                                           # default.
 
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,
