@@ -58,6 +58,11 @@ Document shape (one per ticker per trading day):
         "shares_to_buy": float, "est_cost": float,
         "next_earnings_date": str | None,
         "catalyst_warning": bool,
+        "currency": str,        # "USD" | "CAD" -- see market_data.get_ticker_currency().
+                                 # This system does NOT do FX conversion: buy_price/sell_price/
+                                 # stop_loss/est_cost above are always in THIS currency, not
+                                 # necessarily USD. Defaults to "USD" for documents logged
+                                 # before this field existed.
         "provider_agreement": bool | None,  # llm_agent.py rows only -- True if
                                       # Gemini/Groq agreed, False if they
                                       # disagreed (the more conservative call
@@ -164,6 +169,10 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
         "est_cost": _native(row["Est_Cost"]),
         "next_earnings_date": str(next_earnings) if next_earnings is not None else None,
         "catalyst_warning": bool(_native(row["Catalyst_Warning"])),
+        "currency": row.get("Currency", "USD"),  # "USD"/"CAD", see market_data.get_ticker_currency() --
+                                                  # defaults to "USD" for rows logged before this field
+                                                  # existed (this project's entire pre-Canadian-ticker
+                                                  # history), not just missing/None
         "oversold_streak_days": _native(row.get("Oversold_Streak_Days")),
         "extended_decline_warning": bool(_native(row.get("Extended_Decline_Warning", False))),
         # Dual-provider LLM cross-validation (llm_agent.py's _resolve_dual())

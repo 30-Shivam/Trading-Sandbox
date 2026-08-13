@@ -315,6 +315,30 @@ def check_market_uptrend(
     return swingtrade.is_market_uptrend(df, config)
 
 
+CANADIAN_EXCHANGE_SUFFIXES = (".TO", ".V")  # Toronto Stock Exchange / TSX Venture -- yfinance's
+                                             # own suffix convention for Canadian listings
+
+
+def get_ticker_currency(ticker: str) -> str:
+    """The currency a ticker trades in -- "CAD" for a Toronto Stock
+    Exchange/TSX Venture listing (see CANADIAN_EXCHANGE_SUFFIXES), "USD"
+    otherwise. Deliberately a pure, zero-cost suffix check rather than a
+    yfinance Ticker.info call: this project's watchlist only ever mixes
+    these two currencies (via the .TO suffix convention it already uses
+    for CSU.TO and friends), so the ticker symbol itself already carries
+    this information -- no need to pay a network round-trip per ticker,
+    266 times a day, for something the symbol already tells you.
+
+    This system does NOT do FX conversion -- Currency is purely an
+    informational/display field (see the 'Currency' column added to
+    every scan result, and the 'currency' field persisted alongside
+    every logged Trade_Signals document) so a CAD-denominated position's
+    dollar figures are never silently mistaken for USD. A flat-dollar
+    position budget still spends that many units of whatever currency
+    the ticker trades in."""
+    return "CAD" if ticker.endswith(CANADIAN_EXCHANGE_SUFFIXES) else "USD"
+
+
 def fetch_ticker_bundle(
     tickers: tuple[str, ...],
 ) -> tuple[dict[str, dict], pd.DataFrame | None, list[tuple[str, str]]]:
@@ -331,7 +355,9 @@ def fetch_ticker_bundle(
 
     Returns `(bundle, market_df, skipped)`: `bundle` maps ticker ->
     `{"df": OHLCV DataFrame, "next_earnings": Timestamp | None,
-    "top_headline": str}`; `market_df` is SPY's OHLCV (`None` if it failed
+    "top_headline": str, "currency": "USD" | "CAD"}` (see
+    get_ticker_currency() -- a pure suffix check, not a fetch, so it
+    never contributes to `skipped`); `market_df` is SPY's OHLCV (`None` if it failed
     to fetch -- degrades gracefully, same as before: Relative_Strength
     stays `None` rather than failing the whole scan over one extra data
     point); `skipped` is `(ticker, reason)` pairs for tickers whose OWN
@@ -358,7 +384,10 @@ def fetch_ticker_bundle(
             next_earnings = get_next_earnings_date(ticker_obj, now_utc)
             headlines = get_recent_headlines(ticker_obj)
             top_headline = headlines[0] if headlines else ""
-            bundle[ticker] = {"df": df, "next_earnings": next_earnings, "top_headline": top_headline}
+            bundle[ticker] = {
+                "df": df, "next_earnings": next_earnings, "top_headline": top_headline,
+                "currency": get_ticker_currency(ticker),
+            }
         except Exception as exc:
             skipped.append((ticker, str(exc)))
     return bundle, market_df, skipped
@@ -376,8 +405,11 @@ def score_bundle_for_strategy(
     "squeeze_breakout" (compute_squeeze_breakout_levels), or
     "adx_trend_entry" (compute_adx_trend_entry_levels) -- the returned
     dicts are schema-compatible across all eight (see
-    compute_breakout_levels' docstring). Pure computation, no network calls
-    -- safe and cheap to call once per strategy against the SAME bundle."""
+    compute_breakout_levels' docstring), each with an added "Currency"
+    key ("USD"/"CAD", from fetch_ticker_bundle()'s own get_ticker_currency()
+    tag -- informational only, this system does no FX conversion). Pure
+    computation, no network calls -- safe and cheap to call once per
+    strategy against the SAME bundle."""
     results = []
     skipped = []
     for ticker, entry in bundle.items():
@@ -423,6 +455,9 @@ def score_bundle_for_strategy(
                 levels = swingtrade.compute_levels(
                     ticker, df, config, next_earnings_date=next_earnings, top_headline=top_headline
                 )
+            # Purely informational -- see get_ticker_currency()'s own docstring for why this
+            # system deliberately does NOT do FX conversion, just honest labeling.
+            levels["Currency"] = entry.get("currency", "USD")
             results.append(levels)
         except Exception as exc:
             skipped.append((ticker, str(exc)))
@@ -453,7 +488,11 @@ def review_holdings(
     """Fetch current data and evaluate each held ticker (ticker -> avg_cost)
     against the active config's stop/target rules, via
     swingtrade.review_holding. Same rate-limited fetch pattern as
-    scan_tickers."""
+    scan_tickers. Each result dict gains a "Currency" key (see
+    get_ticker_currency()) -- Avg_Cost/Last_Close/Stop_Loss/Sell_Price are
+    always in THIS currency; this system does no FX conversion, so a
+    manually-entered Avg_Cost for a CAD ticker needs to have been entered
+    in CAD to compare correctly against the ticker's own CAD price data."""
     results = []
     skipped = []
     for i, (ticker, avg_cost) in enumerate(holdings.items()):
@@ -461,7 +500,9 @@ def review_holdings(
             time.sleep(REQUEST_DELAY_SEC)
         try:
             df = fetch_data(ticker)
-            results.append(swingtrade.review_holding(ticker, df, avg_cost, config))
+            review = swingtrade.review_holding(ticker, df, avg_cost, config)
+            review["Currency"] = get_ticker_currency(ticker)
+            results.append(review)
         except Exception as exc:
             skipped.append((ticker, str(exc)))
     return results, skipped

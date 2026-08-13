@@ -218,8 +218,14 @@ REVIEW_COLORS = {
     "HOLD": "",
 }
 
+# "Currency" ("USD"/"CAD", see market_data.get_ticker_currency()) sits right
+# after Ticker in both lists -- this system does NOT do FX conversion, so
+# every $-denominated column (Buy_Price, Est_Cost, ...) is in THAT
+# ticker's own currency, not necessarily USD; keeping the flag immediately
+# visible next to the symbol is the whole mitigation for that (see
+# watchlist.txt's own metadata note on the Canadian tickers it carries).
 DISPLAY_COLUMNS_RSI = [
-    "Ticker", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
+    "Ticker", "Currency", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
     "Sell_Price", "RRR", "RSI", "ATR", "Distance_to_Buy_Pct", "Shares_To_Buy",
     "Est_Cost", "Next_Earnings_Date", "Catalyst_Warning", "Oversold_Streak_Days",
     "Extended_Decline_Warning", "Top_Headline", "As_Of",
@@ -230,7 +236,7 @@ DISPLAY_COLUMNS_RSI = [
 # always-empty columns. RSI is still shown (compute_breakout_levels
 # computes it informationally, e.g. to see how extended a breakout is).
 DISPLAY_COLUMNS_BREAKOUT = [
-    "Ticker", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
+    "Ticker", "Currency", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
     "Sell_Price", "RRR", "RSI", "ATR", "Distance_to_Buy_Pct", "Shares_To_Buy",
     "Est_Cost", "Next_Earnings_Date", "Catalyst_Warning", "Top_Headline", "As_Of",
 ]
@@ -1192,6 +1198,7 @@ def main():
                                 "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
                                 "Next_Earnings_Date": context["next_earnings_date"],
                                 "Catalyst_Warning": context["catalyst_warning"], "Top_Headline": "",
+                                "Currency": row.get("Currency", "USD"),
                                 "Provider_Agreement": verdict["provider_agreement"],
                                 "Secondary_Provider": verdict["secondary_provider"],
                                 "Secondary_Decision": verdict["secondary_decision"],

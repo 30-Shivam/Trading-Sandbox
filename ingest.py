@@ -269,6 +269,7 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
                 "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
                 "Next_Earnings_Date": context["next_earnings_date"],
                 "Catalyst_Warning": context["catalyst_warning"], "Top_Headline": "",
+                "Currency": row.get("Currency", "USD"),
                 "Provider_Agreement": verdict["provider_agreement"],
                 "Secondary_Provider": verdict["secondary_provider"],
                 "Secondary_Decision": verdict["secondary_decision"],

@@ -95,6 +95,9 @@
     { "ticker": "TRV", "sector": "Financials", "strategy": "Core/Insurance" },
     { "ticker": "ALL", "sector": "Financials", "strategy": "Core/Insurance" },
     { "ticker": "AJG", "sector": "Financials", "strategy": "Core/Insurance" },
+    { "ticker": "RY.TO", "sector": "Financials", "strategy": "Core/Banking (TSX, CAD)" },
+    { "ticker": "TD.TO", "sector": "Financials", "strategy": "Core/Banking (TSX, CAD)" },
+    { "ticker": "BAM.TO", "sector": "Financials", "strategy": "Growth/Asset Management (TSX, CAD)" },
 
     { "ticker": "CSU.TO", "sector": "Technology", "strategy": "Growth/Software (TSX, CAD)" },
 
@@ -142,6 +145,8 @@
     { "ticker": "EL", "sector": "Consumer Staples", "strategy": "Growth/Value" },
     { "ticker": "KR", "sector": "Consumer Staples", "strategy": "Value/Retail" },
     { "ticker": "SYY", "sector": "Consumer Staples", "strategy": "Core/Distribution" },
+    { "ticker": "ATD.TO", "sector": "Consumer Staples", "strategy": "Growth/Retail (TSX, CAD)" },
+    { "ticker": "L.TO", "sector": "Consumer Staples", "strategy": "Core/Retail (TSX, CAD)" },
 
     { "ticker": "XOM", "sector": "Energy", "strategy": "Value/Cyclical" },
     { "ticker": "CVX", "sector": "Energy", "strategy": "Value/Cyclical" },
@@ -156,6 +161,9 @@
     { "ticker": "KMI", "sector": "Energy", "strategy": "Core/Midstream" },
     { "ticker": "HAL", "sector": "Energy", "strategy": "Value/Cyclical" },
     { "ticker": "DVN", "sector": "Energy", "strategy": "High Beta/Cyclical" },
+    { "ticker": "ENB.TO", "sector": "Energy", "strategy": "Core/Midstream (TSX, CAD)" },
+    { "ticker": "CNQ.TO", "sector": "Energy", "strategy": "Core/Cyclical (TSX, CAD)" },
+    { "ticker": "SU.TO", "sector": "Energy", "strategy": "Core/Cyclical (TSX, CAD)" },
 
     { "ticker": "CAT", "sector": "Industrials", "strategy": "Cyclical/Industrial" },
     { "ticker": "HON", "sector": "Industrials", "strategy": "Core/Industrial" },
@@ -181,6 +189,8 @@
     { "ticker": "DOV", "sector": "Industrials", "strategy": "Core/Industrial" },
     { "ticker": "XYL", "sector": "Industrials", "strategy": "Growth/Industrial" },
     { "ticker": "CMI", "sector": "Industrials", "strategy": "Cyclical/Industrial" },
+    { "ticker": "CNR.TO", "sector": "Industrials", "strategy": "Core/Rail (TSX, CAD)" },
+    { "ticker": "CP.TO", "sector": "Industrials", "strategy": "Core/Rail (TSX, CAD)" },
 
     { "ticker": "HD", "sector": "Consumer Discretionary", "strategy": "Core/Retail" },
     { "ticker": "MCD", "sector": "Consumer Discretionary", "strategy": "Core/Stable" },
@@ -220,6 +230,7 @@
     { "ticker": "MTCH", "sector": "Communication Services", "strategy": "Value/SaaS" },
     { "ticker": "PINS", "sector": "Communication Services", "strategy": "High Beta/Social" },
     { "ticker": "SNAP", "sector": "Communication Services", "strategy": "High Beta/Social" },
+    { "ticker": "BCE.TO", "sector": "Communication Services", "strategy": "Core/Telecom (TSX, CAD)" },
 
     { "ticker": "NEE", "sector": "Utilities", "strategy": "Growth/Utility" },
     { "ticker": "DUK", "sector": "Utilities", "strategy": "Core/Utility" },
@@ -260,13 +271,15 @@
     { "ticker": "PPG", "sector": "Materials", "strategy": "Core/Industrial" },
     { "ticker": "ALB", "sector": "Materials", "strategy": "High Beta/Materials" },
     { "ticker": "VMC", "sector": "Materials", "strategy": "Cyclical/Materials" },
+    { "ticker": "NTR.TO", "sector": "Materials", "strategy": "Core/Agriculture (TSX, CAD)" },
+    { "ticker": "ABX.TO", "sector": "Materials", "strategy": "Value/Gold (TSX, CAD)" },
 
     { "ticker": "MDB", "sector": "Technology", "strategy": "Growth/SaaS" },
     { "ticker": "TEAM", "sector": "Technology", "strategy": "Growth/SaaS" },
     { "ticker": "WDAY", "sector": "Technology", "strategy": "Growth/SaaS" }
   ],
   "metadata": {
-    "last_updated": "2026-08-04",
-    "description": "Consolidated Master Watchlist: Technology/Financials core plus Healthcare, Consumer Staples, Energy, Industrials, Consumer Discretionary, Communication Services, Utilities, Real Estate, and Materials for sector diversification (supports the max_sector_allocation_pct concentration cap). Includes one Canadian (TSX, CAD) ticker: CSU.TO. Expanded 2026-08-03 from 100 to 152 tickers, weighted toward previously-thin sectors. Expanded again 2026-08-04 from 152 to 253 tickers, this time broadly across every sector (including Technology, deliberately minimized in the prior expansion), specifically to increase the daily odds that v19's selective breakout signal (a genuine N-day closing high, several stacked filters) finds a real opportunity somewhere -- addresses a real practical pain point (long stretches with zero signals, even Watch tier) without loosening the validated strategy's own thresholds at all."
+    "last_updated": "2026-08-12",
+    "description": "Consolidated Master Watchlist: Technology/Financials core plus Healthcare, Consumer Staples, Energy, Industrials, Consumer Discretionary, Communication Services, Utilities, Real Estate, and Materials for sector diversification (supports the max_sector_allocation_pct concentration cap). Expanded 2026-08-03 from 100 to 152 tickers, weighted toward previously-thin sectors. Expanded again 2026-08-04 from 152 to 253 tickers, this time broadly across every sector (including Technology, deliberately minimized in the prior expansion), specifically to increase the daily odds that v19's selective breakout signal (a genuine N-day closing high, several stacked filters) finds a real opportunity somewhere -- addresses a real practical pain point (long stretches with zero signals, even Watch tier) without loosening the validated strategy's own thresholds at all. Expanded again 2026-08-12 from 253 to 266 tickers, adding 13 Canadian (TSX, CAD) large-caps across Financials/Energy/Industrials/Materials/Consumer Staples/Communication Services (RY.TO, TD.TO, BAM.TO, ENB.TO, CNQ.TO, SU.TO, CNR.TO, CP.TO, ATD.TO, L.TO, BCE.TO, NTR.TO, ABX.TO) -- joins the pre-existing CSU.TO. All CAD-denominated tickers are tagged '(TSX, CAD)' in their strategy label as a visual flag; see market_data.get_ticker_currency()/the 'Currency' column added to every scan for the machine-readable version -- this system does NOT do FX conversion, so a flat-dollar position budget spends 250 of whatever currency the ticker trades in, not USD-equivalent (see improvements.txt)."
   }
 }
