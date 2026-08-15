@@ -1231,22 +1231,29 @@ def main():
             "settled trades AND at least 4-6 weeks since the first one -- roughly "
             "double optimize.py's own 15-trade trust floor, since prospective, "
             "LLM-noise data deserves a higher bar than a large backtested sample, "
-            "not a lower one."
+            "not a lower one. This tab only ever evaluates the default \"balanced\" "
+            "prompt; the two challenger variants below run headlessly via "
+            "ingest.py's daily automation (see llm_agent.PROMPT_VARIANTS) so their "
+            "progress can be compared here once real data exists."
         )
         if storage_ok:
             try:
                 db = storage.get_db()
-                outcomes = list(db["Trade_Outcomes"].find({"strategy": "llm_agent"}))
-                if not outcomes:
-                    st.caption("0 settled llm_agent trades yet.")
-                else:
-                    first_exit_date = min(o["exit_date"] for o in outcomes)
-                    days_elapsed = (pd.Timestamp.now().normalize() - pd.Timestamp(first_exit_date)).days
-                    win_count = sum(1 for o in outcomes if o["status"] == "WIN")
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Settled llm_agent trades", len(outcomes))
-                    col2.metric("Days since first settled trade", days_elapsed)
-                    col3.metric("Win rate so far", f"{win_count / len(outcomes) * 100:.1f}%")
+                variant_cols = st.columns(len(llm_agent.PROMPT_VARIANTS))
+                for variant, col in zip(llm_agent.PROMPT_VARIANTS, variant_cols):
+                    strategy_name = llm_agent.variant_strategy_name(variant)
+                    outcomes = list(db["Trade_Outcomes"].find({"strategy": strategy_name}))
+                    with col:
+                        st.caption(f"**{variant}** ({strategy_name})")
+                        if not outcomes:
+                            st.caption("0 settled trades yet.")
+                        else:
+                            first_exit_date = min(o["exit_date"] for o in outcomes)
+                            days_elapsed = (pd.Timestamp.now().normalize() - pd.Timestamp(first_exit_date)).days
+                            win_count = sum(1 for o in outcomes if o["status"] == "WIN")
+                            st.metric("Settled trades", len(outcomes))
+                            st.metric("Days since first settled trade", days_elapsed)
+                            st.metric("Win rate so far", f"{win_count / len(outcomes) * 100:.1f}%")
             except Exception as exc:
                 st.caption(f"Could not load validation progress: {exc}")
         else:

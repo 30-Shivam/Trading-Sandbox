@@ -69,6 +69,18 @@ is intentionally not built yet: this tab hasn't passed its own
 prospective trust floor (20-30 settled trades, 4-6 weeks, see
 dip_buy_analyzer.py's LLM Agent tab) and a debate architecture would add
 real cost/complexity on top of a still-unproven signal.
+
+Prompt-variant A/B testing (PROMPT_VARIANTS, see evaluate_ticker()'s
+`variant` param): since real backtesting is impossible here, the only way
+to compare prompt-framing choices is to run several concurrently against
+the SAME real candidates and let real settled trades decide. ingest.py's
+headless run evaluates every candidate under all variants; the dashboard's
+live tab always uses the default ("balanced") only, to avoid showing a
+user multiple conflicting verdicts for one ticker. Each variant logs under
+its own Trade_Signals `strategy` field (e.g. "llm_agent_evidence_strict")
+so they settle and get graded completely independently -- see
+storage/signals.py's unique-index note on why that field must be distinct
+per strategy.
 """
 
 import json
@@ -334,6 +346,149 @@ def _build_prompt(ticker: str, context: dict) -> tuple[str, int]:
     return prompt, len(trimmed_headlines)
 
 
+def _build_prompt_qualitative_weighted(ticker: str, context: dict) -> tuple[str, int]:
+    """Challenger variant -- same context-rendering as _build_prompt(), only
+    the instructional framing differs: explicitly tells the model the
+    mechanical Trade_Score is a starting FILTER, not the primary evidence,
+    and to weigh where the qualitative/analyst/insider/macro picture agrees
+    or disagrees with it. Tests whether leaning harder into "more than just
+    numbers" (the axis the user specifically said they value about this
+    feature) produces better real outcomes than the balanced control. See
+    PROMPT_VARIANTS."""
+    headlines = context.get("headlines") or []
+    trimmed_headlines = headlines[:MAX_HEADLINES]
+    headline_block = "\n".join(f"- {h}" for h in trimmed_headlines) if trimmed_headlines else "(none available)"
+
+    mechanical_scores = context.get("mechanical_scores") or {}
+    mechanical_block = (
+        ", ".join(f"{strategy}={score:.1f}" for strategy, score in mechanical_scores.items())
+        or "(none)"
+    )
+
+    fundamentals = context.get("fundamentals") or {}
+    fundamentals_block = ", ".join(f"{k}={v}" for k, v in fundamentals.items()) or "(unavailable)"
+
+    macro = context.get("macro")
+    macro_block = ""
+    if macro:
+        macro_headlines = (macro.get("headlines") or [])[:MAX_MACRO_HEADLINES]
+        macro_headline_block = (
+            "\n".join(f"- {h}" for h in macro_headlines) if macro_headlines else "(none available)"
+        )
+        macro_block = (
+            f"\n\nBroader market backdrop today (shared across every candidate, distinct from "
+            f"{ticker}'s own news above): VIX={macro.get('vix')} "
+            f"(change {macro.get('vix_change_pct')}%), S&P-level macro headlines:\n{macro_headline_block}"
+        )
+
+    qualitative_block = _build_qualitative_block(ticker, context.get("qualitative"))
+
+    prompt = (
+        f"A mechanical price/volume trading system flagged {ticker} today: Last_Close="
+        f"{context.get('last_close')}, RSI={context.get('rsi')}, ATR={context.get('atr')}, "
+        f"mechanical Trade_Score(s) by strategy: {mechanical_block}. Catalyst_Warning="
+        f"{context.get('catalyst_warning')}, next earnings date={context.get('next_earnings_date')}. "
+        f"Basic fundamentals: {fundamentals_block}. Treat the mechanical Trade_Score as a starting "
+        "FILTER only -- it already confirms a price/volume setup exists, so it should NOT drive your "
+        "decision on its own. Your real job is to weigh whether the qualitative and macro evidence "
+        "below CONFIRMS or CONTRADICTS that mechanical setup, and let that agreement or disagreement "
+        f"be the deciding factor. Its {len(trimmed_headlines)} most recent news headlines:\n{headline_block}"
+        f"{macro_block}{qualitative_block}\n\n"
+        "Given all of this -- weighing the qualitative/macro picture as the primary evidence, the "
+        "mechanical score as secondary confirmation only -- is this ticker worth a human's attention "
+        "as a candidate swing trade right now? Respond ONLY with a JSON object matching exactly this "
+        'shape: {"decision": "Buy" | "Hold" | "Avoid", "confidence": <integer 0-100>, '
+        '"news_sentiment": "Bullish" | "Bearish" | "Neutral", "rationale": "<2-3 '
+        'plain-language sentences explaining the call, naming which qualitative/macro factor(s) '
+        'drove it>"}. "Buy" means the qualitative/macro picture genuinely supports the setup, "Hold" '
+        'means mixed or the qualitative picture is silent/neutral, "Avoid" means the qualitative '
+        'picture contradicts the mechanical setup.'
+    )
+    return prompt, len(trimmed_headlines)
+
+
+def _build_prompt_evidence_strict(ticker: str, context: dict) -> tuple[str, int]:
+    """Challenger variant -- same context-rendering as _build_prompt(), only
+    the instructional framing differs: requires at least one specific,
+    named data point (a headline, filing, analyst action, or insider trend)
+    to justify "Buy", defaulting harder to "Hold"/"Avoid" on generic,
+    vaguely-positive setups with no concrete evidence. Tests whether a
+    stricter evidence bar than the balanced control's produces a better
+    real win rate. See PROMPT_VARIANTS."""
+    headlines = context.get("headlines") or []
+    trimmed_headlines = headlines[:MAX_HEADLINES]
+    headline_block = "\n".join(f"- {h}" for h in trimmed_headlines) if trimmed_headlines else "(none available)"
+
+    mechanical_scores = context.get("mechanical_scores") or {}
+    mechanical_block = (
+        ", ".join(f"{strategy}={score:.1f}" for strategy, score in mechanical_scores.items())
+        or "(none)"
+    )
+
+    fundamentals = context.get("fundamentals") or {}
+    fundamentals_block = ", ".join(f"{k}={v}" for k, v in fundamentals.items()) or "(unavailable)"
+
+    macro = context.get("macro")
+    macro_block = ""
+    if macro:
+        macro_headlines = (macro.get("headlines") or [])[:MAX_MACRO_HEADLINES]
+        macro_headline_block = (
+            "\n".join(f"- {h}" for h in macro_headlines) if macro_headlines else "(none available)"
+        )
+        macro_block = (
+            f"\n\nBroader market backdrop today (shared across every candidate, distinct from "
+            f"{ticker}'s own news above): VIX={macro.get('vix')} "
+            f"(change {macro.get('vix_change_pct')}%), S&P-level macro headlines:\n{macro_headline_block}"
+        )
+
+    qualitative_block = _build_qualitative_block(ticker, context.get("qualitative"))
+
+    prompt = (
+        f"A mechanical price/volume trading system flagged {ticker} today: Last_Close="
+        f"{context.get('last_close')}, RSI={context.get('rsi')}, ATR={context.get('atr')}, "
+        f"mechanical Trade_Score(s) by strategy: {mechanical_block}. Catalyst_Warning="
+        f"{context.get('catalyst_warning')}, next earnings date={context.get('next_earnings_date')}. "
+        f"Basic fundamentals: {fundamentals_block}. Its {len(trimmed_headlines)} most recent news "
+        f"headlines:\n{headline_block}{macro_block}{qualitative_block}\n\n"
+        "Given all of this, is this ticker worth a human's attention as a candidate swing trade right "
+        'now? Apply a STRICT evidence bar: only respond "Buy" if you can cite at least one SPECIFIC, '
+        "named data point from the material above (a specific headline, SEC filing, analyst upgrade/"
+        "downgrade, or insider-buying trend) that concretely supports it -- generic optimism, a merely "
+        'neutral news tone, or "no bad news" is NOT sufficient evidence for "Buy". Default to "Hold" '
+        'when the setup is real but the evidence is vague or absent, and to "Avoid" when a real red '
+        "flag is present. Respond ONLY with a JSON object matching exactly this shape: "
+        '{"decision": "Buy" | "Hold" | "Avoid", "confidence": <integer 0-100>, "news_sentiment": '
+        '"Bullish" | "Bearish" | "Neutral", "rationale": "<2-3 plain-language sentences, naming the '
+        'specific evidence cited if \'Buy\'>"}.'
+    )
+    return prompt, len(trimmed_headlines)
+
+
+# Maps a variant name -> its prompt-builder function. "balanced" is the
+# original, unchanged control (keeps strategy="llm_agent" with no suffix so
+# its already-accumulating trust-floor data isn't fragmented). The other two
+# are challengers -- see each builder's own docstring for what they test.
+# evaluate_ticker()'s `variant` param looks up into this dict; adding a new
+# variant later means adding one function + one entry here, nothing else.
+PROMPT_VARIANTS = {
+    "balanced": _build_prompt,
+    "qualitative_weighted": _build_prompt_qualitative_weighted,
+    "evidence_strict": _build_prompt_evidence_strict,
+}
+
+
+def variant_strategy_name(variant: str) -> str:
+    """Maps a PROMPT_VARIANTS key -> its Trade_Signals `strategy` field.
+    "balanced" keeps the original strategy="llm_agent" (no suffix) so its
+    already-accumulating Trade_Outcomes data isn't fragmented; challenger
+    variants get their own suffixed strategy string so they settle and get
+    graded completely independently (distinct (ticker, signal_date, strategy)
+    unique key, see storage/signals.py). Single source of truth -- both
+    ingest.py and dip_buy_analyzer.py call this rather than each keeping
+    their own copy of the mapping."""
+    return "llm_agent" if variant == "balanced" else f"llm_agent_{variant}"
+
+
 def _build_holding_prompt(ticker: str, context: dict) -> str:
     """Build the prompt for evaluate_holding() -- a DIFFERENT question from
     _build_prompt()'s "is this worth a human's attention" framing. This
@@ -507,7 +662,7 @@ def _resolve_dual(
     }
 
 
-def evaluate_ticker(ticker: str, context: dict) -> dict | None:
+def evaluate_ticker(ticker: str, context: dict, variant: str = "balanced") -> dict | None:
     """Ask an LLM for a genuine Buy/Hold/Avoid judgment on `ticker`, given
     `context` -- a dict of whatever's already been computed this page
     load, expected keys: `last_close`, `rsi`, `atr`, `mechanical_scores`
@@ -546,8 +701,16 @@ def evaluate_ticker(ticker: str, context: dict) -> dict | None:
     This is explicitly a SECOND OPINION, not a blind scan: the prompt
     frames the ticker as one a mechanical system already flagged, and asks
     the model to weigh in given that context plus recent headlines and
-    basic fundamentals -- not to discover candidates on its own."""
-    prompt, _ = _build_prompt(ticker, context)
+    basic fundamentals -- not to discover candidates on its own.
+
+    `variant` selects which prompt-builder to use from PROMPT_VARIANTS
+    (default "balanced", today's original prompt, unchanged). See that
+    dict's own comment for what the other variants test -- this parameter
+    exists so ingest.py's headless automation can run the same candidate
+    through multiple prompt framings for prospective A/B comparison; the
+    dashboard's live tab always uses the default and never passes this."""
+    build_fn = PROMPT_VARIANTS.get(variant, _build_prompt)
+    prompt, _ = build_fn(ticker, context)
     gemini_result = _call_gemini(prompt) if _gemini_available() else None
     groq_result = _call_groq(prompt) if _groq_available() else None
     return _resolve_dual(gemini_result, groq_result, "decision", CONSERVATIVE_ORDER_DECISION)

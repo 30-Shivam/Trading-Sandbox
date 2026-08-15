@@ -19,7 +19,9 @@ on:
 jobs:
   daily-run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45  # bumped from 30 -- watchlist.txt widened ~266->~416 tickers
+                          # (2026-08-14 expansion), narrowing the fetch-time margin,
+                          # see improvements.txt
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

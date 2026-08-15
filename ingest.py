@@ -69,6 +69,9 @@ DEFAULT_WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 DEFAULT_POSITION_BUDGET = 250.0
 MAX_LLM_CANDIDATES = 10  # same cap as dip_buy_analyzer.py's LLM Agent tab -- cost/rate-limit
                           # control, see llm_agent.py's module docstring
+CHALLENGER_VARIANTS = ["qualitative_weighted", "evidence_strict"]  # run alongside the
+                          # default "balanced" variant for every candidate -- see
+                          # llm_agent.PROMPT_VARIANTS and run_llm_agent()'s docstring
 
 
 def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> pd.DataFrame:
@@ -183,11 +186,19 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
     flagged above Ignore today, capped at MAX_LLM_CANDIDATES, ranked by
     highest Trade_Score), same context-building (fundamentals, headlines,
     macro snapshot, qualitative snapshot -- see market_data.get_qualitative_snapshot()),
-    same llm_agent.evaluate_ticker() call, same Trade_Signals logging
-    convention (strategy="llm_agent", "Hold" mapped to "Watch" since it
+    same Trade_Signals logging convention ("Hold" mapped to "Watch" since it
     isn't in the shared Strong Buy/Buy/Watch/Ignore vocabulary). NEVER
     capital-allocated -- Shares_To_Buy/Est_Cost are always 0, no cash pool,
     no allocate_capital() call, same as the dashboard tab.
+
+    Unlike the dashboard tab, evaluates EVERY candidate under all of
+    llm_agent.PROMPT_VARIANTS (default "balanced" plus CHALLENGER_VARIANTS)
+    for prospective A/B comparison -- context is built once per candidate
+    and reused across variants (only the prompt framing differs, not the
+    underlying data), so this doesn't add extra fetch cost, only extra LLM
+    calls (well within free-tier limits, see llm_agent.py's module
+    docstring). Each variant logs to its own strategy string (see
+    llm_agent.variant_strategy_name()) and settles completely independently.
 
     Silently does nothing if llm_agent.is_available() is False (no keys
     configured) -- callers should still call this unconditionally, same
@@ -214,12 +225,18 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
         print("LLM Agent: no tickers scored above Ignore under any mechanical strategy today -- nothing to evaluate.")
         return
 
+    all_variants = ["balanced"] + CHALLENGER_VARIANTS
     print(f"LLM Agent: evaluating {len(ranked_candidates)} ticker(s) flagged by at least one "
-          "mechanical strategy today, highest mechanical Trade_Score first.")
-    llm_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "llm_agent"})
+          f"mechanical strategy today, highest mechanical Trade_Score first, under {len(all_variants)} "
+          f"prompt variant(s) ({', '.join(all_variants)}).")
     macro_snapshot = market_data.get_macro_snapshot()
 
-    llm_rows = []
+    # One row-list per variant -- each logs to its own strategy string and
+    # settles independently. Context is built ONCE per candidate (below) and
+    # reused across variants; only the prompt framing passed to
+    # evaluate_ticker() differs, so this adds no extra fetch cost.
+    llm_rows_by_variant: dict[str, list] = {v: [] for v in all_variants}
+
     for ticker, entry in ranked_candidates:
         row = entry["row"]
         fundamentals = {}
@@ -241,50 +258,58 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
             "qualitative": market_data.get_qualitative_snapshot(ticker),
         }
 
-        verdict = llm_agent.evaluate_ticker(ticker, context)
-        if verdict is None:
-            print(f"  {ticker}: LLM evaluation failed or returned an unusable response.")
+        for variant in all_variants:
+            verdict = llm_agent.evaluate_ticker(ticker, context, variant=variant)
+            if verdict is None:
+                print(f"  {ticker} [{variant}]: LLM evaluation failed or returned an unusable response.")
+                continue
+
+            agreement_note = (
+                f", providers agreed ({verdict['secondary_provider']})" if verdict["provider_agreement"] is True
+                else f", providers DISAGREED ({verdict['secondary_provider']} said {verdict['secondary_decision']}, "
+                     "defaulted to the more conservative call)" if verdict["provider_agreement"] is False else ""
+            )
+            print(f"  {ticker} [{variant}]: {verdict['decision']} (confidence {verdict['confidence']:.0f}/100, "
+                  f"news_sentiment={verdict['news_sentiment']}{agreement_note}) -- {verdict['rationale']}")
+
+            if verdict["decision"] in ("Buy", "Hold"):
+                variant_config = swingtrade.TradingConfig(
+                    **{**config.to_dict(), "strategy": llm_agent.variant_strategy_name(variant)}
+                )
+                atr = context["atr"]
+                buy_price = round(context["last_close"], 2)
+                sell_price = round(buy_price + variant_config.atr_take_profit_multiplier * atr, 2)
+                stop_loss = round(buy_price - variant_config.stop_loss_atr_multiplier * atr, 2)
+                risk = buy_price - stop_loss
+                rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+                llm_rows_by_variant[variant].append({
+                    "Ticker": ticker, "As_Of": row["As_Of"], "Signal": verdict["decision"],
+                    "Trade_Score": verdict["confidence"], "Last_Close": context["last_close"],
+                    "Buy_Price": buy_price, "Sell_Price": sell_price, "Stop_Loss": stop_loss,
+                    "RRR": rrr, "RSI": context["rsi"], "ATR": atr,
+                    "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
+                    "Next_Earnings_Date": context["next_earnings_date"],
+                    "Catalyst_Warning": context["catalyst_warning"], "Top_Headline": "",
+                    "Currency": row.get("Currency", "USD"),
+                    "Provider_Agreement": verdict["provider_agreement"],
+                    "Secondary_Provider": verdict["secondary_provider"],
+                    "Secondary_Decision": verdict["secondary_decision"],
+                    "Secondary_Confidence": verdict["secondary_confidence"],
+                })
+
+    for variant, llm_rows in llm_rows_by_variant.items():
+        if not llm_rows:
             continue
-
-        agreement_note = (
-            f", providers agreed ({verdict['secondary_provider']})" if verdict["provider_agreement"] is True
-            else f", providers DISAGREED ({verdict['secondary_provider']} said {verdict['secondary_decision']}, "
-                 "defaulted to the more conservative call)" if verdict["provider_agreement"] is False else ""
-        )
-        print(f"  {ticker}: {verdict['decision']} (confidence {verdict['confidence']:.0f}/100, "
-              f"news_sentiment={verdict['news_sentiment']}{agreement_note}) -- {verdict['rationale']}")
-
-        if verdict["decision"] in ("Buy", "Hold"):
-            atr = context["atr"]
-            buy_price = round(context["last_close"], 2)
-            sell_price = round(buy_price + llm_config.atr_take_profit_multiplier * atr, 2)
-            stop_loss = round(buy_price - llm_config.stop_loss_atr_multiplier * atr, 2)
-            risk = buy_price - stop_loss
-            rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
-            llm_rows.append({
-                "Ticker": ticker, "As_Of": row["As_Of"], "Signal": verdict["decision"],
-                "Trade_Score": verdict["confidence"], "Last_Close": context["last_close"],
-                "Buy_Price": buy_price, "Sell_Price": sell_price, "Stop_Loss": stop_loss,
-                "RRR": rrr, "RSI": context["rsi"], "ATR": atr,
-                "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
-                "Next_Earnings_Date": context["next_earnings_date"],
-                "Catalyst_Warning": context["catalyst_warning"], "Top_Headline": "",
-                "Currency": row.get("Currency", "USD"),
-                "Provider_Agreement": verdict["provider_agreement"],
-                "Secondary_Provider": verdict["secondary_provider"],
-                "Secondary_Decision": verdict["secondary_decision"],
-                "Secondary_Confidence": verdict["secondary_confidence"],
-            })
-
-    if llm_rows:
+        strategy_name = llm_agent.variant_strategy_name(variant)
+        variant_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": strategy_name})
         llm_df = pd.DataFrame(llm_rows)
         llm_df["Signal"] = llm_df["Signal"].replace("Hold", "Watch")
         try:
-            logged = storage.log_trade_signals(llm_df, llm_config.to_dict())
-            print(f"LLM Agent: logged {logged['actionable']} actionable + {logged['research']} "
-                  "research signal(s) to MongoDB (strategy=llm_agent, never capital-allocated).")
+            logged = storage.log_trade_signals(llm_df, variant_config.to_dict())
+            print(f"LLM Agent [{variant}]: logged {logged['actionable']} actionable + {logged['research']} "
+                  f"research signal(s) to MongoDB (strategy={strategy_name}, never capital-allocated).")
         except Exception as exc:
-            print(f"[WARN] LLM Agent signal logging failed: {exc}", file=sys.stderr)
+            print(f"[WARN] LLM Agent [{variant}] signal logging failed: {exc}", file=sys.stderr)
 
 
 def run(
