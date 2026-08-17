@@ -108,24 +108,41 @@ import pandas as pd
 
 import storage
 import swingtrade
-from optimize import split_tickers_holdout
+from optimize import DEFAULT_HOLDOUT_SEEDS, average_holdout_summary
 from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history
-from watchlist import read_ticker_sectors, read_tickers
+from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
 EARNINGS_AWARE_STRATEGIES = ("squeeze_breakout", "ma_crossover")  # the only simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
                                                                    # accept earnings_dates -- see
                                                                    # swingtrade/backtest.py
+SECTOR_AWARE_STRATEGIES = ("breakout", "squeeze_breakout", "ma_crossover")  # the only REAL
+                                                                   # simulate_*_signals() (not the
+                                                                   # random baselines -- see
+                                                                   # improvements.txt items 68/70/71)
+                                                                   # that accept sector_ohlcv
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 REQUEST_DELAY_SEC = 0.5
 
 
-def load_config_to_test() -> tuple[swingtrade.TradingConfig, str]:
-    """The currently-active System_Config -- this benchmark exists to ask
-    "does the live signal carry real information," so it should test the
-    live params, not a hardcoded snapshot that could silently go stale."""
+def load_config_to_test(version: int | None = None) -> tuple[swingtrade.TradingConfig, str]:
+    """The currently-active System_Config by default -- this benchmark
+    exists to ask "does the live signal carry real information," so it
+    should test the live params, not a hardcoded snapshot that could
+    silently go stale. Pass `version` to instead test one specific
+    candidate (status=candidate, not yet promoted) -- e.g. a fresh Optuna
+    result for a SECONDARY strategy (squeeze_breakout/ma_crossover), which
+    never has status=active at all (only the single PRIMARY breakout slot
+    does -- see improvements.txt item 60)."""
+    if version is not None:
+        doc = storage.get_config_by_version(version)
+        if doc is None:
+            print(f"[ERROR] No System_Config document with version={version}.", file=sys.stderr)
+            sys.exit(1)
+        config = swingtrade.TradingConfig(**{**swingtrade.DEFAULT_CONFIG.to_dict(), **doc["params"]})
+        return config, f"v{version} ({doc.get('status', 'unknown status')})"
     try:
         db = storage.get_db()
         doc = db[storage.system_config.COLLECTION_NAME].find_one({"status": "active"})
@@ -189,7 +206,18 @@ def main():
     parser.add_argument("--tickers", default=None, help="Comma-separated tickers to override watchlist.txt.")
     parser.add_argument("--seed", type=int, default=1, help="Seed for the random-entry day selection.")
     parser.add_argument("--holdout-frac", type=float, default=0.25, help="Same ticker-holdout split as optimize.py. 0 disables.")
-    parser.add_argument("--holdout-seed", type=int, default=42, help="Same holdout seed as optimize.py's real runs.")
+    parser.add_argument(
+        "--holdout-seeds", default=None,
+        help="Comma-separated holdout seeds to average TUNE/HOLDOUT over (a single fixed-seed split "
+             "carries real sampling noise -- see improvements.txt item 69). "
+             f"Default: {','.join(str(s) for s in DEFAULT_HOLDOUT_SEEDS)} (10 seeds).",
+    )
+    parser.add_argument(
+        "--config-version", type=int, default=None,
+        help="Test one specific System_Config version instead of the active one -- e.g. a fresh "
+             "Optuna candidate for a secondary strategy (squeeze_breakout/ma_crossover), which "
+             "never has status=active at all. Default: the active config (today's default behavior).",
+    )
     parser.add_argument(
         "--with-catalyst", action="store_true",
         help="Fetch historical earnings dates (one extra yfinance call per ticker, see "
@@ -200,6 +228,11 @@ def main():
              "same convention as run_backtest.py's own --with-catalyst.",
     )
     args = parser.parse_args()
+
+    holdout_seeds = (
+        [int(s.strip()) for s in args.holdout_seeds.split(",") if s.strip()]
+        if args.holdout_seeds else list(DEFAULT_HOLDOUT_SEEDS)
+    )
 
     end = pd.Timestamp(args.end) if args.end else pd.Timestamp.now().normalize()
     start = pd.Timestamp(args.start) if args.start else end - pd.Timedelta(days=365 * 5)
@@ -213,7 +246,7 @@ def main():
         tickers = read_tickers(WATCHLIST_FILE)
     sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
 
-    config, config_label = load_config_to_test()
+    config, config_label = load_config_to_test(args.config_version)
     if args.breakout_lookback_days is not None:
         config = swingtrade.TradingConfig(**{**config.to_dict(), "breakout_lookback_days": args.breakout_lookback_days})
         config_label += f" (breakout_lookback_days overridden to {args.breakout_lookback_days})"
@@ -312,13 +345,21 @@ def main():
         found = sum(1 for d in earnings_data.values() if len(d) > 0)
         print(f"Got earnings history for {found}/{len(ticker_data)} ticker(s).")
 
-    tune_tickers, holdout_tickers = split_tickers_holdout(
-        list(ticker_data.keys()), sector_lookup, args.holdout_frac, args.holdout_seed
-    )
-    if holdout_tickers:
-        print(f"Ticker holdout split (seed={args.holdout_seed}, frac={args.holdout_frac}): "
-              f"{len(tune_tickers)} tune / {len(holdout_tickers)} holdout.")
-    holdout_set = set(holdout_tickers)
+    sector_data: dict[str, pd.DataFrame] = {}
+    if args.strategy in SECTOR_AWARE_STRATEGIES:
+        present_sectors = sorted({sector_lookup[t] for t in ticker_data if t in sector_lookup} & set(SECTOR_ETF))
+        if present_sectors:
+            print(f"\nFetching {len(present_sectors)} sector ETF(s) for Sector_Relative_Strength...")
+            for i, sector in enumerate(present_sectors):
+                if i > 0:
+                    time.sleep(REQUEST_DELAY_SEC)
+                etf_df = fetch_history(SECTOR_ETF[sector], start, end)
+                if not etf_df.empty:
+                    sector_data[sector] = etf_df
+
+    if args.holdout_frac > 0:
+        print(f"Ticker holdout: frac={args.holdout_frac}, averaging TUNE/HOLDOUT over "
+              f"{len(holdout_seeds)} seeds ({holdout_seeds}) -- see improvements.txt item 69.")
 
     rng = random.Random(args.seed)
 
@@ -358,9 +399,16 @@ def main():
     earnings_kwargs = lambda ticker: (  # noqa: E731 -- only squeeze_breakout/ma_crossover accept earnings_dates
         {"earnings_dates": earnings_data.get(ticker)} if args.strategy in EARNINGS_AWARE_STRATEGIES else {}
     )
+    sector_kwargs = lambda ticker: (  # noqa: E731
+        {"sector_ohlcv": sector_data.get(sector_lookup.get(ticker, "Unknown"))}
+        if args.strategy in SECTOR_AWARE_STRATEGIES else {}
+    )
     for i, (ticker, ohlcv) in enumerate(ticker_data.items()):
         sector = sector_lookup.get(ticker, "Unknown")
-        real = real_fn(ticker, ohlcv, market_data, start, end, config, **earnings_kwargs(ticker), sector=sector)
+        real = real_fn(
+            ticker, ohlcv, market_data, start, end, config,
+            **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker),
+        )
         real_trades.extend(real)
         real_counts[ticker] = len(real)
 
@@ -375,26 +423,25 @@ def main():
           f"(entry-fill realized: {len(real_trades)}). "
           f"Random baseline (matched count per ticker): {len(random_trades)} entries filled.")
 
-    def split(trades):
-        tune = [t for t in trades if t["ticker"] not in holdout_set]
-        holdout = [t for t in trades if t["ticker"] in holdout_set]
-        return tune, holdout
-
-    real_tune, real_holdout = split(real_trades)
-    random_tune, random_holdout = split(random_trades)
-
     print("\n=== ALL TICKERS ===")
     print(f"  REAL   ({real_label}): {summarize(real_trades)}")
     print(f"  RANDOM (matched count): {summarize(random_trades)}")
 
-    if holdout_tickers:
-        print(f"\n=== TUNE tickers ({len(tune_tickers)}) ===")
-        print(f"  REAL   ({real_label}): {summarize(real_tune)}")
-        print(f"  RANDOM (matched count): {summarize(random_tune)}")
+    if args.holdout_frac > 0:
+        real_tune_avg, real_holdout_avg = average_holdout_summary(
+            real_trades, sector_lookup, args.holdout_frac, holdout_seeds, summarize
+        )
+        random_tune_avg, random_holdout_avg = average_holdout_summary(
+            random_trades, sector_lookup, args.holdout_frac, holdout_seeds, summarize
+        )
 
-        print(f"\n=== HOLDOUT tickers ({len(holdout_tickers)}) ===")
-        print(f"  REAL   ({real_label}): {summarize(real_holdout)}")
-        print(f"  RANDOM (matched count): {summarize(random_holdout)}")
+        print(f"\n=== TUNE (avg of {len(holdout_seeds)} seeds) ===")
+        print(f"  REAL   ({real_label}): {real_tune_avg}")
+        print(f"  RANDOM (matched count): {random_tune_avg}")
+
+        print(f"\n=== HOLDOUT (avg of {len(holdout_seeds)} seeds) ===")
+        print(f"  REAL   ({real_label}): {real_holdout_avg}")
+        print(f"  RANDOM (matched count): {random_holdout_avg}")
 
     print()
     print(f"If REAL's sharpe_like/win_rate isn't meaningfully better than RANDOM's (same trade")

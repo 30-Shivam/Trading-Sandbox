@@ -74,6 +74,18 @@ Document shape (one per ticker per trading day):
                                       # final decision, llm_agent.py rows only.
         "secondary_decision": str | None,  # that provider's own decision/action
         "secondary_confidence": float | None,  # that provider's own confidence
+        "regime": str | None,        # "trending" | "choppy" | None -- regime_switcher.py
+                                      # rows only (strategy="regime_switcher"), the
+                                      # ADX-based classification that picked this row's
+                                      # source strategy. See regime_switcher.py --
+                                      # deliberately NOT backtested (structurally can't
+                                      # be, prospective-only by design), permanently
+                                      # non-capital-allocated until it separately clears
+                                      # its own real settled-trade trust floor.
+        "source_strategy": str | None,  # "breakout" | "squeeze_breakout" | "ma_crossover" |
+                                      # None -- regime_switcher.py rows only, which
+                                      # underlying mechanical strategy's signal this
+                                      # regime pick actually came from.
         "config_snapshot": dict,     # swingtrade.TradingConfig.to_dict() at trigger time
         "settled": bool,             # flipped by the Phase 3 settlement job
         "confirmed_filled": bool,    # absent/False until confirm_fill() is called --
@@ -185,6 +197,25 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
         "secondary_provider": _native(row.get("Secondary_Provider")),
         "secondary_decision": _native(row.get("Secondary_Decision")),
         "secondary_confidence": _native(row.get("Secondary_Confidence")),
+        # regime_switcher.py rows only (strategy="regime_switcher") -- which
+        # ADX-based regime was classified and which underlying mechanical
+        # strategy's signal got surfaced as a result, None for every other
+        # strategy's rows. Persisted (not just printed) specifically so a
+        # future analysis of settled regime_switcher trades can check
+        # whether trending-regime picks and choppy-regime picks perform
+        # differently -- the actual hypothesis this feature exists to test.
+        "regime": _native(row.get("Regime")),
+        "source_strategy": _native(row.get("Source_Strategy")),
+        # best_ideas.py rows only (strategy="best_ideas") -- the
+        # meta-synthesis LLM's own written rationale (str|None) and a
+        # snapshot of {methodology: {"score":, "weight":}} used to build
+        # that row's composite Trade_Score, for later audit/display. Not
+        # run through _native() -- already plain Python str/float/dict by
+        # the time best_ideas.py builds these rows (no numpy/pandas
+        # scalars to unwrap), and _native()'s pd.isna() check is only
+        # meant for scalars, not nested dicts.
+        "rationale": row.get("Rationale"),
+        "methodology_breakdown": row.get("Methodology_Breakdown"),
         "config_snapshot": config_snapshot,
         "settled": False,
         "updated_at": now,

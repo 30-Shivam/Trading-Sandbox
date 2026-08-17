@@ -7,6 +7,27 @@ import json
 import re
 from pathlib import Path
 
+# Real SPDR sector ETFs, one per GICS sector -- watchlist.txt's own sector
+# labels (see read_ticker_sectors below) are the exact standard GICS names,
+# so this mapping is complete for every ticker in the watchlist. Single
+# source of truth for every consumer of sector relative-strength (see
+# improvements.txt items 68/70) -- optimize.py, market_data.py, and
+# benchmark_sector_relative_strength.py all import this instead of keeping
+# their own copies.
+SECTOR_ETF = {
+    "Technology": "XLK",
+    "Financials": "XLF",
+    "Healthcare": "XLV",
+    "Consumer Staples": "XLP",
+    "Energy": "XLE",
+    "Industrials": "XLI",
+    "Consumer Discretionary": "XLY",
+    "Communication Services": "XLC",
+    "Utilities": "XLU",
+    "Real Estate": "XLRE",
+    "Materials": "XLB",
+}
+
 
 def read_tickers(path: Path) -> list[str]:
     """Read tickers from watchlist.txt. Supports either:

@@ -115,9 +115,16 @@ def add_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_C
     strong_trend = df["ADX"].isna() | (df["ADX"] >= config.breakout_adx_min)
     obv_ok = df["OBV_Zscore"].isna() | (df["OBV_Zscore"] >= config.breakout_obv_zscore_min)
     squeezed = df["Squeeze_Zscore"].isna() | (df["Squeeze_Zscore"] <= config.breakout_squeeze_zscore_max)
+    # Sector_Relative_Strength (backtest/Optuna-only, see precompute_breakout_frame) --
+    # None/NaN in live production (no sector_df supplied there), so this
+    # never excludes a live ticker regardless of the config value.
+    sector_strong_enough = (
+        df["Sector_Relative_Strength"].isna()
+        | (df["Sector_Relative_Strength"] >= config.breakout_sector_relative_strength_min)
+    )
     eligible = (
         df["Breakout_Signal"] & not_overbought & strong_enough & enough_volume
-        & strong_trend & obv_ok & squeezed
+        & strong_trend & obv_ok & squeezed & sector_strong_enough
     )
 
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
@@ -366,6 +373,12 @@ def add_squeeze_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = D
     enough_volume = df["Volume_Ratio"].isna() | (df["Volume_Ratio"] >= config.squeeze_breakout_volume_ratio_min)
     strong_trend = df["ADX"].isna() | (df["ADX"] >= config.squeeze_breakout_adx_min)
     obv_ok = df["OBV_Zscore"].isna() | (df["OBV_Zscore"] >= config.squeeze_breakout_obv_zscore_min)
+    # Sector_Relative_Strength (backtest/Optuna-only) -- same graceful
+    # None/NaN-never-excludes treatment as breakout's own.
+    sector_strong_enough = (
+        df["Sector_Relative_Strength"].isna()
+        | (df["Sector_Relative_Strength"] >= config.squeeze_breakout_sector_relative_strength_min)
+    )
     # earnings_gate is a boolean on/off toggle, not a numeric threshold (see
     # config.squeeze_breakout_earnings_gate) -- disabled (default) means no
     # exclusion at all, same "missing/NaN never excludes on its own"
@@ -376,7 +389,7 @@ def add_squeeze_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = D
     )
     eligible = (
         df["Squeeze_Signal"] & not_overbought & strong_enough & enough_volume & strong_trend & obv_ok
-        & not_near_earnings
+        & sector_strong_enough & not_near_earnings
     )
 
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
@@ -503,7 +516,14 @@ def add_ma_crossover_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAU
         (df["Catalyst_Warning"].isna() | ~df["Catalyst_Warning"])
         if config.ma_crossover_earnings_gate else True
     )
-    eligible = df["MA_Crossover_Signal"] & not_near_earnings
+    # Sector_Relative_Strength (backtest/Optuna-only) -- ma_crossover's
+    # first optional numeric filter; same graceful None/NaN-never-excludes
+    # treatment as breakout's/squeeze_breakout's own.
+    sector_strong_enough = (
+        df["Sector_Relative_Strength"].isna()
+        | (df["Sector_Relative_Strength"] >= config.ma_crossover_sector_relative_strength_min)
+    )
+    eligible = df["MA_Crossover_Signal"] & not_near_earnings & sector_strong_enough
 
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))

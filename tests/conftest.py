@@ -44,3 +44,11 @@ def market_ohlcv() -> pd.DataFrame:
     """A second, independent synthetic uptrend standing in for SPY/the
     market-uptrend proxy -- same shape, different seed."""
     return _make_uptrend_ohlcv(seed=99)
+
+
+@pytest.fixture(scope="session")
+def sector_ohlcv() -> pd.DataFrame:
+    """A third, independent synthetic uptrend standing in for a sector ETF
+    (e.g. XLK) -- same shape, different seed, for the backtest/Optuna-only
+    Sector_Relative_Strength filter (improvements.txt items 68/70)."""
+    return _make_uptrend_ohlcv(seed=55)

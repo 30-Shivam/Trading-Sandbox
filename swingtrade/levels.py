@@ -258,6 +258,7 @@ def precompute_breakout_frame(
     df: pd.DataFrame,
     config: TradingConfig = DEFAULT_CONFIG,
     market_df: pd.DataFrame | None = None,
+    sector_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Vectorized precompute of every rolling/EMA column compute_breakout_levels()
     needs, run ONCE over the full df -- the breakout counterpart to
@@ -280,6 +281,20 @@ def precompute_breakout_frame(
     `pct_change(periods=breakout_lookback_days)` on both series, aligned by
     date via reindex, matching compute_relative_strength()'s semantics
     (ticker return minus market return over the identical window).
+
+    `sector_df`, if given ALONGSIDE `market_df` (both required -- this is a
+    sector-vs-market comparison, not a ticker-vs-market one), should be the
+    ticker's own sector's OHLCV (e.g. a real SPDR sector ETF like XLK for
+    Technology) over the same date range -- Sector_Relative_Strength is
+    computed the identical way as Relative_Strength (pct_change over
+    `sector_relative_strength_lookback_days`, both series reindexed to
+    `df`'s own index), just comparing the SECTOR's return to the market's
+    instead of the ticker's own. BACKTEST/OPTUNA-ONLY as of its
+    introduction -- market_data.py's live scan path never supplies
+    `sector_df`, so this column simply doesn't exist there, and every
+    caller downstream (breakout_levels_from_frame() etc.) already treats a
+    missing/NaN Sector_Relative_Strength as "don't exclude," same
+    convention as every other optional filter here.
     """
     df = df.copy()
     df["SMA_TREND"] = df["Close"].rolling(window=config.sma_trend_window).mean()
@@ -288,7 +303,18 @@ def precompute_breakout_frame(
     df["AvgVolume"] = df["Volume"].rolling(window=config.volume_lookback_days).mean()
     df["AvgVolume_Prior"] = df["AvgVolume"].shift(1)
     df["Highest_High"] = df["High"].rolling(window=config.breakout_lookback_days).max().shift(1)
-    df["ADX"] = ta.adx(df["High"], df["Low"], df["Close"], length=config.adx_window)[f"ADX_{config.adx_window}"]
+    # ta.adx() returns None (not a NaN-filled DataFrame) when there's too
+    # little history to compute even one window -- a real ticker can hit
+    # this with a genuinely tiny row count (e.g. a recent delisting/take-
+    # private leaving only a handful of trailing bars under the old
+    # symbol, confirmed for EA in improvements.txt). Missing ADX already
+    # doesn't exclude a signal on its own (same convention as OBV/squeeze
+    # z-scores below), so degrade to NaN here rather than crashing --
+    # matters for optimize.py/benchmark_random_entry.py, which (unlike
+    # market_data.score_bundle_for_strategy's per-ticker try/except) had
+    # no protection against this.
+    adx_result = ta.adx(df["High"], df["Low"], df["Close"], length=config.adx_window)
+    df["ADX"] = adx_result[f"ADX_{config.adx_window}"] if adx_result is not None else np.nan
 
     # On-Balance Volume, z-scored against its own trailing obv_window
     # mean/stdev -- OBV's raw cumulative magnitude is arbitrary (depends on
@@ -319,6 +345,17 @@ def precompute_breakout_frame(
         ticker_return = df["Close"].pct_change(periods=config.breakout_lookback_days)
         market_return = market_df["Close"].pct_change(periods=config.breakout_lookback_days).reindex(df.index)
         df["Relative_Strength"] = (ticker_return - market_return).replace([float("inf"), float("-inf")], pd.NA)
+
+        if sector_df is not None:
+            sector_return = sector_df["Close"].pct_change(
+                periods=config.sector_relative_strength_lookback_days
+            ).reindex(df.index)
+            market_return_sector_window = market_df["Close"].pct_change(
+                periods=config.sector_relative_strength_lookback_days
+            ).reindex(df.index)
+            df["Sector_Relative_Strength"] = (
+                (sector_return - market_return_sector_window).replace([float("inf"), float("-inf")], pd.NA)
+            )
     return df
 
 
@@ -413,6 +450,16 @@ def breakout_levels_from_frame(
         if pd.notna(rs_val):
             relative_strength = round(float(rs_val), 4)
 
+    # Sector_Relative_Strength (backtest/Optuna-only, see precompute_breakout_frame's
+    # own docstring) -- only present in the frame if sector_df was ALSO
+    # supplied alongside market_df; missing/NaN never excludes a ticker on
+    # its own, same convention as Relative_Strength above.
+    sector_relative_strength = None
+    if "Sector_Relative_Strength" in frame.columns:
+        srs_val = last_row["Sector_Relative_Strength"]
+        if pd.notna(srs_val):
+            sector_relative_strength = round(float(srs_val), 4)
+
     return {
         "Ticker": ticker,
         "As_Of": last_date.date(),
@@ -423,6 +470,7 @@ def breakout_levels_from_frame(
         "Trigger_Basis": f"{config.breakout_lookback_days}-day high (prior days only)",
         "Breakout_Signal": breakout_signal,
         "Relative_Strength": relative_strength,
+        "Sector_Relative_Strength": sector_relative_strength,
         "Volume_Ratio": volume_ratio,
         "ADX": adx,
         "OBV_Zscore": obv_zscore,
@@ -445,6 +493,7 @@ def compute_breakout_levels(
     next_earnings_date=None,
     top_headline: str = "",
     market_df: pd.DataFrame | None = None,
+    sector_df: pd.DataFrame | None = None,
 ) -> dict:
     """Compute breakout trigger/stop/target levels for one ticker's OHLCV
     history -- the trend-following counterpart to compute_levels()'s
@@ -513,7 +562,7 @@ def compute_breakout_levels(
     live and backtested signal generation always run through the exact same
     code path (see compute_levels()'s docstring for the same rationale).
     """
-    frame = precompute_breakout_frame(df, config, market_df=market_df)
+    frame = precompute_breakout_frame(df, config, market_df=market_df, sector_df=sector_df)
     as_of = frame.index[-1]
     return breakout_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
@@ -1217,6 +1266,7 @@ def precompute_squeeze_breakout_frame(
     df: pd.DataFrame,
     config: TradingConfig = DEFAULT_CONFIG,
     market_df: pd.DataFrame | None = None,
+    sector_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Vectorized precompute of every column squeeze_breakout_levels_from_frame()
     needs -- built ON TOP of precompute_breakout_frame() (reused wholesale:
@@ -1238,7 +1288,7 @@ def precompute_squeeze_breakout_frame(
       bars) -- same concept precompute_momentum_burst_frame() introduced,
       computed independently here since these are separate frame-builder
       functions."""
-    df = precompute_breakout_frame(df, config, market_df=market_df)
+    df = precompute_breakout_frame(df, config, market_df=market_df, sector_df=sector_df)
     df["Recent_Min_Squeeze_Zscore"] = df["Squeeze_Zscore"].rolling(window=config.squeeze_breakout_lookback_days).min()
     df["Day_Gain_Pct"] = df["Close"].pct_change() * 100
     return df
@@ -1350,6 +1400,14 @@ def squeeze_breakout_levels_from_frame(
         if pd.notna(rs_val):
             relative_strength = round(float(rs_val), 4)
 
+    # Sector_Relative_Strength (backtest/Optuna-only) -- same graceful
+    # missing-column/NaN treatment as breakout_levels_from_frame's own.
+    sector_relative_strength = None
+    if "Sector_Relative_Strength" in frame.columns:
+        srs_val = last_row["Sector_Relative_Strength"]
+        if pd.notna(srs_val):
+            sector_relative_strength = round(float(srs_val), 4)
+
     return {
         "Ticker": ticker,
         "As_Of": last_date.date(),
@@ -1358,6 +1416,7 @@ def squeeze_breakout_levels_from_frame(
         "ATR": round(atr, 2),
         "ADX": adx,
         "Relative_Strength": relative_strength,
+        "Sector_Relative_Strength": sector_relative_strength,
         "Volume_Ratio": volume_ratio,
         "OBV_Zscore": obv_zscore,
         "Day_Gain_Pct": round(day_gain_pct, 2),
@@ -1385,6 +1444,7 @@ def compute_squeeze_breakout_levels(
     next_earnings_date=None,
     top_headline: str = "",
     market_df: pd.DataFrame | None = None,
+    sector_df: pd.DataFrame | None = None,
 ) -> dict:
     """Compute squeeze-breakout levels for one ticker's OHLCV history -- a
     seventh strategy, built to fire MORE OFTEN than momentum_burst (which
@@ -1428,7 +1488,7 @@ def compute_squeeze_breakout_levels(
     when not supplied, same backward-compatible treatment
     compute_breakout_levels()/compute_adx_trend_entry_levels() use.
     """
-    frame = precompute_squeeze_breakout_frame(df, config, market_df=market_df)
+    frame = precompute_squeeze_breakout_frame(df, config, market_df=market_df, sector_df=sector_df)
     as_of = frame.index[-1]
     return squeeze_breakout_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
@@ -1636,6 +1696,7 @@ def precompute_ma_crossover_frame(
     df: pd.DataFrame,
     config: TradingConfig = DEFAULT_CONFIG,
     market_df: pd.DataFrame | None = None,
+    sector_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Vectorized precompute of every column ma_crossover_levels_from_frame()
     needs -- built ON TOP of precompute_breakout_frame() wholesale, like
@@ -1647,7 +1708,7 @@ def precompute_ma_crossover_frame(
     ACTUAL crossover day (short was <= long yesterday, short > long today),
     not just "short is currently above long," which would fire on every
     day the relationship holds rather than only the day it changes."""
-    df = precompute_breakout_frame(df, config, market_df=market_df)
+    df = precompute_breakout_frame(df, config, market_df=market_df, sector_df=sector_df)
     df["MA_Short"] = df["Close"].rolling(window=config.ma_crossover_short_window).mean()
     df["MA_Long"] = df["Close"].rolling(window=config.ma_crossover_long_window).mean()
     df["MA_Short_Prev"] = df["MA_Short"].shift(1)
@@ -1671,8 +1732,9 @@ def ma_crossover_levels_from_frame(
     """
     last_row = frame.loc[as_of]
     last_date = as_of
-    last_close, sma_trend, atr, avg_volume, rsi = (
+    last_close, sma_trend, atr, avg_volume, rsi, adx = (
         last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"], last_row["RSI"],
+        last_row["ADX"],
     )
     ma_short, ma_long, ma_short_prev, ma_long_prev = (
         last_row["MA_Short"], last_row["MA_Long"], last_row["MA_Short_Prev"], last_row["MA_Long_Prev"],
@@ -1691,9 +1753,10 @@ def ma_crossover_levels_from_frame(
         raise RuntimeError(f"insufficient history to compute {config.ma_crossover_long_window}-day long MA")
     if pd.isna(ma_short_prev) or pd.isna(ma_long_prev):
         raise RuntimeError("insufficient history: no prior day's MA values to detect a crossover")
-    # RSI is informational only, same treatment as every other
+    # RSI/ADX are informational only, same treatment as every other
     # trend-following strategy this session.
     rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+    adx = None if pd.isna(adx) else round(float(adx), 2)
 
     last_close, sma_trend, atr, avg_volume, ma_short, ma_long, ma_short_prev, ma_long_prev = (
         float(last_close), float(sma_trend), float(atr), float(avg_volume),
@@ -1747,12 +1810,23 @@ def ma_crossover_levels_from_frame(
     # momentum_burst/squeeze_breakout/adx_trend_entry already established.
     signal_strength_pct = round((ma_short - ma_long) / last_close * 100, 3)
 
+    # Sector_Relative_Strength (backtest/Optuna-only) -- ma_crossover's
+    # first optional filter field of any kind; same graceful missing-
+    # column/NaN treatment breakout/squeeze_breakout's own use.
+    sector_relative_strength = None
+    if "Sector_Relative_Strength" in frame.columns:
+        srs_val = last_row["Sector_Relative_Strength"]
+        if pd.notna(srs_val):
+            sector_relative_strength = round(float(srs_val), 4)
+
     return {
         "Ticker": ticker,
         "As_Of": last_date.date(),
         "Last_Close": round(last_close, 2),
         "RSI": rsi,
         "ATR": round(atr, 2),
+        "ADX": adx,
+        "Sector_Relative_Strength": sector_relative_strength,
         "MA_Short": round(ma_short, 2),
         "MA_Long": round(ma_long, 2),
         "MA_Crossover_Signal": crossover_signal,
@@ -1775,6 +1849,7 @@ def compute_ma_crossover_levels(
     next_earnings_date=None,
     top_headline: str = "",
     market_df: pd.DataFrame | None = None,
+    sector_df: pd.DataFrame | None = None,
 ) -> dict:
     """Compute moving-average-crossover levels for one ticker's OHLCV
     history -- a genuinely different mechanical trigger from every
@@ -1808,7 +1883,7 @@ def compute_ma_crossover_levels(
     validation (see benchmark_random_entry.py) before being trusted with
     even experimental/tracked-only status, let alone capital.
     """
-    frame = precompute_ma_crossover_frame(df, config, market_df=market_df)
+    frame = precompute_ma_crossover_frame(df, config, market_df=market_df, sector_df=sector_df)
     as_of = frame.index[-1]
     return ma_crossover_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 

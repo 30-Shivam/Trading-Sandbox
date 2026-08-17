@@ -168,9 +168,12 @@ import streamlit as st
 import yfinance as yf
 
 import ai_context
+import best_ideas
 import config_loader
+import ic_tracking
 import llm_agent
 import market_data
+import regime_switcher
 import storage
 import swingtrade
 from watchlist import parse_ticker_text, read_ticker_sectors, read_tickers
@@ -240,6 +243,19 @@ DISPLAY_COLUMNS_BREAKOUT = [
     "Sell_Price", "RRR", "RSI", "ATR", "Distance_to_Buy_Pct", "Shares_To_Buy",
     "Est_Cost", "Next_Earnings_Date", "Catalyst_Warning", "Top_Headline", "As_Of",
 ]
+# Best Ideas tab -- never capital-eligible, so Shares_To_Buy/Est_Cost/
+# Distance_to_Buy_Pct are omitted entirely rather than shown as always-zero
+# columns, same convention as render_experimental_section()'s own display
+# columns.
+DISPLAY_COLUMNS_BEST_IDEAS = [
+    "Ticker", "Currency", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
+    "Sell_Price", "RRR", "RSI", "ATR", "Next_Earnings_Date", "Catalyst_Warning",
+    "Top_Headline", "As_Of",
+]
+IC_CACHE_TTL_SEC = 1800  # IC/IR only changes as new trades settle, not every
+                          # scan -- a much longer cache than SCAN_CACHE_TTL_SEC
+                          # is fine and avoids re-querying Trade_Signals/
+                          # Trade_Outcomes on every dashboard interaction
 
 # ---------------------------------------------------------------------------
 
@@ -258,6 +274,17 @@ def cached_macro_snapshot() -> dict:
     return market_data.get_macro_snapshot()
 
 
+@st.cache_data(ttl=IC_CACHE_TTL_SEC, show_spinner=False)
+def cached_ic_reports() -> dict[str, dict]:
+    """Information Coefficient / Information Ratio track record for every
+    Best Ideas methodology plus the composite itself (see
+    ic_tracking.methodology_report(), best_ideas.METHODOLOGIES) -- cached
+    separately/longer than the main scan (see IC_CACHE_TTL_SEC) since this
+    only changes as new trades settle, not on every dashboard interaction."""
+    names = best_ideas.METHODOLOGIES + ["best_ideas"]
+    return {name: ic_tracking.methodology_report(name) for name in names}
+
+
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Fetching watchlist data...")
 def cached_fetch_bundle(tickers: tuple[str, ...]):
     """Fetch OHLCV + earnings + headlines for every ticker ONCE, shared
@@ -268,8 +295,15 @@ def cached_fetch_bundle(tickers: tuple[str, ...]):
     correct, since fetching doesn't depend on which strategy will score
     the data. Each section then calls market_data.score_bundle_for_strategy()
     against this same bundle, so running 3 strategies costs 1x the network
-    fetch, not 3x."""
-    return market_data.fetch_ticker_bundle(tickers)
+    fetch, not 3x.
+
+    Also fetches sector-ETF data (backtest/Optuna-only Sector_Relative_Strength
+    filter, improvements.txt items 68/70/71) -- `read_ticker_sectors(WATCHLIST_FILE)`
+    is called directly here (a fast local file read, not a network call, so
+    it doesn't need its own cache key) rather than threading `sector_lookup`
+    through this function's own signature/cache key."""
+    sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
+    return market_data.fetch_ticker_bundle(tickers, sector_lookup=sector_lookup)
 
 
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Reviewing current holdings...")
@@ -438,6 +472,7 @@ def render_secondary_section(
     risk_amount: float | None,
     position_budget: float | None,
     storage_ok: bool,
+    sector_data: dict | None = None,
 ) -> pd.DataFrame:
     """Score, log, allocate, and display one secondary strategy's results
     against the SAME already-fetched bundle the primary scan used -- no
@@ -455,7 +490,9 @@ def render_secondary_section(
     nothing was analyzed -- so callers (see the LLM Agent tab's candidate
     pre-filter) can see what this strategy found today without re-scoring."""
     st.subheader(label)
-    results, score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+    results, score_skipped = market_data.score_bundle_for_strategy(
+        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+    )
     if not results:
         st.caption("No tickers were successfully analyzed.")
         return pd.DataFrame()
@@ -522,6 +559,8 @@ def render_experimental_section(
     market_df,
     fetch_skipped: list[tuple[str, str]],
     storage_ok: bool,
+    sector_lookup: dict[str, str] | None = None,
+    sector_data: dict | None = None,
 ) -> pd.DataFrame:
     """Score, log, and display one EXPERIMENTAL strategy's results against
     the SAME already-fetched bundle every other section uses -- no extra
@@ -547,7 +586,9 @@ def render_experimental_section(
     showing zeroed sizing columns for a strategy with no cash pool would
     read as a bug, not a design choice."""
     st.subheader(label)
-    results, score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+    results, score_skipped = market_data.score_bundle_for_strategy(
+        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+    )
     if not results:
         st.caption("No tickers were successfully analyzed.")
         return pd.DataFrame()
@@ -760,8 +801,8 @@ def main():
         tickers = tuple(parse_ticker_text(ticker_text))
         st.caption(f"{len(tickers)} ticker(s) loaded.")
 
-    tab1, tab_daily, tab2 = st.tabs(
-        ["Mechanical Strategies", "Daily Signals (experimental)", "LLM Agent (experimental)"]
+    tab1, tab_best_ideas, tab_daily, tab2 = st.tabs(
+        ["Mechanical Strategies", "Best Ideas", "Daily Signals (experimental)", "LLM Agent (experimental)"]
     )
 
     with tab1:
@@ -787,8 +828,10 @@ def main():
             st.stop()
         st.success(f"{market_data.MARKET_INDEX_TICKER} is above its 200-day SMA ({market_close:.2f} >= {market_sma200:.2f}).")
 
-        bundle, market_df, fetch_skipped = cached_fetch_bundle(tickers)
-        primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+        bundle, market_df, fetch_skipped, sector_data = cached_fetch_bundle(tickers)
+        primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(
+            bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+        )
         results_df = pd.DataFrame(primary_results)
         skipped = fetch_skipped + primary_score_skipped
 
@@ -1018,6 +1061,7 @@ def main():
                 secondary_cash[label], apply_allocation,
                 risk_amount, position_budget,
                 storage_ok,
+                sector_data=sector_data,
             )
 
         if generate_ai_context:
@@ -1058,6 +1102,118 @@ def main():
             with st.expander(f"Skipped tickers ({len(skipped)})"):
                 st.dataframe(pd.DataFrame(skipped, columns=["Ticker", "Reason"]), hide_index=True)
 
+    with tab_best_ideas:
+        st.subheader("Best Ideas")
+        st.warning(
+            "**Research tab -- full creative discretion, deliberately built WITHOUT this "
+            "project's usual validate-before-build sequencing (per explicit user request).** "
+            "Blends every methodology this codebase can bring to bear -- the live mechanical "
+            "strategies, the regime switcher, an LLM second opinion (llm_agent.py), a NEW "
+            "sector-relative-strength momentum score, a NEW rule-based qualitative/"
+            "fundamentals composite, and a NEW LLM meta-synthesis call that reasons "
+            "explicitly across all of the above -- into ONE recommendation per ticker. "
+            "Methodologies are blended by their own REAL, measured Information Coefficient/"
+            "Information Ratio (see the track record section below and ic_tracking.py), NOT "
+            "sharpe_like/win_rate, which can be confounded by payoff structure (see "
+            "best_ideas.py's module docstring). Every methodology here -- including the "
+            "3 new ones -- is logged under its own strategy label and settles completely "
+            "independently, same trust-floor discipline as the LLM Agent/Regime Switcher "
+            "tabs: a brand-new methodology gets an equal-weight prior until it clears its "
+            "own 20-settled-trade trust floor, at which point its real demonstrated IR "
+            "takes over the blend. **Never used for capital allocation, ever** -- no cash "
+            "pool, no allocate_capital() call, regardless of how confident a call looks."
+        )
+
+        strategy_frames_bi: dict[str, pd.DataFrame] = {config.strategy: results_df}
+        for label, df in secondary_results_by_label.items():
+            secondary_config, _ = secondary_configs[label]
+            if secondary_config is not None and df is not None and not df.empty:
+                strategy_frames_bi[secondary_config.strategy] = df
+
+        regime_candidates_bi: dict[str, dict[str, dict]] = {}
+        for strategy_name, df in strategy_frames_bi.items():
+            if df is None or df.empty:
+                continue
+            for _, row in df[df["Signal"] != "Ignore"].iterrows():
+                regime_candidates_bi.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
+        regime_picks_bi = [
+            pick for ticker, rows in regime_candidates_bi.items()
+            if (pick := regime_switcher.select_regime_pick(ticker, rows)) is not None
+        ]
+
+        ic_reports = cached_ic_reports()
+        with st.spinner("Generating Best Ideas (mechanical + regime + sector + LLM meta-synthesis)..."):
+            best_ideas_results = best_ideas.run_best_ideas(
+                strategy_frames_bi, regime_picks_bi, bundle, sector_data or {}, sector_lookup, config,
+                ic_reports, macro_snapshot=cached_macro_snapshot(), fetch_llm=llm_agent.is_available(),
+            )
+
+        composite_rows = best_ideas_results["best_ideas"]
+        if not composite_rows:
+            st.caption(
+                "No composite recommendation cleared the Watch threshold today -- either no "
+                "candidate had any available methodology opinion, or every blended score "
+                "landed below the Best Ideas conviction floor. Genuinely empty, not a bug."
+            )
+        else:
+            composite_df = pd.DataFrame(composite_rows).sort_values(
+                "Trade_Score", ascending=False
+            ).reset_index(drop=True)
+            st.dataframe(
+                style_results(composite_df[DISPLAY_COLUMNS_BEST_IDEAS]),
+                width="stretch", hide_index=True,
+            )
+            for _, row in composite_df.iterrows():
+                with st.expander(f"{row['Ticker']} -- {row['Signal']} (conviction {row['Trade_Score']:.0f}/100)"):
+                    st.write(row["Rationale"])
+                    st.caption("Methodology breakdown (score, blend weight):")
+                    breakdown_df = pd.DataFrame([
+                        {"Methodology": name, "Score": info["score"], "Blend Weight": f"{info['weight']:.0%}"}
+                        for name, info in row["Methodology_Breakdown"].items()
+                    ]).sort_values("Blend Weight", ascending=False)
+                    st.dataframe(breakdown_df, width="stretch", hide_index=True)
+
+        if storage_ok:
+            for label, rows in best_ideas_results.items():
+                if not rows:
+                    continue
+                row_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": label})
+                try:
+                    logged = storage.log_trade_signals(pd.DataFrame(rows), row_config.to_dict())
+                    st.caption(
+                        f"[{label}] Logged {logged['actionable']} actionable + {logged['research']} "
+                        "research signal(s) to MongoDB (never capital-allocated)."
+                    )
+                except Exception as exc:
+                    st.warning(f"[{label}] Signal logging failed: {exc}")
+        else:
+            st.caption("MongoDB not connected -- signals aren't being logged.")
+
+        st.divider()
+        st.subheader("Methodology track record (Information Coefficient / Information Ratio)")
+        st.caption(
+            "Rank correlation between each methodology's OWN score at signal time and its "
+            "realized forward pnl_pct at settlement, pooled over rolling 30-day windows "
+            "(daily breadth is too thin for a strict per-day IC) -- IR is mean(IC)/std(IC) "
+            "across those windows: how STABLE the ranking skill is, not just whether it "
+            "showed up once. This is what actually sets each methodology's blend weight "
+            "above -- see ic_tracking.py. A methodology needs >= 20 settled trades before "
+            "its IR drives its weight; below that it contributes at a neutral, equal prior."
+        )
+        methodology_names = best_ideas.METHODOLOGIES + ["best_ideas"]
+        ic_cols = st.columns(len(methodology_names))
+        for col, name in zip(ic_cols, methodology_names):
+            report = ic_reports.get(name) or {"n_settled": 0, "overall_ic": None, "ir": None, "trust_floor_met": False}
+            with col:
+                st.caption(f"**{name}**")
+                st.metric("Settled trades", report["n_settled"])
+                if report["n_settled"] == 0:
+                    st.caption("0 settled trades yet.")
+                else:
+                    st.metric("Overall IC", f"{report['overall_ic']:.2f}" if report["overall_ic"] is not None else "n/a")
+                    st.metric("IR", f"{report['ir']:.2f}" if report["ir"] is not None else "n/a")
+                    st.caption("Trust floor met" if report["trust_floor_met"] else "Below trust floor (20 trades)")
+
     with tab_daily:
         st.warning(
             "**Experimental -- built to fire faster, not yet promoted.** Every strategy in "
@@ -1081,6 +1237,7 @@ def main():
                 experimental_config,
                 bundle, market_df, fetch_skipped,
                 storage_ok,
+                sector_lookup=sector_lookup, sector_data=sector_data,
             )
 
     with tab2:
@@ -1254,6 +1411,83 @@ def main():
                             st.metric("Settled trades", len(outcomes))
                             st.metric("Days since first settled trade", days_elapsed)
                             st.metric("Win rate so far", f"{win_count / len(outcomes) * 100:.1f}%")
+            except Exception as exc:
+                st.caption(f"Could not load validation progress: {exc}")
+        else:
+            st.caption("MongoDB not connected -- no progress to show.")
+
+        st.divider()
+        st.subheader("Regime Switcher (experimental)")
+        st.caption(
+            "For each ticker at least one of the 3 live mechanical strategies (breakout/"
+            "squeeze_breakout/ma_crossover) flagged today, picks whichever one's signal to "
+            "trust based on the ticker's own ADX (>=25 = trending -> prefers breakout, then "
+            "ma_crossover; <25 = choppy -> prefers squeeze_breakout) -- see regime_switcher.py. "
+            "**Deliberately skips this project's own backtesting-validation pipeline** (by "
+            "explicit user choice) -- can ONLY be judged by real settled trades over real time, "
+            "same trust-floor convention as the LLM Agent tab above. **Never used for capital "
+            "allocation** regardless of how confident a pick looks."
+        )
+        strategy_frames: dict[str, pd.DataFrame] = {config.strategy: results_df}
+        for label, df in secondary_results_by_label.items():
+            secondary_config, _ = secondary_configs[label]
+            if secondary_config is not None and df is not None and not df.empty:
+                strategy_frames[secondary_config.strategy] = df
+
+        regime_candidates: dict[str, dict[str, dict]] = {}
+        for strategy_name, df in strategy_frames.items():
+            if df is None or df.empty:
+                continue
+            interesting = df[df["Signal"] != "Ignore"]
+            for _, row in interesting.iterrows():
+                regime_candidates.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
+
+        regime_picks = []
+        for ticker, strategy_rows in regime_candidates.items():
+            pick = regime_switcher.select_regime_pick(ticker, strategy_rows)
+            if pick is not None:
+                regime_picks.append(pick)
+
+        if not regime_picks:
+            st.caption(
+                "No regime-matched picks today -- either nothing scored above Ignore under "
+                "any of the 3 live strategies, or none of today's candidates matched their "
+                "own regime's preferred strategy. Genuinely empty, not a bug."
+            )
+        else:
+            picks_df = pd.DataFrame(regime_picks)
+            st.dataframe(
+                picks_df[["Ticker", "Signal", "Trade_Score", "Regime", "Source_Strategy",
+                          "Buy_Price", "Sell_Price", "Stop_Loss"]],
+                width="stretch", hide_index=True,
+            )
+            if storage_ok:
+                switcher_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "regime_switcher"})
+                try:
+                    logged = storage.log_trade_signals(picks_df, switcher_config.to_dict())
+                    st.caption(
+                        f"Logged {logged['actionable']} actionable + {logged['research']} "
+                        "research signal(s) to MongoDB (strategy=regime_switcher, never "
+                        "capital-allocated)."
+                    )
+                except Exception as exc:
+                    st.warning(f"Signal logging failed: {exc}")
+
+        st.caption("**Validation progress**")
+        if storage_ok:
+            try:
+                db = storage.get_db()
+                outcomes = list(db["Trade_Outcomes"].find({"strategy": "regime_switcher"}))
+                if not outcomes:
+                    st.caption("0 settled trades yet.")
+                else:
+                    first_exit_date = min(o["exit_date"] for o in outcomes)
+                    days_elapsed = (pd.Timestamp.now().normalize() - pd.Timestamp(first_exit_date)).days
+                    win_count = sum(1 for o in outcomes if o["status"] == "WIN")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Settled trades", len(outcomes))
+                    col2.metric("Days since first settled trade", days_elapsed)
+                    col3.metric("Win rate so far", f"{win_count / len(outcomes) * 100:.1f}%")
             except Exception as exc:
                 st.caption(f"Could not load validation progress: {exc}")
         else:

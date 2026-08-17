@@ -313,7 +313,6 @@
     { "ticker": "T", "sector": "Communication Services", "strategy": "Value/Telecom" },
     { "ticker": "TMUS", "sector": "Communication Services", "strategy": "Core/Telecom" },
     { "ticker": "CMCSA", "sector": "Communication Services", "strategy": "Value/Media" },
-    { "ticker": "EA", "sector": "Communication Services", "strategy": "Growth/Gaming" },
     { "ticker": "TTWO", "sector": "Communication Services", "strategy": "Growth/Gaming" },
     { "ticker": "WBD", "sector": "Communication Services", "strategy": "Turnaround/Media" },
     { "ticker": "LYV", "sector": "Communication Services", "strategy": "Growth/Entertainment" },

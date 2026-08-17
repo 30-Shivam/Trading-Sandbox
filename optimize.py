@@ -118,11 +118,19 @@ swingtrade.compute_squeeze_breakout_levels; shipped experimental with a
 CLEAN untuned-defaults result -- beats random-entry timing on ALL cuts
 under BOTH entry-fill models, see improvements.txt item 38, this search
 tests whether tuning can improve an already-solid candidate rather than
-rescue a fragile one) -- everything above (WFO, recency weighting,
+rescue a fragile one); --strategy ma_crossover searches
+ma_crossover_short_window/ma_crossover_long_window/
+atr_take_profit_multiplier/stop_loss_atr_multiplier (short SMA crosses
+above long SMA -- trend confirmation, see
+swingtrade.compute_ma_crossover_levels; previously refined only via manual
+one-at-a-time grid search on the two window params with tp/sl held fixed,
+see improvements.txt item 50 -- this is the first search of all 4
+dimensions jointly) -- everything above (WFO, recency weighting,
 correlation-adjustment, ticker-holdout, champion/challenger) applies
-identically to all seven. Uses config.squeeze_breakout_entry_fill's own
-default ("limit") -- entry-fill mode itself is not part of this search
-space, same as every other strategy's fixed structural choices.
+identically to all eight. Uses config.squeeze_breakout_entry_fill's/
+config.ma_crossover_entry_fill's own default ("limit") -- entry-fill mode
+itself is not part of this search space, same as every other strategy's
+fixed structural choices.
 
 Usage:
     python optimize.py --trials 50 --start 2023-01-01 --end 2026-07-01
@@ -134,6 +142,7 @@ Usage:
     python optimize.py --trials 30 --strategy week52_high        # search the 52-week-high signal instead
     python optimize.py --trials 30 --strategy squeeze_breakout   # search the squeeze-breakout signal instead
     python optimize.py --trials 30 --strategy momentum_burst     # search the momentum-burst signal instead
+    python optimize.py --trials 30 --strategy ma_crossover       # search the MA-crossover signal instead
 """
 
 import argparse
@@ -150,7 +159,7 @@ import pandas as pd
 import storage
 import swingtrade
 from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history
-from watchlist import read_ticker_sectors, read_tickers
+from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -177,6 +186,15 @@ UNDER_SAMPLED_PENALTY = -10.0  # well below any realistic sharpe_like, but finit
 UNDER_SAMPLED_DRAWDOWN_PENALTY = 100.0  # --multi-objective only: worst-possible (100%) drawdown for an
                                          # under-sampled trial, so it's dominated on both axes rather than
                                          # accidentally looking "safe" by having no trades to draw down from
+MIN_TRADES_FOR_TRUSTED_DRAWDOWN = 2 * MIN_TRADES_FOR_SCORE  # --multi-objective only. A trial that clears
+                                         # MIN_TRADES_FOR_SCORE but is still thin (e.g. 55 vs. another
+                                         # trial's 300) reported its raw max_drawdown with no tapering --
+                                         # fewer trades mechanically means less time for a bad losing
+                                         # streak to compound, so the drawdown axis alone could look
+                                         # artificially "safe" purely from selectivity, independent of
+                                         # MIN_TRADES_FOR_SCORE already gating the sharpe axis (see
+                                         # improvements.txt item 23's own flagged follow-up, and
+                                         # taper_drawdown_for_sample_size() below for the fix).
 
 # Search space bounds for the tunables this study is allowed to move.
 # A prior run pinned rsi_oversold_threshold at 54.9/55 and stop_loss_atr_multiplier
@@ -230,6 +248,12 @@ BREAKOUT_RSI_OVERBOUGHT_RANGE = (50.0, 100.0)
 # search decide" reasoning as the overbought threshold above
 # (improvements.txt item 5).
 BREAKOUT_RELATIVE_STRENGTH_RANGE = (-50.0, 15.0)
+# Same range/reasoning as BREAKOUT_RELATIVE_STRENGTH_RANGE, applied to the
+# backtest/Optuna-only Sector_Relative_Strength filter (improvements.txt
+# items 68/70/71) -- shared across breakout/squeeze_breakout/ma_crossover,
+# same permissive lower bound so a search can find "no meaningful
+# filtering" if that's actually best rather than being forced to filter.
+SECTOR_RELATIVE_STRENGTH_RANGE = (-50.0, 15.0)
 # 0.0 = practical "disabled" (a real ratio is always >= 0); upper bound (3.0)
 # requires today's volume to be 3x the prior average -- a genuinely
 # demanding confirmation threshold. Same "let a real search decide"
@@ -341,9 +365,91 @@ SQUEEZE_BREAKOUT_GAIN_PCT_RANGE = (0.5, 6.0)
 # this strategy has no volume co-requirement to also demand a big move.
 # 2.0's default sits well within this range.
 
+# MA-crossover strategy's own search space -- the leanest of any strategy
+# here (2 trigger dimensions + the two shared ATR/stop fields). Unlike
+# every other --strategy branch, this one has never been run through
+# Optuna at all: it was refined only via manual one-at-a-time grid search
+# on short/long window (improvements.txt item 50), with tp/sl held fixed
+# throughout at their promoted values. This is the first JOINT search of
+# all 4 dimensions together, which is why it's included even though the
+# 2-window grid search already found its own local optimum on those 2
+# knobs in isolation.
+MA_CROSSOVER_SHORT_WINDOW_RANGE = (5, 30)
+MA_CROSSOVER_LONG_WINDOW_RANGE = (30, 100)
+# Identical bounds to item 50's own grid-search sweep -- that sweep already
+# covered this exact range one dimension at a time and found v49's
+# untuned baseline (short=20/long=50) was already the best of everything
+# tested on TUNE+HOLD together, so these bounds are known-reasonable, not
+# a fresh guess.
+
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
 # tune them would just teach it to zero out the very realism they exist to add.
+
+
+def build_candidate_config(
+    strategy: str, best_params: dict, pin_atr_take_profit_multiplier: float | None,
+    pin_stop_loss_atr_multiplier: float | None,
+) -> "swingtrade.TradingConfig":
+    """Builds the winning trial's full TradingConfig -- factored out of
+    main() specifically so this is unit-testable in isolation. `best_params`
+    is Optuna's own trial.params dict, which NEVER contains tp/sl when both
+    pin args are given (pinned values are hardcoded constants inside
+    objective(), never passed through trial.suggest_*(), so they're
+    invisible to Optuna's own params dict). Without the explicit override
+    below, the candidate would silently fall back to DEFAULT_CONFIG's tp/sl
+    instead of the pinned values every trial in the search was actually
+    scored under -- a real bug found while re-tuning squeeze_breakout with
+    pinning for the first time via this CLI path (see improvements.txt)."""
+    pinned_tp_sl = (
+        {"atr_take_profit_multiplier": pin_atr_take_profit_multiplier,
+         "stop_loss_atr_multiplier": pin_stop_loss_atr_multiplier}
+        if pin_atr_take_profit_multiplier is not None and pin_stop_loss_atr_multiplier is not None
+        else {}
+    )
+    return swingtrade.TradingConfig(**{
+        **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": strategy, **best_params, **pinned_tp_sl,
+    })
+
+
+def is_below_frequency_floor(effective_trade_count: float, min_effective_trade_count: float | None) -> bool:
+    """Extracted from objective() purely for unit-testability. `None` (the
+    default -- --min-frequency-fraction omitted or 0) always returns False,
+    preserving every existing search's exact behavior unless explicitly
+    opted in. See --min-frequency-fraction's own help text for why this
+    exists."""
+    return min_effective_trade_count is not None and effective_trade_count < min_effective_trade_count
+
+
+def is_below_win_rate_floor(win_rate: float | None, min_win_rate: float | None) -> bool:
+    """Extracted from objective() purely for unit-testability, same shape
+    as is_below_frequency_floor(). `None` (the default -- --min-win-rate
+    omitted or 0) always returns False, preserving every existing search's
+    exact behavior unless explicitly opted in. `win_rate is None` (the
+    under-sampled-to-zero-trades case) is treated as failing the floor --
+    a candidate with no measurable win rate can't be trusted to clear one."""
+    if min_win_rate is None:
+        return False
+    return win_rate is None or win_rate < min_win_rate
+
+
+def taper_drawdown_for_sample_size(max_dd: float, effective_trade_count: float) -> float:
+    """--multi-objective only. Linearly tapers a trial's raw max_drawdown
+    toward UNDER_SAMPLED_DRAWDOWN_PENALTY as effective_trade_count
+    approaches MIN_TRADES_FOR_SCORE from above -- extends the existing
+    binary under-sampled gate (which already fully penalizes anything
+    BELOW MIN_TRADES_FOR_SCORE) to also distrust anything only barely
+    above it, rather than trusting the raw number the moment it clears
+    the floor. At MIN_TRADES_FOR_TRUSTED_DRAWDOWN (2x the floor) and
+    above, returns max_dd completely unchanged. Below MIN_TRADES_FOR_SCORE
+    this is never called -- that case is still handled by the existing
+    binary `under_sampled` check in objective()."""
+    if effective_trade_count >= MIN_TRADES_FOR_TRUSTED_DRAWDOWN:
+        return max_dd
+    span = MIN_TRADES_FOR_TRUSTED_DRAWDOWN - MIN_TRADES_FOR_SCORE
+    fraction = (effective_trade_count - MIN_TRADES_FOR_SCORE) / span
+    fraction = min(max(fraction, 0.0), 1.0)
+    return UNDER_SAMPLED_DRAWDOWN_PENALTY + fraction * (max_dd - UNDER_SAMPLED_DRAWDOWN_PENALTY)
 
 
 def split_tickers_holdout(
@@ -371,6 +477,80 @@ def split_tickers_holdout(
         holdout.extend(group[:n_holdout])
         tune.extend(group[n_holdout:])
     return tune, holdout
+
+
+# Shared default seed set for average_holdout_summary() -- the same 10 seeds
+# used in the 2026-08-15 holdout-noise investigation (improvements.txt item
+# 69), so results stay comparable to that investigation's own numbers.
+DEFAULT_HOLDOUT_SEEDS = [42, 1, 5, 7, 13, 99, 123, 2024, 2025, 777]
+
+
+def average_holdout_summary(
+    trades: list[dict], sector_lookup: dict, holdout_frac: float, seeds: list[int], summarize_fn,
+) -> tuple[dict, dict]:
+    """Average TUNE/HOLDOUT summary stats across multiple ticker-holdout
+    seeds instead of trusting one -- a single fixed-seed split_tickers_holdout()
+    draw carries real, substantial sampling noise at typical holdout sizes
+    (~100 tickers): a companion neutral no-strategy buy-and-hold check found
+    the SAME 102-ticker sample swinging total-return gaps between TUNE and
+    HOLDOUT by -44pp to +54pp purely from which tickers land where, and two
+    real strategy checks (breakout v43, sector relative-strength) both had
+    their HOLDOUT verdict flip direction across just 3 different seeds while
+    their ALL/TUNE cuts stayed stable. See improvements.txt item 69.
+
+    `trades` should already be the FULL, already-computed trade list (every
+    ticker, one simulation pass) -- this function only re-partitions and
+    re-summarizes it under each seed, no re-simulation, so averaging over
+    many seeds is cheap. `summarize_fn` is the caller's own summarize()
+    (wrapping swingtrade.compute_cluster_weights + summarize_trades_weighted).
+
+    Returns (tune_avg, holdout_avg), each a dict with every numeric field
+    from summarize_fn averaged across seeds (None values skipped, not
+    treated as 0 -- annualized_sharpe_like/trades_per_year can legitimately
+    be None on a thin per-seed split), PLUS `_sharpe_like_min`/
+    `_sharpe_like_max`/`_seeds_used` so the spread itself stays visible --
+    hiding the instability behind one averaged number would repeat today's
+    mistake at one more level of abstraction."""
+
+    def _average_bucket(per_seed_summaries: list[dict]) -> dict:
+        # A key is "numeric" if every value seen for it, across every seed,
+        # is either None or a real number -- so a field that's legitimately
+        # None in EVERY seed (e.g. sharpe_like on an empty holdout) still
+        # gets included and averages to None, while a genuinely non-numeric
+        # field (a label string, say) is excluded entirely even if it's
+        # None in some seeds.
+        candidate_keys, excluded_keys = set(), set()
+        for s in per_seed_summaries:
+            for k, v in s.items():
+                if v is None or (isinstance(v, (int, float)) and not isinstance(v, bool)):
+                    candidate_keys.add(k)
+                else:
+                    excluded_keys.add(k)
+        numeric_keys = candidate_keys - excluded_keys
+
+        averaged = {}
+        for key in numeric_keys:
+            values = [s[key] for s in per_seed_summaries if s.get(key) is not None]
+            averaged[key] = round(sum(values) / len(values), 4) if values else None
+        sharpe_values = [s["sharpe_like"] for s in per_seed_summaries if s.get("sharpe_like") is not None]
+        averaged["_sharpe_like_min"] = round(min(sharpe_values), 4) if sharpe_values else None
+        averaged["_sharpe_like_max"] = round(max(sharpe_values), 4) if sharpe_values else None
+        averaged["_seeds_used"] = len(per_seed_summaries)
+        return averaged
+
+    tune_summaries = []
+    holdout_summaries = []
+    for seed in seeds:
+        _, holdout_tickers = split_tickers_holdout(
+            sorted({t["ticker"] for t in trades}), sector_lookup, holdout_frac, seed
+        )
+        holdout_set = set(holdout_tickers)
+        tune_trades = [t for t in trades if t["ticker"] not in holdout_set]
+        holdout_trades = [t for t in trades if t["ticker"] in holdout_set]
+        tune_summaries.append(summarize_fn(tune_trades))
+        holdout_summaries.append(summarize_fn(holdout_trades))
+
+    return _average_bucket(tune_summaries), _average_bucket(holdout_summaries)
 
 
 def fold_weight(fold: swingtrade.Fold, end: pd.Timestamp, half_life_days: float) -> float:
@@ -419,6 +599,9 @@ def build_objective(
     pin_atr_take_profit_multiplier: float | None = None,
     pin_stop_loss_atr_multiplier: float | None = None,
     earnings_data: dict[str, pd.DatetimeIndex] | None = None,
+    min_effective_trade_count: float | None = None,
+    min_win_rate: float | None = None,
+    sector_data: dict[str, pd.DataFrame] | None = None,
 ):
     """`multi_objective=False` (default) is byte-for-byte the original
     single-scalar-objective behavior -- unchanged, so every existing script/
@@ -444,7 +627,32 @@ def build_objective(
     fix that actually worked was pinning tp/sl at a separately-verified
     value and searching nothing else in that dimension. If only one or
     neither is given, falls back to the RRR_FLOOR-respecting sampling
-    below unchanged."""
+    below unchanged.
+
+    `min_effective_trade_count`: if given, any trial whose own TUNE-set
+    effective_trade_count falls below this value is treated as under-
+    sampled (same UNDER_SAMPLED_PENALTY/UNDER_SAMPLED_DRAWDOWN_PENALTY
+    path as failing MIN_TRADES_FOR_SCORE) regardless of how good its
+    sharpe_like/drawdown looks. None (default) disables this entirely --
+    see --min-frequency-fraction's own help text for why this exists:
+    without it, a free multi-filter search has a structural incentive to
+    stack tight filters together and collapse trade frequency, since a
+    smaller sample naturally looks better on risk-adjusted metrics alone.
+
+    `min_win_rate`: same shape, but on win_rate directly instead of
+    frequency -- sharpe_like/drawdown alone can favor a config with a low
+    win rate but rare large winners; if the user wants win_rate to
+    actually gate selection (not just be reported), any trial below this
+    threshold is rejected the same way. None (default) disables this
+    entirely -- see --min-win-rate's own help text.
+
+    `sector_data` (optional, sector NAME -> OHLCV, see watchlist.SECTOR_ETF)
+    backs each trial's backtest/Optuna-only *_sector_relative_strength_min
+    search dimension for breakout/squeeze_breakout/ma_crossover
+    (improvements.txt items 68/70/71) -- threaded straight through to
+    run_walk_forward(). None (default) means every trial's
+    Sector_Relative_Strength reads None/NaN, same as before this
+    parameter existed."""
     def objective(trial: optuna.Trial):
         # Shared by every strategy branch below -- hoisted out of the
         # per-strategy dicts (used to be 7 duplicated independent-sampling
@@ -498,6 +706,9 @@ def build_objective(
                 "breakout_squeeze_zscore_max": trial.suggest_float(
                     "breakout_squeeze_zscore_max", *BREAKOUT_SQUEEZE_ZSCORE_MAX_RANGE
                 ),
+                "breakout_sector_relative_strength_min": trial.suggest_float(
+                    "breakout_sector_relative_strength_min", *SECTOR_RELATIVE_STRENGTH_RANGE
+                ),
             }
         elif strategy == "pullback":
             params = {
@@ -535,7 +746,7 @@ def build_objective(
                 "atr_take_profit_multiplier": atr_take_profit_multiplier,
                 "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
-        else:
+        elif strategy == "squeeze_breakout":
             params = {
                 "squeeze_breakout_zscore_max": trial.suggest_float(
                     "squeeze_breakout_zscore_max", *SQUEEZE_BREAKOUT_ZSCORE_MAX_RANGE
@@ -564,6 +775,23 @@ def build_objective(
                 "squeeze_breakout_obv_zscore_min": trial.suggest_float(
                     "squeeze_breakout_obv_zscore_min", *BREAKOUT_OBV_ZSCORE_MIN_RANGE
                 ),
+                "squeeze_breakout_sector_relative_strength_min": trial.suggest_float(
+                    "squeeze_breakout_sector_relative_strength_min", *SECTOR_RELATIVE_STRENGTH_RANGE
+                ),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
+            }
+        else:
+            params = {
+                "ma_crossover_short_window": trial.suggest_int(
+                    "ma_crossover_short_window", *MA_CROSSOVER_SHORT_WINDOW_RANGE
+                ),
+                "ma_crossover_long_window": trial.suggest_int(
+                    "ma_crossover_long_window", *MA_CROSSOVER_LONG_WINDOW_RANGE
+                ),
+                "ma_crossover_sector_relative_strength_min": trial.suggest_float(
+                    "ma_crossover_sector_relative_strength_min", *SECTOR_RELATIVE_STRENGTH_RANGE
+                ),
                 "atr_take_profit_multiplier": atr_take_profit_multiplier,
                 "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
@@ -574,11 +802,16 @@ def build_objective(
         fold_results = swingtrade.run_walk_forward(
             ticker_data, market_data, folds, candidate, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=strategy, max_workers=max_workers,
+            sector_data=sector_data,
         )
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
 
         under_sampled = metrics["effective_trade_count"] < MIN_TRADES_FOR_SCORE or metrics["sharpe_like"] is None
+        under_sampled = under_sampled or is_below_frequency_floor(
+            metrics["effective_trade_count"], min_effective_trade_count
+        )
+        under_sampled = under_sampled or is_below_win_rate_floor(metrics["win_rate"], min_win_rate)
 
         if not multi_objective:
             return UNDER_SAMPLED_PENALTY if under_sampled else metrics["sharpe_like"]
@@ -587,7 +820,11 @@ def build_objective(
         trial.set_user_attr("max_drawdown", max_dd)
         if under_sampled:
             return UNDER_SAMPLED_PENALTY, UNDER_SAMPLED_DRAWDOWN_PENALTY
-        return metrics["sharpe_like"], (max_dd if max_dd is not None else UNDER_SAMPLED_DRAWDOWN_PENALTY)
+        if max_dd is None:
+            return metrics["sharpe_like"], UNDER_SAMPLED_DRAWDOWN_PENALTY
+        tapered_dd = taper_drawdown_for_sample_size(max_dd, metrics["effective_trade_count"])
+        trial.set_user_attr("tapered_max_drawdown", tapered_dd)
+        return metrics["sharpe_like"], tapered_dd
 
     return objective
 
@@ -642,7 +879,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--strategy",
-        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout"],
+        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout", "ma_crossover"],
         default="rsi",
         help="Which signal to search parameters for. Default: rsi.",
     )
@@ -698,6 +935,32 @@ def main():
         help="Pin stop_loss_atr_multiplier to this exact value -- see --pin-atr-take-profit-multiplier.",
     )
     parser.add_argument(
+        "--min-frequency-fraction", type=float, default=0.0,
+        help="Reject any trial whose own TUNE-set effective_trade_count falls below this "
+             "fraction of DEFAULT_CONFIG's baseline effective_trade_count on the same tickers "
+             "-- 0.0 (default) disables this gate entirely, preserving every existing search's "
+             "exact behavior. Added after a real free-filter search (squeeze_breakout, see "
+             "improvements.txt) found a candidate with a genuine timing edge that also fired "
+             "~11x less often than baseline: with 8 free filter dimensions and no cost for "
+             "reduced frequency, Optuna has a structural incentive to stack tight filters "
+             "together (a smaller, more selective sample naturally looks better on risk-"
+             "adjusted metrics alone). A trial that fails this gate is treated exactly like "
+             "the existing under-sampled case (UNDER_SAMPLED_PENALTY / "
+             "UNDER_SAMPLED_DRAWDOWN_PENALTY), not a new penalty scale.",
+    )
+    parser.add_argument(
+        "--min-win-rate", type=float, default=0.0,
+        help="Reject any trial whose own win_rate (0-100 scale) falls below this value -- "
+             "0.0 (default) disables this gate entirely, preserving every existing search's "
+             "exact behavior. win_rate is already reported in every metrics dict but plays no "
+             "role in what Optuna actually selects (only sharpe_like, and optionally "
+             "max_drawdown, do) -- this makes it an explicit, opt-in selection criterion "
+             "instead of just a number to read afterward. A trial that fails this gate is "
+             "treated exactly like the existing under-sampled case (UNDER_SAMPLED_PENALTY / "
+             "UNDER_SAMPLED_DRAWDOWN_PENALTY), not a new penalty scale or a 3rd Optuna "
+             "objective -- see is_below_win_rate_floor().",
+    )
+    parser.add_argument(
         "--with-catalyst", action="store_true",
         help="Fetch historical earnings dates (one extra yfinance call per ticker, see "
              "run_backtest.fetch_earnings_dates) so Catalyst_Warning is computed honestly "
@@ -737,6 +1000,22 @@ def main():
     if market_data.empty:
         print(f"[ERROR] No data returned for {MARKET_INDEX_TICKER}", file=sys.stderr)
         sys.exit(1)
+
+    # Sector-ETF data (backtest/Optuna-only Sector_Relative_Strength filter,
+    # improvements.txt items 68/70/71) -- only the sectors actually present
+    # in this run's own ticker universe, fetched once regardless of how
+    # many tickers share a sector, same "fetch once, reuse" discipline as
+    # market_data above.
+    sector_data: dict[str, pd.DataFrame] = {}
+    present_sectors = sorted({sector_lookup[t] for t in tickers if t in sector_lookup} & set(SECTOR_ETF))
+    if present_sectors:
+        print(f"Fetching {len(present_sectors)} sector ETF(s) for Sector_Relative_Strength...")
+        for i, sector in enumerate(present_sectors):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_SEC)
+            etf_df = fetch_history(SECTOR_ETF[sector], start, end)
+            if not etf_df.empty:
+                sector_data[sector] = etf_df
 
     ticker_data = {}
     for i, ticker in enumerate(tickers):
@@ -789,6 +1068,7 @@ def main():
     baseline_results = swingtrade.run_walk_forward(
         tune_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
         sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
+        sector_data=sector_data,
     )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
@@ -800,6 +1080,17 @@ def main():
         baseline_drawdown = swingtrade.compute_max_drawdown(swingtrade.flatten_out_sample_trades(baseline_results))
         print(f"  Baseline max_drawdown: {baseline_drawdown}%")
     report_live_outcomes_context()
+
+    min_effective_trade_count = None
+    if args.min_frequency_fraction > 0:
+        min_effective_trade_count = args.min_frequency_fraction * (baseline_metrics["effective_trade_count"] or 0)
+        print(f"\nRejecting any trial with TUNE effective_trade_count below "
+              f"{min_effective_trade_count:.1f} ({args.min_frequency_fraction:.0%} of baseline's "
+              f"{baseline_metrics['effective_trade_count']:.1f}).")
+
+    min_win_rate = args.min_win_rate if args.min_win_rate > 0 else None
+    if min_win_rate is not None:
+        print(f"Rejecting any trial with TUNE win_rate below {min_win_rate:.1f}%.")
 
     sampler = optuna.samplers.TPESampler(seed=args.seed)
     if args.multi_objective:
@@ -813,16 +1104,33 @@ def main():
             pin_atr_take_profit_multiplier=args.pin_atr_take_profit_multiplier,
             pin_stop_loss_atr_multiplier=args.pin_stop_loss_atr_multiplier,
             earnings_data=earnings_data,
+            min_effective_trade_count=min_effective_trade_count,
+            min_win_rate=min_win_rate,
+            sector_data=sector_data,
         ),
         n_trials=args.trials, show_progress_bar=False,
     )
+
+    def _annualized_and_win_rate(trial) -> str:
+        # Pareto/best-trial listings only carry the raw objective value(s)
+        # (t.values), not the full metrics dict -- pull annualized_sharpe_like/
+        # win_rate from the trial's own stored metrics (set via
+        # trial.set_user_attr("metrics", ...) inside objective()) so these
+        # are visible inline without hunting through the full dict below.
+        m = trial.user_attrs.get("metrics", {})
+        ann = m.get("annualized_sharpe_like")
+        wr = m.get("win_rate")
+        ann_str = f"{ann:.3f}" if ann is not None else "n/a"
+        wr_str = f"{wr:.1f}%" if wr is not None else "n/a"
+        return f"annualized_sharpe~{ann_str}, win_rate={wr_str}"
 
     if args.multi_objective:
         pareto = study.best_trials
         print()
         print(f"Pareto front: {len(pareto)} non-dominated trial(s) (sharpe_like, max_drawdown%)")
         for t in sorted(pareto, key=lambda t: -t.values[0]):
-            print(f"  Trial #{t.number}: sharpe_like={t.values[0]:.4f}, max_drawdown={t.values[1]:.2f}%  params={t.params}")
+            print(f"  Trial #{t.number}: sharpe_like={t.values[0]:.4f}, max_drawdown={t.values[1]:.2f}%  "
+                  f"({_annualized_and_win_rate(t)})  params={t.params}")
 
         eligible = [t for t in pareto if t.values[0] > UNDER_SAMPLED_PENALTY]
         if not eligible:
@@ -840,7 +1148,8 @@ def main():
         best_metrics = best.user_attrs.get("metrics", {})
         best_drawdown = best.user_attrs.get("max_drawdown")
         print()
-        print(f"Selected from Pareto front, trial #{best.number}: sharpe_like={best.values[0]:.4f}, max_drawdown={best.values[1]:.2f}%")
+        print(f"Selected from Pareto front, trial #{best.number}: sharpe_like={best.values[0]:.4f}, "
+              f"max_drawdown={best.values[1]:.2f}%  ({_annualized_and_win_rate(best)})")
         print(f"  params: {best.params}")
         print(f"  metrics (TUNE tickers): {best_metrics}")
     else:
@@ -848,7 +1157,8 @@ def main():
         best_metrics = best.user_attrs.get("metrics", {})
         best_drawdown = None
         print()
-        print(f"Best trial #{best.number}: score(sharpe_like or penalty)={best.value:.4f}")
+        print(f"Best trial #{best.number}: score(sharpe_like or penalty)={best.value:.4f}  "
+              f"({_annualized_and_win_rate(best)})")
         print(f"  params: {best.params}")
         print(f"  metrics (TUNE tickers): {best_metrics}")
 
@@ -859,21 +1169,23 @@ def main():
                   "in-sample window.")
             return
 
-    candidate_config = swingtrade.TradingConfig(**{
-        **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": args.strategy, **best.params,
-    })
+    candidate_config = build_candidate_config(
+        args.strategy, best.params, args.pin_atr_take_profit_multiplier, args.pin_stop_loss_atr_multiplier,
+    )
 
     holdout_metrics = {}
     if holdout_ticker_data:
         holdout_baseline_results = swingtrade.run_walk_forward(
             holdout_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
+            sector_data=sector_data,
         )
         holdout_baseline_metrics = summarize_weighted(holdout_baseline_results, end, args.recency_half_life_days)
 
         holdout_candidate_results = swingtrade.run_walk_forward(
             holdout_ticker_data, market_data, folds, candidate_config, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
+            sector_data=sector_data,
         )
         holdout_candidate_metrics = summarize_weighted(holdout_candidate_results, end, args.recency_half_life_days)
 

@@ -1,0 +1,47 @@
+name: Monthly Best Ideas re-validation
+
+# Runs reoptimize_best_ideas.py (improvements.txt item 76) on a monthly
+# cadence -- deliberately separate from daily_run.yml's own daily schedule.
+# This is a much heavier job (full 5-year re-simulation across 2 live
+# mechanical strategies x 5 sector-RS lookback candidates for Check A, plus
+# a real-vs-random 10-seed-averaged HOLDOUT re-check for each strategy for
+# Check B) with no place running daily. PROPOSE ONLY: this job never writes
+# to MongoDB's System_Config, never calls promote_config.py, and does NOT
+# pass --update-baseline -- the baseline file only moves when a human
+# deliberately re-anchors it after reviewing a report (see
+# reoptimize_best_ideas.py's own module docstring for why an
+# auto-updating baseline would mask exactly the kind of slow drift this
+# check exists to catch).
+
+on:
+  schedule:
+    # 14:00 UTC on the 1st of each month -- mid-morning US Eastern, well
+    # clear of both the daily job's own 21:35 UTC slot and typical market
+    # hours (this job makes no live-signal-affecting decisions, so it
+    # doesn't need to run near the close the way daily_run.yml does).
+    - cron: "0 14 1 * *"
+  workflow_dispatch: {}  # lets you trigger a run manually from the Actions tab, e.g. to test this
+
+jobs:
+  monthly-reoptimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90  # generously larger than daily_run.yml's 45 -- this job
+                          # runs 4 full-universe backtest passes (2 strategies x
+                          # {Check A, Check B}), not daily_run.yml's single scan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python reoptimize_best_ideas.py
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # Optional dedicated channel for this job's own reports -- falls
+          # back to the shared DISCORD_WEBHOOK_URL above if unset, same
+          # convention every per-strategy webhook in daily_run.yml follows
+          # (see notifications.get_strategy_webhook_url()).
+          DISCORD_WEBHOOK_URL_BEST_IDEAS_REOPTIMIZE: ${{ secrets.DISCORD_WEBHOOK_URL_BEST_IDEAS_REOPTIMIZE }}
+          # No GEMINI_API_KEY/GROQ_API_KEY here -- this job never calls
+          # llm_agent, only the 2 mechanical strategies + sector-RS.

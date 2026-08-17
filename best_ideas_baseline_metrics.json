@@ -1,0 +1,16 @@
+{
+  "ma_crossover": {
+    "config_version": 55,
+    "date": "2026-08-16",
+    "holdout_sharpe_like": 0.0783,
+    "holdout_win_rate": 45.189,
+    "holdout_annualized_sharpe_like": 0.7805
+  },
+  "squeeze_breakout": {
+    "config_version": 39,
+    "date": "2026-08-16",
+    "holdout_sharpe_like": 0.0153,
+    "holdout_win_rate": 22.342,
+    "holdout_annualized_sharpe_like": 0.2929
+  }
+}

@@ -233,6 +233,24 @@ class TradingConfig:
                                             # feeding the squeeze z-score
                                             # (rolling stdev/mean of
                                             # Close, trading days)
+    sector_relative_strength_lookback_days: int = 63  # ~3 months, standard
+                                            # sector-momentum convention --
+                                            # deliberately its OWN shared
+                                            # window (like adx_window/
+                                            # obv_window/bb_window above),
+                                            # not tied to any one strategy's
+                                            # own trigger window, since this
+                                            # measures broader market
+                                            # context rather than re-scoring
+                                            # the same-window ticker-level
+                                            # Relative_Strength above. See
+                                            # improvements.txt items 68/69 --
+                                            # this exact lookback is what
+                                            # was backtested and validated
+                                            # (tailwind beats headwind on
+                                            # ALL/TUNE/HOLDOUT once checked
+                                            # with a proper multi-seed
+                                            # holdout average).
     bb_squeeze_window: int = 60            # window over which that
                                             # volatility measure is itself
                                             # z-scored, to find "is
@@ -259,6 +277,37 @@ class TradingConfig:
                                             # value -- a real z-score
                                             # essentially never gets that
                                             # extreme
+    breakout_sector_relative_strength_min: float = -100.0  # skip a
+                                            # breakout signal if the
+                                            # ticker's own SECTOR (a real
+                                            # SPDR sector ETF, e.g. XLK for
+                                            # Technology) return over the
+                                            # trailing
+                                            # sector_relative_strength_lookback_days
+                                            # window, minus SPY's return
+                                            # over the same window, is
+                                            # below this -- a broader-
+                                            # context sibling to
+                                            # breakout_relative_strength_min
+                                            # above (that one compares the
+                                            # TICKER to the market; this one
+                                            # compares the ticker's whole
+                                            # SECTOR to the market).
+                                            # BACKTEST/OPTUNA-ONLY as of
+                                            # this field's introduction --
+                                            # market_data.py's live scan
+                                            # path does not fetch sector ETF
+                                            # data, so this reads None/NaN
+                                            # (never excludes on its own,
+                                            # same convention as every other
+                                            # filter here) in live
+                                            # production regardless of this
+                                            # value, until that live-wiring
+                                            # is deliberately added as its
+                                            # own separate step. -100.0 is
+                                            # the practical "disabled"
+                                            # value, same convention as
+                                            # breakout_relative_strength_min.
 
     # Pullback-in-uptrend strategy (swingtrade/levels.compute_pullback_levels,
     # swingtrade/backtest.simulate_pullback_signals) -- a third, independent
@@ -456,6 +505,15 @@ class TradingConfig:
     squeeze_breakout_volume_ratio_min: float = 0.0
     squeeze_breakout_adx_min: float = 0.0
     squeeze_breakout_obv_zscore_min: float = -100.0
+    squeeze_breakout_sector_relative_strength_min: float = -100.0  # sibling
+                                                   # to breakout_sector_relative_strength_min
+                                                   # above -- see that field's own comment
+                                                   # for the full rationale. Same
+                                                   # BACKTEST/OPTUNA-ONLY caveat: reads
+                                                   # None/NaN (never excludes on its own)
+                                                   # in live production until sector-ETF
+                                                   # fetching is separately wired into
+                                                   # market_data.py.
     squeeze_breakout_earnings_gate: bool = False  # excludes a ticker whose Catalyst_Warning
                                                    # is True (within earnings_warning_days of
                                                    # its next earnings report -- reuses that
@@ -584,6 +642,18 @@ class TradingConfig:
                                            # the full rationale. False
                                            # (disabled) is the practical no-op
                                            # default.
+    ma_crossover_sector_relative_strength_min: float = -100.0  # sibling to
+                                           # breakout_sector_relative_strength_min --
+                                           # see that field's own comment for the
+                                           # full rationale. This is ma_crossover's
+                                           # FIRST optional numeric filter (unlike
+                                           # breakout/squeeze_breakout, it launched
+                                           # with no "sharpening" filter family at
+                                           # all). Same BACKTEST/OPTUNA-ONLY caveat:
+                                           # reads None/NaN (never excludes on its
+                                           # own) in live production until sector-ETF
+                                           # fetching is separately wired into
+                                           # market_data.py.
 
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,

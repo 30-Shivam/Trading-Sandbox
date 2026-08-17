@@ -441,6 +441,7 @@ def simulate_breakout_signals(
     window_end,
     config: TradingConfig = DEFAULT_CONFIG,
     sector: str = "Unknown",
+    sector_ohlcv: pd.DataFrame | None = None,
 ) -> list[dict]:
     """Trend-following counterpart to simulate_signals() -- buys strength (a
     new config.breakout_lookback_days-day closing high in a confirmed
@@ -504,7 +505,7 @@ def simulate_breakout_signals(
     eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
 
     market_frame = precompute_rsi_frame(market_ohlcv, config)
-    frame = precompute_breakout_frame(ohlcv, config, market_df=market_ohlcv)
+    frame = precompute_breakout_frame(ohlcv, config, market_df=market_ohlcv, sector_df=sector_ohlcv)
 
     for as_of in eligible_dates:
         try:
@@ -538,6 +539,9 @@ def simulate_breakout_signals(
             continue
         squeeze_zscore = levels.get("Squeeze_Zscore")
         if squeeze_zscore is not None and squeeze_zscore > config.breakout_squeeze_zscore_max:
+            continue
+        sector_rel_strength = levels.get("Sector_Relative_Strength")
+        if sector_rel_strength is not None and sector_rel_strength < config.breakout_sector_relative_strength_min:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]
@@ -1427,6 +1431,7 @@ def simulate_squeeze_breakout_signals(
     config: TradingConfig = DEFAULT_CONFIG,
     earnings_dates: pd.DatetimeIndex | None = None,
     sector: str = "Unknown",
+    sector_ohlcv: pd.DataFrame | None = None,
 ) -> list[dict]:
     """Squeeze-breakout counterpart to simulate_signals()/simulate_breakout_signals()/
     simulate_pullback_signals()/simulate_breakout_retest_signals()/simulate_week52_signals()/
@@ -1478,7 +1483,7 @@ def simulate_squeeze_breakout_signals(
     eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
 
     market_frame = precompute_rsi_frame(market_ohlcv, config)
-    frame = precompute_squeeze_breakout_frame(ohlcv, config, market_df=market_ohlcv)
+    frame = precompute_squeeze_breakout_frame(ohlcv, config, market_df=market_ohlcv, sector_df=sector_ohlcv)
 
     for as_of in eligible_dates:
         try:
@@ -1510,6 +1515,9 @@ def simulate_squeeze_breakout_signals(
             continue
         obv_zscore = levels.get("OBV_Zscore")
         if obv_zscore is not None and obv_zscore < config.squeeze_breakout_obv_zscore_min:
+            continue
+        sector_rel_strength = levels.get("Sector_Relative_Strength")
+        if sector_rel_strength is not None and sector_rel_strength < config.squeeze_breakout_sector_relative_strength_min:
             continue
         if config.squeeze_breakout_earnings_gate and levels["Catalyst_Warning"]:
             continue
@@ -1880,6 +1888,7 @@ def simulate_ma_crossover_signals(
     config: TradingConfig = DEFAULT_CONFIG,
     earnings_dates: pd.DatetimeIndex | None = None,
     sector: str = "Unknown",
+    sector_ohlcv: pd.DataFrame | None = None,
 ) -> list[dict]:
     """Moving-average-crossover counterpart to every other simulate_*_signals()
     this session -- buys the day a short-term SMA crosses ABOVE a
@@ -1921,7 +1930,12 @@ def simulate_ma_crossover_signals(
     eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
 
     market_frame = precompute_rsi_frame(market_ohlcv, config)
-    frame = precompute_ma_crossover_frame(ohlcv, config)
+    # market_df/sector_df threaded through here (previously omitted --
+    # ma_crossover had no Relative_Strength/sector data at all) purely to
+    # enable the new, backtest/Optuna-only Sector_Relative_Strength filter
+    # below; nothing else in this strategy reads Relative_Strength, so this
+    # is additive and changes no existing gating behavior.
+    frame = precompute_ma_crossover_frame(ohlcv, config, market_df=market_ohlcv, sector_df=sector_ohlcv)
 
     for as_of in eligible_dates:
         try:
@@ -1940,6 +1954,9 @@ def simulate_ma_crossover_signals(
         if not levels["MA_Crossover_Signal"]:
             continue
         if config.ma_crossover_earnings_gate and levels["Catalyst_Warning"]:
+            continue
+        sector_rel_strength = levels.get("Sector_Relative_Strength")
+        if sector_rel_strength is not None and sector_rel_strength < config.ma_crossover_sector_relative_strength_min:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]
@@ -2094,6 +2111,7 @@ def run_backtest(
     earnings_data: dict[str, pd.DatetimeIndex] | None = None,
     sector_lookup: dict[str, str] | None = None,
     strategy: str = "rsi",
+    sector_data: dict[str, pd.DataFrame] | None = None,
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
@@ -2120,12 +2138,23 @@ def run_backtest(
     the gap this closes), "adx_trend_entry" (simulate_adx_trend_entry_signals,
     ADX-confirmed trending state; earnings_data still ignored), or
     "ma_crossover" (simulate_ma_crossover_signals, short/long SMA crossover
-    -- earnings_data now honored, same as squeeze_breakout)."""
+    -- earnings_data now honored, same as squeeze_breakout).
+
+    `sector_data` (optional, sector NAME -> that sector's own OHLCV, e.g. a
+    real SPDR ETF like XLK for Technology -- see watchlist.SECTOR_ETF) backs
+    the backtest/Optuna-only Sector_Relative_Strength filter (improvements.txt
+    items 68/70) for "breakout"/"squeeze_breakout"/"ma_crossover" only --
+    resolved per ticker via `sector_lookup`. `None` (default) means no
+    sector data at all -- Sector_Relative_Strength then reads None/NaN and
+    every *_sector_relative_strength_min gate never excludes on its own,
+    same convention as every other optional filter."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
+    sector_data = sector_data or {}
     all_trades = []
     for ticker, ohlcv in ticker_data.items():
         sector = sector_lookup.get(ticker, "Unknown")
+        sector_ohlcv = sector_data.get(sector)
         if strategy == "rsi":
             trades = simulate_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
@@ -2133,7 +2162,8 @@ def run_backtest(
             )
         elif strategy == "breakout":
             trades = simulate_breakout_signals(
-                ticker, ohlcv, market_data, window_start, window_end, config, sector=sector,
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                sector=sector, sector_ohlcv=sector_ohlcv,
             )
         elif strategy == "pullback":
             trades = simulate_pullback_signals(
@@ -2154,7 +2184,7 @@ def run_backtest(
         elif strategy == "squeeze_breakout":
             trades = simulate_squeeze_breakout_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
-                earnings_dates=earnings_data.get(ticker), sector=sector,
+                earnings_dates=earnings_data.get(ticker), sector=sector, sector_ohlcv=sector_ohlcv,
             )
         elif strategy == "adx_trend_entry":
             trades = simulate_adx_trend_entry_signals(
@@ -2163,7 +2193,7 @@ def run_backtest(
         elif strategy == "ma_crossover":
             trades = simulate_ma_crossover_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
-                earnings_dates=earnings_data.get(ticker), sector=sector,
+                earnings_dates=earnings_data.get(ticker), sector=sector, sector_ohlcv=sector_ohlcv,
             )
         else:
             raise ValueError(
@@ -2173,6 +2203,43 @@ def run_backtest(
             )
         all_trades.extend(trades)
     return all_trades
+
+
+def _annualize_sharpe(resolved: list[dict], sharpe_like: float | None) -> tuple[float | None, float | None]:
+    """Shared by summarize_trades()/summarize_trades_weighted() -- sharpe_like
+    is a RAW per-trade ratio (mean/std of pnl_pct across trades), never
+    annualized, which reads as a tiny number (0.02-0.15 typical here) next
+    to the "Sharpe > 1.5" figures usually quoted, since those are almost
+    always ANNUALIZED (scaled by sqrt(periods per year)). This applies the
+    same standard trade-frequency convention: trades_per_year from the
+    pooled trades' own entry_date span, annualized_sharpe_like =
+    sharpe_like * sqrt(trades_per_year). Same explicit caveat as
+    compute_max_drawdown(): an approximation for reading the number on a
+    familiar scale, not a literal compounding portfolio simulation (no
+    concurrent-position capital allocation modeled) -- additive alongside
+    sharpe_like, not a replacement for it.
+
+    Returns (trades_per_year, annualized_sharpe_like), both None if there
+    aren't at least 2 distinct entry dates to establish a rate from, if
+    sharpe_like itself is None, or if the trades don't carry `entry_date`
+    at all -- real callers pool live Trade_Outcomes Mongo documents into a
+    minimal {"status", "pnl_pct"} shape (see optimize.py's
+    report_live_outcomes_context(), settle_trades.py) with no entry_date
+    (those documents use a differently-shaped `signal_date` string
+    instead), so this must degrade gracefully rather than assume the field
+    exists -- same "missing data doesn't crash the summary" convention as
+    everything else in this function."""
+    if sharpe_like is None or len(resolved) < 2:
+        return None, None
+    if any("entry_date" not in t for t in resolved):
+        return None, None
+    entry_dates = [t["entry_date"] for t in resolved]
+    span_days = (max(entry_dates) - min(entry_dates)).days
+    if span_days <= 0:
+        return None, None
+    trades_per_year = len(resolved) / (span_days / 365.25)
+    annualized_sharpe_like = sharpe_like * (trades_per_year ** 0.5)
+    return round(trades_per_year, 1), round(annualized_sharpe_like, 3)
 
 
 def summarize_trades(trades: list[dict]) -> dict:
@@ -2188,6 +2255,7 @@ def summarize_trades(trades: list[dict]) -> dict:
             "win_count": 0, "loss_count": 0, "expired_count": 0,
             "win_rate": None, "avg_pnl_pct": None, "total_pnl_pct": 0.0,
             "pnl_std": None, "sharpe_like": None,
+            "trades_per_year": None, "annualized_sharpe_like": None,
         }
 
     pnls = pd.Series([t["pnl_pct"] for t in resolved])
@@ -2195,6 +2263,8 @@ def summarize_trades(trades: list[dict]) -> dict:
     loss_count = sum(1 for t in resolved if t["status"] == "LOSS")
     expired_count = sum(1 for t in resolved if t["status"] == "EXPIRED")
     pnl_std = float(pnls.std()) if len(pnls) > 1 else 0.0
+    sharpe_like = round(float(pnls.mean() / pnl_std), 3) if pnl_std > 0 else None
+    trades_per_year, annualized_sharpe_like = _annualize_sharpe(resolved, sharpe_like)
 
     return {
         "trade_count": len(resolved),
@@ -2206,7 +2276,9 @@ def summarize_trades(trades: list[dict]) -> dict:
         "avg_pnl_pct": round(float(pnls.mean()), 2),
         "total_pnl_pct": round(float(pnls.sum()), 2),
         "pnl_std": round(pnl_std, 2),
-        "sharpe_like": round(float(pnls.mean() / pnl_std), 3) if pnl_std > 0 else None,
+        "sharpe_like": sharpe_like,
+        "trades_per_year": trades_per_year,
+        "annualized_sharpe_like": annualized_sharpe_like,
     }
 
 
@@ -2255,6 +2327,7 @@ def summarize_trades_weighted(trades: list[dict], weights: list[float]) -> dict:
         return {
             "trade_count": 0, "effective_trade_count": 0.0,
             "win_rate": None, "avg_pnl_pct": None, "pnl_std": None, "sharpe_like": None,
+            "trades_per_year": None, "annualized_sharpe_like": None,
         }
 
     pnl_s = pd.Series([t["pnl_pct"] for t in trades])
@@ -2264,6 +2337,11 @@ def summarize_trades_weighted(trades: list[dict], weights: list[float]) -> dict:
     weighted_var = float((w_s * (pnl_s - weighted_mean) ** 2).sum() / total_weight)
     weighted_std = weighted_var ** 0.5
     effective_n = float(total_weight ** 2 / (w_s ** 2).sum())  # Kish effective sample size
+    sharpe_like = round(weighted_mean / weighted_std, 3) if weighted_std > 0 else None
+    # Frequency-in-time uses the RAW trade list, not the correlation-weighted
+    # effective_n -- how often trades actually occur on the calendar is a
+    # separate question from how independent they are.
+    trades_per_year, annualized_sharpe_like = _annualize_sharpe(trades, sharpe_like)
 
     return {
         "trade_count": len(trades),
@@ -2271,7 +2349,9 @@ def summarize_trades_weighted(trades: list[dict], weights: list[float]) -> dict:
         "win_rate": round(win_weight / total_weight * 100, 2),
         "avg_pnl_pct": round(weighted_mean, 2),
         "pnl_std": round(weighted_std, 2),
-        "sharpe_like": round(weighted_mean / weighted_std, 3) if weighted_std > 0 else None,
+        "sharpe_like": sharpe_like,
+        "trades_per_year": trades_per_year,
+        "annualized_sharpe_like": annualized_sharpe_like,
     }
 
 
@@ -2346,6 +2426,7 @@ class FoldResult:
 def _run_fold_sequential(
     fold: Fold, ticker_data: dict[str, pd.DataFrame], market_data: pd.DataFrame,
     config: TradingConfig, earnings_data: dict, sector_lookup: dict, strategy: str,
+    sector_data: dict[str, pd.DataFrame] | None = None,
 ) -> FoldResult:
     """The actual per-fold work, shared by both the sequential and
     parallel paths of run_walk_forward() -- one fold's in-sample and
@@ -2353,11 +2434,11 @@ def _run_fold_sequential(
     function (not a closure) so it's picklable for ProcessPoolExecutor."""
     in_trades = run_backtest(
         ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config,
-        earnings_data, sector_lookup, strategy,
+        earnings_data, sector_lookup, strategy, sector_data,
     )
     out_trades = run_backtest(
         ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config,
-        earnings_data, sector_lookup, strategy,
+        earnings_data, sector_lookup, strategy, sector_data,
     )
     return FoldResult(
         fold=fold,
@@ -2376,24 +2457,36 @@ def _run_fold_sequential(
 # the pool starts, not once per fold.
 _worker_ticker_data: dict[str, pd.DataFrame] | None = None
 _worker_market_data: pd.DataFrame | None = None
+# Sector-ETF OHLCV (sector NAME -> OHLCV, see watchlist.SECTOR_ETF) -- same
+# "loaded once per worker, not once per fold" treatment as ticker_data/
+# market_data above, since it's the same kind of shared, sizable data
+# (improvements.txt items 68/70). None (default) means no sector data was
+# supplied to run_walk_forward() at all -- every worker's Sector_Relative_Strength
+# then reads None/NaN, same as before this field existed.
+_worker_sector_data: dict[str, pd.DataFrame] | None = None
 
 
-def _init_worker(ticker_data: dict[str, pd.DataFrame], market_data: pd.DataFrame) -> None:
-    global _worker_ticker_data, _worker_market_data
+def _init_worker(
+    ticker_data: dict[str, pd.DataFrame], market_data: pd.DataFrame,
+    sector_data: dict[str, pd.DataFrame] | None = None,
+) -> None:
+    global _worker_ticker_data, _worker_market_data, _worker_sector_data
     _worker_ticker_data = ticker_data
     _worker_market_data = market_data
+    _worker_sector_data = sector_data
 
 
 def _run_fold_worker(
     fold: Fold, config: TradingConfig, earnings_data: dict, sector_lookup: dict, strategy: str,
 ) -> FoldResult:
-    """Same work as _run_fold_sequential(), but reads ticker_data/market_data
-    from this worker process's own module-level copy (set once by
+    """Same work as _run_fold_sequential(), but reads ticker_data/market_data/
+    sector_data from this worker process's own module-level copy (set once by
     _init_worker()) instead of taking them as arguments -- only `fold` and
     `config` (small, cheap to pickle) actually cross the process boundary
     per task."""
     return _run_fold_sequential(
         fold, _worker_ticker_data, _worker_market_data, config, earnings_data, sector_lookup, strategy,
+        _worker_sector_data,
     )
 
 
@@ -2407,6 +2500,7 @@ def run_walk_forward(
     strategy: str = "rsi",
     parallel: bool = True,
     max_workers: int | None = None,
+    sector_data: dict[str, pd.DataFrame] | None = None,
 ) -> list[FoldResult]:
     """Run the backtest across every fold, in-sample and out-of-sample
     separately. Optuna (Phase 5) evaluates a candidate config by scoring it
@@ -2434,10 +2528,20 @@ def run_walk_forward(
     rather than assuming exclusive use of the machine. Pass an explicit
     value (e.g. your full `os.cpu_count()`) for maximum speed if that
     tradeoff is fine for your setup, or 1 for the gentlest possible
-    (though `parallel=False` is cheaper than a 1-worker pool for that)."""
+    (though `parallel=False` is cheaper than a 1-worker pool for that).
+
+    `sector_data` (optional, sector NAME -> OHLCV, see watchlist.SECTOR_ETF)
+    backs the backtest/Optuna-only Sector_Relative_Strength filter
+    (improvements.txt items 68/70) -- threaded through to run_backtest() on
+    both the sequential and parallel paths (loaded once per worker process
+    via the pool initializer on the parallel path, same treatment as
+    ticker_data/market_data). None (default) means no sector data at all,
+    identical to every caller from before this parameter existed."""
     if not parallel or len(folds) <= 1:
         return [
-            _run_fold_sequential(fold, ticker_data, market_data, config, earnings_data, sector_lookup, strategy)
+            _run_fold_sequential(
+                fold, ticker_data, market_data, config, earnings_data, sector_lookup, strategy, sector_data,
+            )
             for fold in folds
         ]
 
@@ -2445,7 +2549,8 @@ def run_walk_forward(
         max_workers = max(1, (os.cpu_count() or 4) - 4)
 
     with ProcessPoolExecutor(
-        max_workers=max_workers, initializer=_init_worker, initargs=(ticker_data, market_data),
+        max_workers=max_workers, initializer=_init_worker,
+        initargs=(ticker_data, market_data, sector_data),
     ) as executor:
         futures = [
             executor.submit(_run_fold_worker, fold, config, earnings_data, sector_lookup, strategy)

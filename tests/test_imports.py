@@ -22,6 +22,8 @@ TOP_LEVEL_MODULES = [
     "market_data",
     "notifications",
     "config_loader",
+    "best_ideas",
+    "ic_tracking",
 ]
 
 

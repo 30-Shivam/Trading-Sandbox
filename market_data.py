@@ -14,6 +14,7 @@ import pandas as pd
 import yfinance as yf
 
 import swingtrade
+from watchlist import SECTOR_ETF
 
 LOOKBACK_PERIOD = "1y"           # data window to fetch (needs 200d+ for SMA200)
 MARKET_INDEX_TICKER = "SPY"      # broad-market proxy for the macro gate
@@ -341,7 +342,8 @@ def get_ticker_currency(ticker: str) -> str:
 
 def fetch_ticker_bundle(
     tickers: tuple[str, ...],
-) -> tuple[dict[str, dict], pd.DataFrame | None, list[tuple[str, str]]]:
+    sector_lookup: dict[str, str] | None = None,
+) -> tuple[dict[str, dict], pd.DataFrame | None, list[tuple[str, str]], dict[str, pd.DataFrame]]:
     """Fetch OHLCV + earnings + headlines for every ticker ONCE, independent
     of any strategy config -- the pure-fetch half of what scan_tickers()
     used to do in one fetch-then-compute-then-discard loop. Also fetches the
@@ -353,7 +355,15 @@ def fetch_ticker_bundle(
     loop, and lets every strategy share the same bundle without needing to
     know ahead of time which of them will actually use it.
 
-    Returns `(bundle, market_df, skipped)`: `bundle` maps ticker ->
+    `sector_lookup` (optional, ticker -> sector, see watchlist.read_ticker_sectors)
+    additionally fetches each DISTINCT sector's own ETF (watchlist.SECTOR_ETF,
+    e.g. XLK for Technology) exactly once regardless of how many tickers
+    share that sector -- backs the backtest/Optuna-only Sector_Relative_Strength
+    filter (improvements.txt items 68/70/71) once threaded through
+    score_bundle_for_strategy() below. `None` (default) skips this
+    entirely -- zero behavior/cost change for callers that don't pass it.
+
+    Returns `(bundle, market_df, skipped, sector_data)`: `bundle` maps ticker ->
     `{"df": OHLCV DataFrame, "next_earnings": Timestamp | None,
     "top_headline": str, "currency": "USD" | "CAD"}` (see
     get_ticker_currency() -- a pure suffix check, not a fetch, so it
@@ -361,7 +371,9 @@ def fetch_ticker_bundle(
     to fetch -- degrades gracefully, same as before: Relative_Strength
     stays `None` rather than failing the whole scan over one extra data
     point); `skipped` is `(ticker, reason)` pairs for tickers whose OWN
-    data failed to fetch.
+    data failed to fetch; `sector_data` maps sector name -> OHLCV (empty
+    dict if `sector_lookup` wasn't given, or if a specific sector's ETF
+    failed to fetch -- same graceful-degradation treatment as market_df).
 
     Callers running more than one strategy against the same tickers (see
     dip_buy_analyzer.py's multi-strategy dashboard sections) should call
@@ -371,6 +383,17 @@ def fetch_ticker_bundle(
         market_df = fetch_data(MARKET_INDEX_TICKER)
     except Exception:
         market_df = None
+
+    sector_data: dict[str, pd.DataFrame] = {}
+    if sector_lookup:
+        present_sectors = sorted({sector_lookup[t] for t in tickers if t in sector_lookup} & set(SECTOR_ETF))
+        for i, sector in enumerate(present_sectors):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_SEC)
+            try:
+                sector_data[sector] = fetch_data(SECTOR_ETF[sector])
+            except Exception:
+                pass  # degrades gracefully, same as market_df above
 
     bundle: dict[str, dict] = {}
     skipped: list[tuple[str, str]] = []
@@ -390,11 +413,13 @@ def fetch_ticker_bundle(
             }
         except Exception as exc:
             skipped.append((ticker, str(exc)))
-    return bundle, market_df, skipped
+    return bundle, market_df, skipped, sector_data
 
 
 def score_bundle_for_strategy(
-    bundle: dict[str, dict], market_df: pd.DataFrame | None, config: swingtrade.TradingConfig
+    bundle: dict[str, dict], market_df: pd.DataFrame | None, config: swingtrade.TradingConfig,
+    sector_lookup: dict[str, str] | None = None,
+    sector_data: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """Compute levels for every ticker in an already-fetched bundle (see
     fetch_ticker_bundle()), dispatching on `config.strategy`: "rsi"
@@ -409,16 +434,27 @@ def score_bundle_for_strategy(
     key ("USD"/"CAD", from fetch_ticker_bundle()'s own get_ticker_currency()
     tag -- informational only, this system does no FX conversion). Pure
     computation, no network calls -- safe and cheap to call once per
-    strategy against the SAME bundle."""
+    strategy against the SAME bundle.
+
+    `sector_lookup` (ticker -> sector) + `sector_data` (sector -> OHLCV,
+    both from fetch_ticker_bundle()) resolve each ticker's own sector ETF
+    for the backtest/Optuna-only Sector_Relative_Strength filter
+    (improvements.txt items 68/70/71) on "breakout"/"squeeze_breakout"/
+    "ma_crossover" only. Either omitted (default None) means every
+    ticker's Sector_Relative_Strength reads None/NaN, same as before this
+    parameter existed."""
+    sector_lookup = sector_lookup or {}
+    sector_data = sector_data or {}
     results = []
     skipped = []
     for ticker, entry in bundle.items():
         df, next_earnings, top_headline = entry["df"], entry["next_earnings"], entry["top_headline"]
+        sector_ohlcv = sector_data.get(sector_lookup.get(ticker))
         try:
             if config.strategy == "breakout":
                 levels = swingtrade.compute_breakout_levels(
                     ticker, df, config, next_earnings_date=next_earnings,
-                    top_headline=top_headline, market_df=market_df,
+                    top_headline=top_headline, market_df=market_df, sector_df=sector_ohlcv,
                 )
             elif config.strategy == "pullback":
                 levels = swingtrade.compute_pullback_levels(
@@ -439,7 +475,7 @@ def score_bundle_for_strategy(
             elif config.strategy == "squeeze_breakout":
                 levels = swingtrade.compute_squeeze_breakout_levels(
                     ticker, df, config, next_earnings_date=next_earnings,
-                    top_headline=top_headline, market_df=market_df,
+                    top_headline=top_headline, market_df=market_df, sector_df=sector_ohlcv,
                 )
             elif config.strategy == "adx_trend_entry":
                 levels = swingtrade.compute_adx_trend_entry_levels(
@@ -449,7 +485,7 @@ def score_bundle_for_strategy(
             elif config.strategy == "ma_crossover":
                 levels = swingtrade.compute_ma_crossover_levels(
                     ticker, df, config, next_earnings_date=next_earnings,
-                    top_headline=top_headline, market_df=market_df,
+                    top_headline=top_headline, market_df=market_df, sector_df=sector_ohlcv,
                 )
             else:
                 levels = swingtrade.compute_levels(
@@ -465,20 +501,29 @@ def score_bundle_for_strategy(
 
 
 def scan_tickers(
-    tickers: tuple[str, ...], config: swingtrade.TradingConfig
+    tickers: tuple[str, ...], config: swingtrade.TradingConfig,
+    sector_lookup: dict[str, str] | None = None,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """Fetch data and compute levels for every ticker. The only network-heavy
     step; callers decide whether/how to cache it (Streamlit wraps this in
     st.cache_data, ingest.py calls it once per process). Signature and
-    behavior are unchanged from before the fetch/compute split below --
-    existing single-strategy callers (ingest.py, the dashboard's primary
-    scan) need no changes. Thin wrapper over fetch_ticker_bundle() +
-    score_bundle_for_strategy() -- callers running MULTIPLE strategies
-    against the same tickers should call those two directly instead (see
-    fetch_ticker_bundle()'s docstring), to fetch once and score many times
-    rather than paying the fetch cost per strategy."""
-    bundle, market_df, fetch_skipped = fetch_ticker_bundle(tickers)
-    results, score_skipped = score_bundle_for_strategy(bundle, market_df, config)
+    behavior are unchanged from before the fetch/compute split below for
+    callers that don't pass `sector_lookup` -- existing single-strategy
+    callers (ingest.py, the dashboard's primary scan) need no changes.
+    Thin wrapper over fetch_ticker_bundle() + score_bundle_for_strategy()
+    -- callers running MULTIPLE strategies against the same tickers should
+    call those two directly instead (see fetch_ticker_bundle()'s
+    docstring), to fetch once and score many times rather than paying the
+    fetch cost per strategy.
+
+    `sector_lookup` (optional, ticker -> sector) backs the backtest/Optuna-
+    only Sector_Relative_Strength filter (improvements.txt items 68/70/71)
+    -- omitted (default None) means every ticker's Sector_Relative_Strength
+    reads None/NaN, same as before this parameter existed."""
+    bundle, market_df, fetch_skipped, sector_data = fetch_ticker_bundle(tickers, sector_lookup=sector_lookup)
+    results, score_skipped = score_bundle_for_strategy(
+        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+    )
     return results, fetch_skipped + score_skipped
 
 

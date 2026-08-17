@@ -539,6 +539,57 @@ def _build_holding_prompt(ticker: str, context: dict) -> str:
     return prompt
 
 
+def _build_meta_synthesis_prompt(ticker: str, context: dict) -> str:
+    """Prompt for evaluate_meta_synthesis() -- a DIFFERENT question from
+    every other prompt-builder in this file: given MULTIPLE methodologies'
+    own independent calls on the SAME ticker today (mechanical strategies,
+    the regime switcher, a sector-relative-strength momentum score, a
+    rule-based qualitative/fundamentals composite -- see best_ideas.py)
+    AND each one's own real, measured Information Coefficient/Information
+    Ratio track record (see ic_tracking.py), synthesize ONE final call and
+    explain which methodology(ies) most drove it. The model is handed the
+    actual IC/IR numbers and explicitly instructed to weigh a methodology
+    with demonstrated positive, trust-floor-cleared ranking skill more
+    than an unproven or historically poor one -- not asked to guess at
+    reliability from vibes."""
+    methodologies = context.get("methodologies") or []
+    lines = []
+    for m in methodologies:
+        ic = m.get("overall_ic")
+        ir = m.get("ir")
+        if ic is not None:
+            ir_str = f"{ir:.2f}" if ir is not None else "not enough windows yet"
+            track_record = (
+                f"overall IC={ic:.2f}, IR={ir_str} ({m.get('n_settled', 0)} settled trades, "
+                f"{'trust floor met' if m.get('trust_floor_met') else 'still building trust floor'})"
+            )
+        else:
+            track_record = f"not enough settled trades yet ({m.get('n_settled', 0)}) to measure a track record"
+        score = m.get("score")
+        score_str = f"{score:.1f}/100" if score is not None else "n/a"
+        lines.append(f"- {m.get('name')}: call={m.get('signal')}, score={score_str}, {track_record}")
+    methodology_block = "\n".join(lines) if lines else "(no methodology opinions available)"
+
+    return (
+        f"Multiple independent trading methodologies have each produced their OWN call on "
+        f"{ticker} today (Last_Close={context.get('last_close')}):\n{methodology_block}\n\n"
+        "Each methodology's 'IC' (Information Coefficient) is the REAL, measured rank "
+        "correlation between that methodology's own past scores and what actually happened "
+        "to price afterward -- a positive IC means it has genuinely ranked winners above "
+        "losers historically; near-zero or negative means it hasn't (yet, or ever). 'IR' "
+        "measures how STABLE that skill has been over time, not just whether it showed up "
+        "once. Weigh methodologies with a real, trust-floor-cleared, positive IC/IR more "
+        "heavily than ones that are unproven or have shown poor ranking skill -- do not just "
+        "average every opinion equally. Synthesize ONE final judgment: given everything above, "
+        "is this ticker worth a human's attention as a candidate swing trade right now? "
+        'Respond ONLY with a JSON object matching exactly this shape: {"decision": "Buy" | '
+        '"Hold" | "Avoid", "confidence": <integer 0-100>, "news_sentiment": "Bullish" | '
+        '"Bearish" | "Neutral", "rationale": "<2-3 plain-language sentences explaining the '
+        "call, explicitly naming which methodology(ies) most drove it and why -- cite their "
+        'track record if it influenced the weighting>"}.'
+    )
+
+
 def _call_gemini(prompt: str, parse_fn=_parse_response) -> dict | None:
     """PRIMARY provider -- see module docstring for why. Returns None
     (never raises) on any failure so callers can fall through to Groq.
@@ -752,3 +803,46 @@ def evaluate_holding(ticker: str, context: dict) -> dict | None:
     gemini_result = _call_gemini(prompt, parse_fn=_parse_holding_response) if _gemini_available() else None
     groq_result = _call_groq(prompt, parse_fn=_parse_holding_response) if _groq_available() else None
     return _resolve_dual(gemini_result, groq_result, "action", CONSERVATIVE_ORDER_HOLD_ACTION)
+
+
+def evaluate_meta_synthesis(ticker: str, context: dict) -> dict | None:
+    """Ask an LLM to synthesize ONE final call across MULTIPLE already-
+    scored methodologies (see best_ideas.py), weighted by each
+    methodology's own REAL, measured IC/IR track record (see
+    ic_tracking.py) rather than by generic prose reasoning about which
+    signal "sounds" more trustworthy. This is the genuine meta-reasoning
+    layer of the "Best Ideas" dashboard tab -- distinct from
+    evaluate_ticker() (a single second opinion on ONE mechanical setup) and
+    from a plain numeric IC/IR-weighted blend (best_ideas.blend_composite()
+    computes that independently and does NOT depend on this function --
+    the composite score stays fully auditable/deterministic even if this
+    call fails or is unavailable).
+
+    `context` expected keys: `last_close`, `methodologies` (list of
+    {"name":, "signal":, "score":, "overall_ic":, "ir":, "n_settled":,
+    "trust_floor_met":} -- see ic_tracking.methodology_report() for where
+    the IC/IR fields come from).
+
+    Same dual-provider behavior as every other evaluate_*() function here
+    (both Gemini/Groq called whenever available, combined via
+    _resolve_dual() using CONSERVATIVE_ORDER_DECISION), same "never
+    raises, None on total failure" contract, and reuses _parse_response
+    unchanged -- this prompt asks for the exact same JSON shape
+    evaluate_ticker() does, just synthesized across methodologies instead
+    of from one setup's raw technicals/news.
+
+    Its own decision/confidence get logged to MongoDB under
+    strategy="best_ideas_meta" (see best_ideas.py) so THIS layer's own
+    ranking skill is independently IC/IR-tracked over time, same as every
+    other methodology feeding the ensemble -- literally answering, with
+    real settled-trade data rather than assumption, whether this
+    meta-reasoning step is worth its own added LLM cost/complexity.
+
+    Returns the same shape as evaluate_ticker() -- {"decision":,
+    "confidence":, "news_sentiment":, "rationale":, "provider_agreement":,
+    "secondary_provider":, "secondary_decision":, "secondary_confidence":}
+    -- or None."""
+    prompt = _build_meta_synthesis_prompt(ticker, context)
+    gemini_result = _call_gemini(prompt) if _gemini_available() else None
+    groq_result = _call_groq(prompt) if _groq_available() else None
+    return _resolve_dual(gemini_result, groq_result, "decision", CONSERVATIVE_ORDER_DECISION)

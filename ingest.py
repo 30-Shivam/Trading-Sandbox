@@ -56,13 +56,16 @@ import pandas as pd
 import yfinance as yf
 
 import ai_context
+import best_ideas
 import config_loader
+import ic_tracking
 import llm_agent
 import market_data
 import notifications
+import regime_switcher
 import storage
 import swingtrade
-from watchlist import read_tickers
+from watchlist import read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -142,6 +145,8 @@ def run_secondary_strategy(
     market_df,
     position_budget: float,
     risk_amount: float | None,
+    sector_lookup: dict[str, str] | None = None,
+    sector_data: dict | None = None,
 ) -> pd.DataFrame:
     """Score, size, and log one secondary strategy's results against the
     SAME already-fetched bundle the primary scan used -- no extra network
@@ -152,7 +157,9 @@ def run_secondary_strategy(
     these are the newly-automated secondary strategies -- see
     improvements.txt. Returns the scored results_df (empty if nothing was
     analyzed) so --with-ai-context can use it."""
-    results, score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+    results, score_skipped = market_data.score_bundle_for_strategy(
+        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+    )
     if not results:
         print(f"{label}: no tickers were successfully analyzed.")
         return pd.DataFrame()
@@ -312,6 +319,111 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
             print(f"[WARN] LLM Agent [{variant}] signal logging failed: {exc}", file=sys.stderr)
 
 
+def run_regime_switcher(strategy_frames: dict[str, pd.DataFrame], config: swingtrade.TradingConfig) -> None:
+    """Headless automation for regime_switcher.py -- see that module's own
+    docstring for the full design/rationale (EXPLICITLY prospective-only,
+    skips the backtesting-validation pipeline every other strategy went
+    through, by deliberate user choice). `strategy_frames` is keyed by the
+    REAL strategy identifier ("breakout"/"squeeze_breakout"/"ma_crossover"),
+    not a display label -- see run()'s own construction of this dict,
+    built alongside (not from) all_signal_frames since that dict's keys
+    are human-readable labels like "Primary (breakout)".
+
+    Automated here (not left dashboard-only like a normal new experimental
+    strategy would be) specifically so its own prospective trust floor
+    accumulates by calendar time regardless of whether anyone opens the
+    dashboard -- the exact gap already identified and fixed for the LLM
+    Agent in item 54. NEVER capital-allocated -- Shares_To_Buy/Est_Cost
+    are always 0, same as llm_agent.py."""
+    candidates: dict[str, dict[str, dict]] = {}
+    for strategy_name, df in strategy_frames.items():
+        if df is None or df.empty:
+            continue
+        interesting = df[df["Signal"] != "Ignore"]
+        for _, row in interesting.iterrows():
+            candidates.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
+
+    if not candidates:
+        print("Regime Switcher: no tickers scored above Ignore under breakout/squeeze_breakout/ma_crossover today -- nothing to evaluate.")
+        return
+
+    switcher_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "regime_switcher"})
+    rows = []
+    for ticker, strategy_rows in candidates.items():
+        pick = regime_switcher.select_regime_pick(ticker, strategy_rows)
+        if pick is None:
+            continue
+        rows.append({
+            "Ticker": ticker, "As_Of": pick["As_Of"], "Signal": pick["Signal"],
+            "Trade_Score": pick["Trade_Score"], "Last_Close": pick["Last_Close"],
+            "Buy_Price": pick["Buy_Price"], "Sell_Price": pick["Sell_Price"], "Stop_Loss": pick["Stop_Loss"],
+            "RRR": pick["RRR"], "RSI": pick.get("RSI"), "ATR": pick["ATR"],
+            "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
+            "Next_Earnings_Date": pick.get("Next_Earnings_Date"),
+            "Catalyst_Warning": pick.get("Catalyst_Warning", False), "Top_Headline": pick.get("Top_Headline", ""),
+            "Currency": pick.get("Currency", "USD"),
+            "Regime": pick["Regime"], "Source_Strategy": pick["Source_Strategy"],
+        })
+        print(f"  {ticker}: {pick['Signal']} (regime={pick['Regime']}, source={pick['Source_Strategy']}, "
+              f"Trade_Score={pick['Trade_Score']:.1f})")
+
+    if not rows:
+        print("Regime Switcher: candidates existed but none matched their regime's preferred strategy -- no picks today.")
+        return
+
+    switcher_df = pd.DataFrame(rows)
+    try:
+        logged = storage.log_trade_signals(switcher_df, switcher_config.to_dict())
+        print(f"Regime Switcher: logged {logged['actionable']} actionable + {logged['research']} research "
+              "signal(s) to MongoDB (strategy=regime_switcher, never capital-allocated, prospective-only -- "
+              "see regime_switcher.py).")
+    except Exception as exc:
+        print(f"[WARN] Regime Switcher signal logging failed: {exc}", file=sys.stderr)
+
+
+def run_best_ideas_strategy(
+    strategy_frames: dict[str, pd.DataFrame], regime_picks: list[dict],
+    bundle: dict, market_df, sector_lookup: dict[str, str] | None,
+    sector_data: dict | None, config: swingtrade.TradingConfig,
+) -> None:
+    """Headless counterpart to dip_buy_analyzer.py's "Best Ideas" tab -- see
+    best_ideas.py for the full methodology/reasoning (an IC/IR-weighted
+    ensemble across ma_crossover/squeeze_breakout/regime_switcher/
+    llm_agent plus 3 new methodologies built for that tab: sector-relative-
+    strength momentum, a rule-based qualitative composite, and an LLM
+    meta-synthesis call). NEVER capital-allocated -- Shares_To_Buy/Est_Cost
+    are always 0, no cash pool, no allocate_capital() call, same as
+    llm_agent.py/regime_switcher.py. Automated here (not left dashboard-
+    only) for the same reason regime_switcher.py's own automation exists:
+    its real prospective trust floor (and every sub-methodology's own
+    IC/IR) should accumulate by calendar time, not just on days someone
+    opens the dashboard.
+
+    Degrades gracefully if llm_agent.is_available() is False -- still
+    computes/logs the mechanical/regime/sector_rs/qualitative-only
+    composite (best_ideas.run_best_ideas() itself gates every LLM/extra-
+    fetch call on `fetch_llm`), just without the LLM/meta enrichment
+    layers that day."""
+    ic_reports = {name: ic_tracking.methodology_report(name) for name in best_ideas.METHODOLOGIES}
+    macro_snapshot = market_data.get_macro_snapshot()
+    results = best_ideas.run_best_ideas(
+        strategy_frames, regime_picks, bundle, sector_data or {}, sector_lookup or {}, config, ic_reports,
+        macro_snapshot=macro_snapshot, fetch_llm=llm_agent.is_available(),
+    )
+    for label, rows in results.items():
+        if not rows:
+            print(f"Best Ideas [{label}]: no signals today.")
+            continue
+        row_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": label})
+        df = pd.DataFrame(rows)
+        try:
+            logged = storage.log_trade_signals(df, row_config.to_dict())
+            print(f"Best Ideas [{label}]: logged {logged['actionable']} actionable + {logged['research']} "
+                  "research signal(s) to MongoDB (never capital-allocated).")
+        except Exception as exc:
+            print(f"[WARN] Best Ideas [{label}] signal logging failed: {exc}", file=sys.stderr)
+
+
 def run(
     watchlist_path: Path, position_budget: float, with_ai_context: bool = False, risk_amount: float | None = None,
 ) -> int:
@@ -347,10 +459,18 @@ def run(
     # Fetched ONCE, shared by the primary scan and both secondary
     # strategies below -- see market_data.fetch_ticker_bundle()'s
     # docstring for why this replaces calling market_data.scan_tickers()
-    # (or its equivalent) three separate times.
-    bundle, market_df, fetch_skipped = market_data.fetch_ticker_bundle(tickers)
+    # (or its equivalent) three separate times. sector_lookup/sector_data
+    # back the backtest/Optuna-only Sector_Relative_Strength filter
+    # (improvements.txt items 68/70/71) -- fast local file read, not a
+    # network call.
+    sector_lookup = read_ticker_sectors(watchlist_path)
+    bundle, market_df, fetch_skipped, sector_data = market_data.fetch_ticker_bundle(
+        tickers, sector_lookup=sector_lookup,
+    )
 
-    primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(bundle, market_df, config)
+    primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(
+        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+    )
     skipped = fetch_skipped + primary_score_skipped
     if not primary_results:
         print("[ERROR] no tickers were successfully analyzed.", file=sys.stderr)
@@ -390,6 +510,12 @@ def run(
         )
 
     all_signal_frames = {f"Primary ({config.strategy})": results_df}
+    # Keyed by the REAL strategy identifier (config.strategy), not a
+    # display label -- regime_switcher.py needs unambiguous strategy names
+    # ("breakout"/"squeeze_breakout"/"ma_crossover"), not "Squeeze Breakout
+    # (v39)"-style labels. Built alongside all_signal_frames from the exact
+    # same already-computed DataFrames, no extra scan cost.
+    strategy_frames = {config.strategy: results_df}
     for label, version in config_loader.SECONDARY_STRATEGY_VERSIONS.items():
         secondary_config, source = config_loader.load_config_by_version(version)
         if secondary_config is None:
@@ -397,9 +523,11 @@ def run(
             continue
         secondary_df = run_secondary_strategy(
             f"{label} (v{version})", secondary_config, bundle, market_df, position_budget, risk_amount,
+            sector_lookup=sector_lookup, sector_data=sector_data,
         )
         if not secondary_df.empty:
             all_signal_frames[f"{label} (v{version})"] = secondary_df
+            strategy_frames[secondary_config.strategy] = secondary_df
 
     if with_ai_context:
         if not ai_context.is_available():
@@ -414,6 +542,27 @@ def run(
                         print(f"\n[{row['Ticker']} ({row['Signal']})] {summary}")
 
     run_llm_agent(all_signal_frames, config)
+    run_regime_switcher(strategy_frames, config)
+
+    # Recomputes the same regime picks run_regime_switcher() just derived
+    # internally (cheap, no network -- pure re-application of
+    # regime_switcher.select_regime_pick() over strategy_frames, already
+    # fetched/scored above) rather than threading a return value through
+    # run_regime_switcher()'s existing signature -- keeps that
+    # already-working function untouched. See best_ideas.py for why the
+    # RAW pick dicts (not run_regime_switcher()'s own reduced row shape)
+    # are what run_best_ideas_strategy() needs.
+    best_ideas_regime_candidates: dict[str, dict[str, dict]] = {}
+    for strategy_name, df in strategy_frames.items():
+        if df is None or df.empty:
+            continue
+        for _, row in df[df["Signal"] != "Ignore"].iterrows():
+            best_ideas_regime_candidates.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
+    regime_picks = [
+        pick for ticker, rows in best_ideas_regime_candidates.items()
+        if (pick := regime_switcher.select_regime_pick(ticker, rows)) is not None
+    ]
+    run_best_ideas_strategy(strategy_frames, regime_picks, bundle, market_df, sector_lookup, sector_data, config)
 
     if skipped:
         print(f"Skipped {len(skipped)} ticker(s) (primary scan -- fetch + scoring failures):")
