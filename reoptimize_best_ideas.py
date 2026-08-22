@@ -22,14 +22,16 @@ Information Coefficient against real historical trades than the current
 backtestable (best_ideas_qualitative/best_ideas_meta structurally aren't --
 no point-in-time archived data, same limit as llm_agent.py).
 
-Check B (this file): have ma_crossover (v55, primary) or squeeze_breakout
-(v39, secondary) -- the 2 live mechanical strategies Best Ideas actually
-draws from -- decayed since their own last real validation? Reuses
-optimize.average_holdout_summary() (item 69's multi-seed methodology) for a
-real-vs-random HOLDOUT comparison, compared against a stored baseline
-(best_ideas_baseline_metrics.json) -- the exact kind of drift that was
-found and acted on twice in one day already this session (squeeze_breakout,
-improvements.txt item 62; breakout's full retirement, item 73).
+Check B (this file): have ma_crossover (v55, primary), squeeze_breakout
+(v39), RSI mean-reversion (v17), or mean-reversion pairs (v58) -- the live
+mechanical strategies Best Ideas actually draws from (see
+LIVE_STRATEGIES_FOR_STALENESS_CHECK) -- decayed since their own last real
+validation? Reuses optimize.average_holdout_summary() (item 69's
+multi-seed methodology) for a real-vs-random HOLDOUT comparison, compared
+against a stored baseline (best_ideas_baseline_metrics.json) -- the exact
+kind of drift that was found and acted on twice in one day already this
+session (squeeze_breakout, improvements.txt item 62; breakout's full
+retirement, item 73).
 
 Usage:
     python reoptimize_best_ideas.py
@@ -66,12 +68,19 @@ REQUEST_DELAY_SEC = 0.5
 # measured for a single strategy's HOLDOUT sharpe_like.
 STALENESS_SHARPE_DROP_THRESHOLD = 0.03
 
-# (strategy, config_version, real_fn_name, random_fn_name) -- the 2 live
-# mechanical strategies best_ideas.METHODOLOGIES actually draws from
+# (strategy, config_version, real_fn_name, random_fn_name) -- every live
+# mechanical strategy best_ideas.METHODOLOGIES actually draws from
 # (breakout/v43 was retired, item 73, and was never in that list anyway).
+# Pinned config_version numbers must stay in sync with
+# config_loader.SECONDARY_STRATEGY_VERSIONS (the live-dashboard source of
+# truth for which candidate version each secondary strategy runs) --
+# ma_crossover alone uses None/active since it's the PRIMARY slot, not a
+# pinned secondary.
 LIVE_STRATEGIES_FOR_STALENESS_CHECK = [
     ("ma_crossover", None, "simulate_ma_crossover_signals", "simulate_random_ma_crossover_entries"),
     ("squeeze_breakout", 39, "simulate_squeeze_breakout_signals", "simulate_random_squeeze_breakout_entries"),
+    ("rsi_mean_reversion", 17, "simulate_signals", "simulate_random_entries"),
+    ("pairs", 58, "simulate_pairs_signals", "simulate_random_pairs_entries"),
 ]
 
 
@@ -115,13 +124,21 @@ def flag_staleness(
 
 def run_staleness_check(
     strategy: str, config_version: int | None, real_fn_name: str, random_fn_name: str,
-    ticker_data: dict, market_data: pd.DataFrame, sector_lookup: dict, start, end, log=print,
+    ticker_data: dict, market_data: pd.DataFrame, sector_lookup: dict, start, end,
+    pair_price_panels: dict[str, pd.DataFrame] | None = None, log=print,
 ) -> dict:
     """Real-vs-random HOLDOUT re-check for one live mechanical strategy,
     reusing the exact optimize.average_holdout_summary() multi-seed
     methodology (item 69) benchmark_random_entry.py itself uses -- so this
     stays honestly comparable to every other HOLDOUT number this project
-    has reported this session."""
+    has reported this session.
+
+    `pair_price_panels` (one wide Close-price panel per sector, see
+    main()'s own construction) is only consulted for strategy="pairs" --
+    without it, simulate_pairs_signals() silently degrades to "Pair_Signal
+    always False" (see its own docstring), which would make this check
+    report an undefined HOLDOUT sharpe_like and falsely flag pairs as
+    stale every single run."""
     if config_version is not None:
         config, label = config_loader.load_config_by_version(config_version)
         if config is None:
@@ -143,7 +160,12 @@ def run_staleness_check(
     real_trades, random_trades = [], []
     for ticker, ohlcv in ticker_data.items():
         sector = sector_lookup.get(ticker, "Unknown")
-        real = real_fn(ticker, ohlcv, market_data, start, end, config, sector=sector)
+        peer_kwargs = {}
+        if strategy == "pairs" and pair_price_panels is not None:
+            panel = pair_price_panels.get(sector)
+            if panel is not None and ticker in panel.columns:
+                peer_kwargs = {"peer_prices": panel.drop(columns=[ticker])}
+        real = real_fn(ticker, ohlcv, market_data, start, end, config, sector=sector, **peer_kwargs)
         real_trades.extend(real)
         random_trades.extend(
             random_fn(ticker, ohlcv, market_data, start, end, len(real), rng, config, sector=sector)
@@ -236,6 +258,19 @@ def main():
             print(f"  [WARN] {ticker}: {exc}", file=sys.stderr)
     log(f"Fetched {len(ticker_data)}/{len(tickers)} ticker(s) for staleness check.")
 
+    # One wide Close-price panel per sector (>= 2 members), for the "pairs"
+    # strategy's partner-selection mechanism -- no new fetch, built from
+    # ticker_data already in hand. Same construction benchmark_random_entry.py
+    # uses (items 82/85); unused by every other strategy in the loop below.
+    pair_price_panels: dict[str, pd.DataFrame] = {}
+    by_sector: dict[str, list[str]] = {}
+    for ticker in ticker_data:
+        by_sector.setdefault(sector_lookup.get(ticker, "Unknown"), []).append(ticker)
+    for sector, members in by_sector.items():
+        if len(members) < 2:
+            continue
+        pair_price_panels[sector] = pd.DataFrame({m: ticker_data[m]["Close"] for m in members})
+
     baseline = load_baseline()
     new_baseline = dict(baseline)
     staleness_flags = []
@@ -243,7 +278,8 @@ def main():
         try:
             check = run_staleness_check(
                 strategy, config_version, real_fn_name, random_fn_name,
-                ticker_data, market_data, sector_lookup, start, end, log=log,
+                ticker_data, market_data, sector_lookup, start, end,
+                pair_price_panels=pair_price_panels, log=log,
             )
         except RuntimeError as exc:
             log(f"  [WARN] {strategy}: staleness check skipped -- {exc}")
