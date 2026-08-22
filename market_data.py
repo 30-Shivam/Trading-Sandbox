@@ -416,10 +416,34 @@ def fetch_ticker_bundle(
     return bundle, market_df, skipped, sector_data
 
 
+def build_pair_price_panels(
+    bundle: dict[str, dict], sector_lookup: dict[str, str] | None
+) -> dict[str, pd.DataFrame]:
+    """One wide Close-price panel per sector (>= 2 members), built from an
+    already-fetched bundle() -- no new network fetch, every ticker's OHLCV
+    is already in hand. Backs the "pairs" strategy's partner-selection
+    mechanism (see swingtrade.levels.precompute_pairs_frame()) for the live
+    dashboard/ingest.py path, same shape/purpose as
+    benchmark_random_entry.py's/optimize.py's own sector_price_panels/
+    pair_price_panels (improvements.txt items 82/83) -- kept here as a
+    shared utility since both live callers need the identical logic."""
+    sector_lookup = sector_lookup or {}
+    by_sector: dict[str, list[str]] = {}
+    for ticker in bundle:
+        by_sector.setdefault(sector_lookup.get(ticker, "Unknown"), []).append(ticker)
+    panels: dict[str, pd.DataFrame] = {}
+    for sector, members in by_sector.items():
+        if len(members) < 2:
+            continue
+        panels[sector] = pd.DataFrame({m: bundle[m]["df"]["Close"] for m in members})
+    return panels
+
+
 def score_bundle_for_strategy(
     bundle: dict[str, dict], market_df: pd.DataFrame | None, config: swingtrade.TradingConfig,
     sector_lookup: dict[str, str] | None = None,
     sector_data: dict[str, pd.DataFrame] | None = None,
+    pair_price_panels: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """Compute levels for every ticker in an already-fetched bundle (see
     fetch_ticker_bundle()), dispatching on `config.strategy`: "rsi"
@@ -445,11 +469,16 @@ def score_bundle_for_strategy(
     parameter existed."""
     sector_lookup = sector_lookup or {}
     sector_data = sector_data or {}
+    pair_price_panels = pair_price_panels or {}
     results = []
     skipped = []
     for ticker, entry in bundle.items():
         df, next_earnings, top_headline = entry["df"], entry["next_earnings"], entry["top_headline"]
         sector_ohlcv = sector_data.get(sector_lookup.get(ticker))
+        pair_panel = pair_price_panels.get(sector_lookup.get(ticker, "Unknown"))
+        peer_prices = (
+            pair_panel.drop(columns=[ticker]) if pair_panel is not None and ticker in pair_panel.columns else None
+        )
         try:
             if config.strategy == "breakout":
                 levels = swingtrade.compute_breakout_levels(
@@ -486,6 +515,11 @@ def score_bundle_for_strategy(
                 levels = swingtrade.compute_ma_crossover_levels(
                     ticker, df, config, next_earnings_date=next_earnings,
                     top_headline=top_headline, market_df=market_df, sector_df=sector_ohlcv,
+                )
+            elif config.strategy == "pairs":
+                levels = swingtrade.compute_pairs_levels(
+                    ticker, df, config, next_earnings_date=next_earnings,
+                    top_headline=top_headline, peer_prices=peer_prices,
                 )
             else:
                 levels = swingtrade.compute_levels(

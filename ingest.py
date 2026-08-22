@@ -105,6 +105,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_adx_trend_entry_trade_score(df, config)
     elif config.strategy == "ma_crossover":
         return swingtrade.add_ma_crossover_trade_score(df, config)
+    elif config.strategy == "pairs":
+        return swingtrade.add_pairs_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -147,6 +149,8 @@ def run_secondary_strategy(
     risk_amount: float | None,
     sector_lookup: dict[str, str] | None = None,
     sector_data: dict | None = None,
+    log_strategy_override: str | None = None,
+    pair_price_panels: dict | None = None,
 ) -> pd.DataFrame:
     """Score, size, and log one secondary strategy's results against the
     SAME already-fetched bundle the primary scan used -- no extra network
@@ -156,9 +160,16 @@ def run_secondary_strategy(
     (no fatal error on empty results, no research_loosened logging) since
     these are the newly-automated secondary strategies -- see
     improvements.txt. Returns the scored results_df (empty if nothing was
-    analyzed) so --with-ai-context can use it."""
+    analyzed) so --with-ai-context can use it.
+
+    `log_strategy_override`, if set, logs Trade_Signals/Trade_Outcomes under
+    a DIFFERENT strategy label than `config.strategy` -- see
+    config_loader.SECONDARY_LOG_STRATEGY_OVERRIDES's own docstring and
+    render_secondary_section()'s matching param (same mechanism, kept in
+    sync so dashboard-triggered and automated runs log identically)."""
     results, score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+        pair_price_panels=pair_price_panels,
     )
     if not results:
         print(f"{label}: no tickers were successfully analyzed.")
@@ -168,7 +179,11 @@ def run_secondary_strategy(
     _size_positions(results_df, config, position_budget, risk_amount)
     results_df = _score_for_strategy(results_df, config)
 
-    logged = storage.log_trade_signals(results_df, config.to_dict())
+    log_config = (
+        swingtrade.TradingConfig(**{**config.to_dict(), "strategy": log_strategy_override})
+        if log_strategy_override else config
+    )
+    logged = storage.log_trade_signals(results_df, log_config.to_dict())
     strong_buys = int((results_df["Signal"] == "Strong Buy").sum())
     buys = int((results_df["Signal"] == "Buy").sum())
     watches = int((results_df["Signal"] == "Watch").sum())
@@ -516,6 +531,10 @@ def run(
     # (v39)"-style labels. Built alongside all_signal_frames from the exact
     # same already-computed DataFrames, no extra scan cost.
     strategy_frames = {config.strategy: results_df}
+    # No new network fetch -- built once from the already-fetched bundle,
+    # shared across every secondary strategy the same way sector_data is
+    # (only "pairs" actually consumes it; harmless/unused otherwise).
+    pair_price_panels = market_data.build_pair_price_panels(bundle, sector_lookup)
     for label, version in config_loader.SECONDARY_STRATEGY_VERSIONS.items():
         secondary_config, source = config_loader.load_config_by_version(version)
         if secondary_config is None:
@@ -524,6 +543,8 @@ def run(
         secondary_df = run_secondary_strategy(
             f"{label} (v{version})", secondary_config, bundle, market_df, position_budget, risk_amount,
             sector_lookup=sector_lookup, sector_data=sector_data,
+            log_strategy_override=config_loader.SECONDARY_LOG_STRATEGY_OVERRIDES.get(label),
+            pair_price_panels=pair_price_panels,
         )
         if not secondary_df.empty:
             all_signal_frames[f"{label} (v{version})"] = secondary_df

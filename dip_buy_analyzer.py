@@ -190,6 +190,19 @@ MAX_LLM_CANDIDATES = 10          # cap on the "LLM Agent" tab's per-page-load ev
 DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash --
                                   # used by the secondary-strategy cash pools (currently
                                   # just Squeeze Breakout, v39)
+SECONDARY_DEFAULT_CASH_OVERRIDES: dict[str, float] = {
+    # squeeze_breakout (v39) lost to random-entry timing on every cut (ALL/TUNE/HOLDOUT) of
+    # a fresh 2026-08-20 multi-seed benchmark -- HOLDOUT sharpe_like 0.0109 vs random's
+    # 0.0298, k_ratio -7.88 vs random's +2.13 (equity curve reliably DECLINING on holdout) --
+    # AND showed a negative real live IC (-0.28 over 27 settled trades). Per explicit user
+    # request, same "zero the default, don't force a full retirement" treatment breakout
+    # (v43) got in item 48 -- still shown/scanned/logged/fed into Best Ideas (useful context
+    # while a viable replacement is sought), just requires deliberately typing in an amount
+    # to actually allocate capital. Per-label (not a DEFAULT_TOTAL_CASH change) so a FUTURE
+    # secondary strategy that clears validation still gets the normal $5,000 default -- see
+    # improvements.txt item 79.
+    "Squeeze Breakout": 0.0,
+}
 DEFAULT_PRIMARY_CASH = 0         # default $ sidebar value for the PRIMARY (breakout,
                                   # v43) cash pool specifically -- deliberately 0, not
                                   # DEFAULT_TOTAL_CASH, since 2026-08-11: breakout (v43)
@@ -242,6 +255,15 @@ DISPLAY_COLUMNS_BREAKOUT = [
     "Ticker", "Currency", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
     "Sell_Price", "RRR", "RSI", "ATR", "Distance_to_Buy_Pct", "Shares_To_Buy",
     "Est_Cost", "Next_Earnings_Date", "Catalyst_Warning", "Top_Headline", "As_Of",
+]
+# Pairs' own row dict (pairs_levels_from_frame) adds Pair_Partner/
+# Pair_Correlation/Pair_Spread_Zscore on top of the generic schema (RSI IS
+# still present, informational only like every other non-RSI strategy).
+DISPLAY_COLUMNS_PAIRS = [
+    "Ticker", "Currency", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
+    "Sell_Price", "RRR", "Pair_Partner", "Pair_Correlation", "Pair_Spread_Zscore", "RSI", "ATR",
+    "Distance_to_Buy_Pct", "Shares_To_Buy", "Est_Cost", "Next_Earnings_Date", "Catalyst_Warning",
+    "Top_Headline", "As_Of",
 ]
 # Best Ideas tab -- never capital-eligible, so Shares_To_Buy/Est_Cost/
 # Distance_to_Buy_Pct are omitted entirely rather than shown as always-zero
@@ -371,6 +393,8 @@ def style_results(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
         "Sell_Price": "{:.2f}",
         "RRR": "{:.2f}",
         "RSI": "{:.1f}",
+        "Pair_Correlation": "{:.3f}",
+        "Pair_Spread_Zscore": "{:.2f}",
         "ATR": "{:.2f}",
         "Distance_to_Buy_Pct": "{:.2f}%",
         "Shares_To_Buy": "{:.4f}",
@@ -455,8 +479,23 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_adx_trend_entry_trade_score(df, config)
     elif config.strategy == "ma_crossover":
         return swingtrade.add_ma_crossover_trade_score(df, config)
+    elif config.strategy == "pairs":
+        return swingtrade.add_pairs_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
+
+
+def _display_columns_for_strategy(strategy: str) -> list[str]:
+    """Which DISPLAY_COLUMNS_* list a strategy's results_df renders with --
+    "rsi" has its own (Oversold_Streak_Days/Extended_Decline_Warning),
+    "pairs" has its own (Pair_Partner/Pair_Correlation/Pair_Spread_Zscore,
+    no RSI column at all), every other strategy shares the generic
+    breakout-shaped set."""
+    if strategy == "rsi":
+        return DISPLAY_COLUMNS_RSI
+    if strategy == "pairs":
+        return DISPLAY_COLUMNS_PAIRS
+    return DISPLAY_COLUMNS_BREAKOUT
 
 
 def render_secondary_section(
@@ -473,6 +512,8 @@ def render_secondary_section(
     position_budget: float | None,
     storage_ok: bool,
     sector_data: dict | None = None,
+    log_strategy_override: str | None = None,
+    pair_price_panels: dict | None = None,
 ) -> pd.DataFrame:
     """Score, log, allocate, and display one secondary strategy's results
     against the SAME already-fetched bundle the primary scan used -- no
@@ -486,12 +527,22 @@ def render_secondary_section(
     are newly-added, alongside-only signals -- see improvements.txt items
     27/28.
 
+    `log_strategy_override`, if set, logs Trade_Signals/Trade_Outcomes under
+    a DIFFERENT strategy label than `config.strategy` -- `config` itself is
+    never touched (every scoring/dispatch call above this still keys off
+    its real `.strategy`), only what gets written to Mongo changes. Same
+    "config drives dispatch, a separate label drives what's logged" pattern
+    llm_agent.py's variant_strategy_name() already established for prompt
+    variants -- see SECONDARY_LOG_STRATEGY_OVERRIDES's own docstring for
+    why RSI Mean-Reversion needs this (improvements.txt item 81).
+
     Returns the scored (post-allocation, if applied) results_df -- empty if
     nothing was analyzed -- so callers (see the LLM Agent tab's candidate
     pre-filter) can see what this strategy found today without re-scoring."""
     st.subheader(label)
     results, score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+        pair_price_panels=pair_price_panels,
     )
     if not results:
         st.caption("No tickers were successfully analyzed.")
@@ -510,7 +561,11 @@ def render_secondary_section(
 
     if storage_ok:
         try:
-            logged = storage.log_trade_signals(results_df, config.to_dict())
+            log_config = (
+                swingtrade.TradingConfig(**{**config.to_dict(), "strategy": log_strategy_override})
+                if log_strategy_override else config
+            )
+            logged = storage.log_trade_signals(results_df, log_config.to_dict())
             st.caption(
                 f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB."
             )
@@ -541,7 +596,7 @@ def render_secondary_section(
     else:
         st.caption(f"{len(results_df)} analyzed. Capital allocation is off.")
 
-    display_columns = DISPLAY_COLUMNS_RSI if config.strategy == "rsi" else DISPLAY_COLUMNS_BREAKOUT
+    display_columns = _display_columns_for_strategy(config.strategy)
     st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
 
     all_skipped = fetch_skipped + score_skipped
@@ -730,13 +785,24 @@ def main():
         for label in SECONDARY_STRATEGY_VERSIONS:
             secondary_config, secondary_source = secondary_configs[label]
             if secondary_config is not None:
+                default_cash = SECONDARY_DEFAULT_CASH_OVERRIDES.get(label, DEFAULT_TOTAL_CASH)
+                help_text = (
+                    f"Separate cash pool for the {label} secondary section below -- "
+                    "not shared with the primary or any other secondary pool."
+                )
+                if label in SECONDARY_DEFAULT_CASH_OVERRIDES:
+                    help_text += (
+                        f" Defaults to $0 -- {label} lost to random-entry timing on every "
+                        "cut of a fresh benchmark and showed a negative real live IC "
+                        "(see improvements.txt item 79), so nothing sizes against it "
+                        "unless you deliberately enter an amount."
+                    )
                 secondary_cash[label] = st.number_input(
                     f"Total Available Cash -- {label} ($)",
                     min_value=0.0,
-                    value=float(DEFAULT_TOTAL_CASH),
+                    value=float(default_cash),
                     step=100.0,
-                    help=f"Separate cash pool for the {label} secondary section below -- "
-                         "not shared with the primary or any other secondary pool.",
+                    help=help_text,
                 )
             else:
                 secondary_cash[label] = 0.0
@@ -1003,7 +1069,15 @@ def main():
                                 st.write(hold_verdict["rationale"])
 
         st.subheader("Scan Results")
-        display_columns = DISPLAY_COLUMNS_BREAKOUT if config.strategy == "breakout" else DISPLAY_COLUMNS_RSI
+        # See _display_columns_for_strategy() -- "rsi"/"pairs" each need
+        # their own column set, every other strategy shares the generic one.
+        # (Historical note: this used to be a plain 2-way ternary that only
+        # ever saw strategy in {"breakout", "rsi"} -- an inverted default
+        # here went unnoticed for most of this project's history until
+        # ma_crossover was promoted to primary and fell through into RSI's
+        # columns; fixed then, generalized into a shared helper now that a
+        # third strategy-specific column set exists.)
+        display_columns = _display_columns_for_strategy(config.strategy)
         st.dataframe(style_results(results_df[display_columns]), width="stretch", hide_index=True)
 
         if config.strategy == "breakout":
@@ -1047,6 +1121,11 @@ def main():
             else:
                 st.dataframe(style_results(shown[display_columns]), width="stretch", hide_index=True)
 
+        # No new network fetch -- built once from the already-fetched bundle,
+        # shared across every secondary strategy the same way sector_data is
+        # (only "pairs" actually consumes it; harmless/unused otherwise).
+        pair_price_panels = market_data.build_pair_price_panels(bundle, sector_lookup)
+
         secondary_results_by_label: dict[str, pd.DataFrame] = {}
         for label in SECONDARY_STRATEGY_VERSIONS:
             secondary_config, _ = secondary_configs[label]
@@ -1062,6 +1141,8 @@ def main():
                 risk_amount, position_budget,
                 storage_ok,
                 sector_data=sector_data,
+                log_strategy_override=config_loader.SECONDARY_LOG_STRATEGY_OVERRIDES.get(label),
+                pair_price_panels=pair_price_panels,
             )
 
         if generate_ai_context:
@@ -1197,13 +1278,27 @@ def main():
             "(daily breadth is too thin for a strict per-day IC) -- IR is mean(IC)/std(IC) "
             "across those windows: how STABLE the ranking skill is, not just whether it "
             "showed up once. This is what actually sets each methodology's blend weight "
-            "above -- see ic_tracking.py. A methodology needs >= 20 settled trades before "
-            "its IR drives its weight; below that it contributes at a neutral, equal prior."
+            "above -- see ic_tracking.py. A methodology needs BOTH >= 20 settled trades AND "
+            "2+ rolling windows (so IR has more than one data point to compute a stdev from) "
+            "before its IR drives its weight; until then it contributes at a neutral, equal "
+            "prior -- clearing the trade-count floor alone is not enough, since a single "
+            "window's IC can't yet say anything about STABILITY."
         )
         methodology_names = best_ideas.METHODOLOGIES + ["best_ideas"]
+        methodology_weights = {name: ic_tracking.ensemble_weight(ic_reports.get(name) or {}) for name in methodology_names}
+        equal_weight_count = sum(1 for w in methodology_weights.values() if w == 1.0)
+        if equal_weight_count:
+            st.caption(
+                f"**{equal_weight_count} of {len(methodology_names)} methodologies are currently on the "
+                "neutral equal-weight prior** (not yet IR-driven) -- today's composite blend is closer to a "
+                "plain average of available opinions than a skill-weighted one for those methodologies, "
+                "regardless of how their own overall IC below looks."
+            )
         ic_cols = st.columns(len(methodology_names))
         for col, name in zip(ic_cols, methodology_names):
             report = ic_reports.get(name) or {"n_settled": 0, "overall_ic": None, "ir": None, "trust_floor_met": False}
+            weight = methodology_weights[name]
+            n_windows = len(report.get("ic_series") or [])
             with col:
                 st.caption(f"**{name}**")
                 st.metric("Settled trades", report["n_settled"])
@@ -1212,7 +1307,15 @@ def main():
                 else:
                     st.metric("Overall IC", f"{report['overall_ic']:.2f}" if report["overall_ic"] is not None else "n/a")
                     st.metric("IR", f"{report['ir']:.2f}" if report["ir"] is not None else "n/a")
-                    st.caption("Trust floor met" if report["trust_floor_met"] else "Below trust floor (20 trades)")
+                    if not report["trust_floor_met"]:
+                        st.caption(f"Below trust floor ({report['n_settled']}/20 settled) -- equal-weight prior")
+                    elif report["ir"] is None:
+                        st.caption(
+                            f"Trust floor met, but only {n_windows} rolling window(s) so far (need 2+ for IR) "
+                            "-- still equal-weight prior"
+                        )
+                    else:
+                        st.caption(f"IR-driven weight: {weight:.2f}")
 
     with tab_daily:
         st.warning(

@@ -655,6 +655,57 @@ class TradingConfig:
                                            # fetching is separately wired into
                                            # market_data.py.
 
+    # Mean-reversion PAIRS strategy (swingtrade/levels.compute_pairs_levels,
+    # swingtrade/backtest.simulate_pairs_signals) -- LONG-ONLY laggard-
+    # convergence: buy a ticker when it has diverged unusually far BELOW its
+    # most-correlated same-sector peer over a recent window, betting on
+    # reversion. Genuinely different mechanism from every trend/volatility-
+    # following strategy tried so far (ticker-vs-peer divergence, not
+    # ticker/sector-vs-market momentum) -- no short leg (this codebase has
+    # no short-position support anywhere), so this is the long-only variant
+    # strategy_selection.txt itself flagged as an option. Deliberately lean
+    # v1, mirroring every other strategy's own launch -- reuses the shared
+    # atr_take_profit_multiplier/stop_loss_atr_multiplier bracket, no new
+    # payoff-geometry fields, no optional "sharpening" filters yet.
+    pairs_lookback_days: int = 90  # trailing window (trading days) used to
+                                           # compute rolling correlation between a
+                                           # ticker and each same-sector peer, to
+                                           # pick its "partner" -- long enough to
+                                           # reflect a real, stable relationship,
+                                           # not short-term coincidence
+    pairs_min_correlation: float = 0.6  # a same-sector peer must clear this
+                                           # rolling correlation to be accepted as
+                                           # a partner at all -- below this, no
+                                           # partner is assigned (missing data,
+                                           # not a fabricated pairing), same
+                                           # "don't exclude on missing/insufficient
+                                           # data" convention as every other
+                                           # optional signal in this codebase
+    pairs_spread_window_days: int = 10  # window (trading days) over which the
+                                           # ticker's own cumulative return minus
+                                           # its partner's is measured -- "how far
+                                           # they've diverged recently"
+    pairs_zscore_window_days: int = 60  # trailing window the spread's own
+                                           # rolling mean/stdev (the z-score's
+                                           # baseline "what's normal for this
+                                           # pair") is computed over
+    pairs_zscore_entry_max: float = -2.0  # Pair_Spread_Zscore must be at or
+                                           # below this to fire -- the ticker has
+                                           # underperformed its partner unusually
+                                           # much (2+ std devs) relative to its own
+                                           # recent history
+    pairs_zscore_strength_cap: float = 2.0  # extra z-score points below
+                                           # pairs_zscore_entry_max that earn full
+                                           # Signal_Strength_Pct credit (same
+                                           # "distance past the trigger"
+                                           # differentiating-term role
+                                           # squeeze_breakout_strength_cap_pct
+                                           # plays, just in z-score units here
+                                           # instead of a %)
+    pairs_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle every
+                                           # other strategy has -- see
+                                           # squeeze_breakout_entry_fill's comment
+
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,
     # trend-following), "pullback" (simulate_pullback_signals,

@@ -108,8 +108,50 @@ import swingtrade
 # means LESS capital sizes against it by default now, not more -- the user
 # must deliberately type in a primary cash amount, same "nothing moves without
 # an explicit action" posture item 48 established.
+# RSI Mean-Reversion (v17) added 2026-08-20 (improvements.txt item 81) after
+# clearing real validation (beats matched-count random-entry timing on every
+# cut, ALL/TUNE/HOLDOUT -- see item 77/80). Real capital consequence: gets
+# the same default $5,000 cash pool ma_crossover got when IT first cleared
+# this bar (item 51's precedent), per explicit user approval -- NOT added to
+# dip_buy_analyzer.py's own SECONDARY_DEFAULT_CASH_OVERRIDES. Its Trade_
+# Signals/Trade_Outcomes log under strategy="rsi_mean_reversion", NOT bare
+# "rsi" -- Mongo already has 175 settled trades tagged strategy="rsi" from
+# 2026-07-24/31, predating v17's tuning and this project's own ticker-
+# holdout/multi-seed/RRR-floor fixes; a distinct label avoids silently
+# pooling those stale, unrelated trades into v17's fresh IC/IR track record
+# -- see SECONDARY_LOG_STRATEGY_OVERRIDES immediately below.
+# Mean-Reversion Pairs (v58, lean v1 -- all DEFAULT_CONFIG values, no Optuna
+# tuning) added 2026-08-21 (improvements.txt items 82/84) after clearing the
+# same real validation gate. Deliberately the LEAN candidate, not the
+# Optuna-tuned v57 (also validated, real improvement on sharpe_like/
+# k_ratio) -- v57's HOLDOUT win_rate (12.32%) exceeded the user's own risk
+# tolerance despite the stronger aggregate numbers; v58's much higher
+# win_rate (42%) was chosen instead, per explicit user decision. v57 stays
+# an unpromoted, unwired candidate for future reconsideration once pairs
+# has its own real prospective track record. No existing Trade_Signals/
+# Trade_Outcomes contamination risk under strategy="pairs" (confirmed via a
+# direct Mongo count before wiring -- 0 documents, unlike RSI's case) -- no
+# SECONDARY_LOG_STRATEGY_OVERRIDES entry needed, logs under its own real
+# "pairs" label directly. Real capital consequence: gets the same default
+# $5,000 cash pool every other newly-cleared secondary strategy has gotten.
 SECONDARY_STRATEGY_VERSIONS = {
     "Squeeze Breakout": 39,
+    "RSI Mean-Reversion": 17,
+    "Mean-Reversion Pairs": 58,
+}
+
+# Per-label override of what strategy name gets LOGGED to Mongo, separate
+# from config.strategy (which every scoring/dispatch function still keys
+# off unchanged -- see dip_buy_analyzer.py's render_secondary_section()/
+# ingest.py's run_secondary_strategy(), both take a log_strategy_override
+# param that builds a throwaway TradingConfig with ONLY .strategy swapped,
+# used solely for storage.log_trade_signals()'s config_snapshot argument).
+# Same "config drives dispatch, a separate label drives what's logged"
+# pattern llm_agent.py's variant_strategy_name() already established for
+# prompt variants. A label absent from this dict logs under its own real
+# config.strategy unchanged (e.g. Squeeze Breakout -> "squeeze_breakout").
+SECONDARY_LOG_STRATEGY_OVERRIDES: dict[str, str] = {
+    "RSI Mean-Reversion": "rsi_mean_reversion",
 }
 
 # Fixed candidate System_Config versions for EXPERIMENTAL strategies --

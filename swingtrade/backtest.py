@@ -55,11 +55,13 @@ but a real one. See optimize.py's summarize_weighted() for where this
 combines with the existing recency weighting.
 """
 
+import math
 import os
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from .config import DEFAULT_CONFIG, TradingConfig
@@ -76,10 +78,12 @@ from .levels import (
     precompute_breakout_retest_frame,
     precompute_ma_crossover_frame,
     precompute_momentum_burst_frame,
+    precompute_pairs_frame,
     precompute_pullback_frame,
     precompute_rsi_frame,
     precompute_squeeze_breakout_frame,
     precompute_week52_frame,
+    pairs_levels_from_frame,
     pullback_levels_from_frame,
     squeeze_breakout_levels_from_frame,
     week52_levels_from_frame,
@@ -1667,6 +1671,206 @@ def simulate_random_squeeze_breakout_entries(
     return trades
 
 
+def simulate_pairs_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+    peer_prices: pd.DataFrame | None = None,
+) -> list[dict]:
+    """Mean-reversion PAIRS counterpart to simulate_signals()/simulate_breakout_signals()/
+    .../simulate_squeeze_breakout_signals() -- buys a ticker when it has
+    diverged unusually far BELOW its most-correlated same-sector peer over
+    a recent window (Pair_Spread_Zscore <= config.pairs_zscore_entry_max),
+    in a confirmed macro uptrend. See swingtrade/config.py's pairs_* fields
+    and swingtrade/levels.precompute_pairs_frame() for the full mechanism.
+    LONG-ONLY (no short leg -- this codebase has no short-position support
+    anywhere); this is the laggard-convergence side only.
+
+    Same no-look-ahead discipline, same entry-timing realism.
+    config.pairs_entry_fill selects the fill model (same "limit" vs.
+    "next_open" toggle every other strategy has). Same ATR-multiple
+    stop/target sizing.
+
+    `peer_prices` should be a wide DataFrame of Close prices for every
+    OTHER ticker in this ticker's own sector (caller's job to pre-filter by
+    sector, this ticker's own column excluded) -- see
+    precompute_pairs_frame()'s own docstring. Without it, Pair_Signal is
+    always False (no partner data, degrades to "never fires," same
+    convention as every other optional-data-dependent strategy)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_pairs_frame(ohlcv, peer_prices, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = pairs_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        if not levels["Pair_Signal"]:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.pairs_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Pairs",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_pairs_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_pairs_signals() -- same idea as
+    the other simulate_random_*_entries() functions, using this strategy's
+    own gates (macro uptrend, liquidity via pairs_levels_from_frame) and
+    the SAME config.pairs_entry_fill-selected fill mechanic, so it isolates
+    whether pairs-divergence TIMING adds value over a random day using the
+    identical Buy_Price formula (that day's own Close) and entry/exit
+    structure. `n_trades` should be simulate_pairs_signals()'s real signal
+    count for this ticker/window, so trade volume is matched. This is the
+    critical validation gate for this strategy -- see
+    benchmark_random_entry.py.
+
+    Deliberately does NOT take `peer_prices` -- called with peer_prices=None,
+    so Pair_Signal is always False, but the candidate pool is every day
+    that passed the shared macro/liquidity gates regardless (same "answers
+    whether TIMING adds value, not whether this filter helps" precedent
+    every other random baseline follows -- see
+    simulate_random_squeeze_breakout_entries()'s identical reasoning)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_pairs_frame(ohlcv, None, config)
+
+    candidates = []  # (as_of, buy_price, atr, catalyst_warning) for every day that passed the macro/liquidity gates, pair signal or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = pairs_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr, catalyst_warning in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.pairs_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_Pairs",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": catalyst_warning,
+            **result,
+        })
+
+    return trades
+
+
 def simulate_adx_trend_entry_signals(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -2112,6 +2316,7 @@ def run_backtest(
     sector_lookup: dict[str, str] | None = None,
     strategy: str = "rsi",
     sector_data: dict[str, pd.DataFrame] | None = None,
+    pair_price_panels: dict[str, pd.DataFrame] | None = None,
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
@@ -2147,14 +2352,29 @@ def run_backtest(
     resolved per ticker via `sector_lookup`. `None` (default) means no
     sector data at all -- Sector_Relative_Strength then reads None/NaN and
     every *_sector_relative_strength_min gate never excludes on its own,
-    same convention as every other optional filter."""
+    same convention as every other optional filter.
+
+    `pair_price_panels` (optional, sector NAME -> wide Close-price
+    DataFrame of every ticker in that sector, same shape/resolution
+    convention as `sector_data` above) backs the "pairs" strategy's
+    partner-selection/spread-zscore mechanism -- see
+    swingtrade/levels.precompute_pairs_frame(). Resolved per ticker into
+    `peer_prices` by dropping that ticker's own column from its sector's
+    panel. `None` (default) means no peer data at all -- Pair_Signal then
+    always reads False, same "missing optional data never fabricates a
+    signal" convention as sector_data."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     sector_data = sector_data or {}
+    pair_price_panels = pair_price_panels or {}
     all_trades = []
     for ticker, ohlcv in ticker_data.items():
         sector = sector_lookup.get(ticker, "Unknown")
         sector_ohlcv = sector_data.get(sector)
+        pair_panel = pair_price_panels.get(sector)
+        peer_prices = (
+            pair_panel.drop(columns=[ticker]) if pair_panel is not None and ticker in pair_panel.columns else None
+        )
         if strategy == "rsi":
             trades = simulate_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
@@ -2195,11 +2415,16 @@ def run_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector, sector_ohlcv=sector_ohlcv,
             )
+        elif strategy == "pairs":
+            trades = simulate_pairs_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector, peer_prices=peer_prices,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
-                "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', or 'ma_crossover')"
+                "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', or 'pairs')"
             )
         all_trades.extend(trades)
     return all_trades
@@ -2255,7 +2480,7 @@ def summarize_trades(trades: list[dict]) -> dict:
             "win_count": 0, "loss_count": 0, "expired_count": 0,
             "win_rate": None, "avg_pnl_pct": None, "total_pnl_pct": 0.0,
             "pnl_std": None, "sharpe_like": None,
-            "trades_per_year": None, "annualized_sharpe_like": None,
+            "trades_per_year": None, "annualized_sharpe_like": None, "k_ratio": None,
         }
 
     pnls = pd.Series([t["pnl_pct"] for t in resolved])
@@ -2279,6 +2504,7 @@ def summarize_trades(trades: list[dict]) -> dict:
         "sharpe_like": sharpe_like,
         "trades_per_year": trades_per_year,
         "annualized_sharpe_like": annualized_sharpe_like,
+        "k_ratio": compute_k_ratio(resolved),
     }
 
 
@@ -2327,7 +2553,7 @@ def summarize_trades_weighted(trades: list[dict], weights: list[float]) -> dict:
         return {
             "trade_count": 0, "effective_trade_count": 0.0,
             "win_rate": None, "avg_pnl_pct": None, "pnl_std": None, "sharpe_like": None,
-            "trades_per_year": None, "annualized_sharpe_like": None,
+            "trades_per_year": None, "annualized_sharpe_like": None, "k_ratio": None,
         }
 
     pnl_s = pd.Series([t["pnl_pct"] for t in trades])
@@ -2352,6 +2578,13 @@ def summarize_trades_weighted(trades: list[dict], weights: list[float]) -> dict:
         "sharpe_like": sharpe_like,
         "trades_per_year": trades_per_year,
         "annualized_sharpe_like": annualized_sharpe_like,
+        # k_ratio is computed on the RAW trade list (unweighted equity curve),
+        # same "frequency-in-time uses raw trades" rationale as trades_per_year
+        # above -- the correlation weighting summarize_trades_weighted() applies
+        # to sharpe_like/win_rate doesn't have an equivalent for a sequential
+        # equity-curve regression (there's no such thing as a "weighted" curve
+        # ordering), so this reuses compute_k_ratio() exactly as-is.
+        "k_ratio": compute_k_ratio(trades),
     }
 
 
@@ -2368,6 +2601,31 @@ def summarize_by_catalyst(trades: list[dict]) -> dict:
         "catalyst_warning_true": summarize_trades(with_catalyst),
         "catalyst_warning_false": summarize_trades(without_catalyst),
     }
+
+
+def summarize_by_period(trades: list[dict], summarize_fn=None) -> dict:
+    """Split summarize_trades()-style output by calendar YEAR of each
+    trade's entry_date -- lets you see whether an edge holds up
+    consistently over time or is concentrated in one calendar
+    stretch/regime, distinct from the ticker-holdout split (item 69,
+    generalization across TICKERS) or k_ratio (item 77, smoothness within
+    the one ordering that actually happened). Trades with no entry_date
+    (shouldn't happen -- every simulate_*_signals() call sets it) are
+    skipped rather than crashing.
+
+    `summarize_fn` lets callers pass their own weighted/cluster-adjusted
+    summarizer (e.g. benchmark_random_entry.py's own summarize()) instead
+    of the plain summarize_trades() default -- same pattern as
+    optimize.average_holdout_summary()'s own summarize_fn param."""
+    if summarize_fn is None:
+        summarize_fn = summarize_trades
+    buckets: dict[int, list[dict]] = {}
+    for t in trades:
+        entry_date = t.get("entry_date")
+        if entry_date is None:
+            continue
+        buckets.setdefault(entry_date.year, []).append(t)
+    return {str(year): summarize_fn(bucket) for year, bucket in sorted(buckets.items())}
 
 
 def compute_max_drawdown(trades: list[dict]) -> float | None:
@@ -2402,6 +2660,107 @@ def compute_max_drawdown(trades: list[dict]) -> float | None:
     return round(max_dd * 100, 2)
 
 
+def monte_carlo_drawdown(trades: list[dict], n_simulations: int = 1000, seed: int = 42) -> dict | None:
+    """How much of compute_max_drawdown()'s single chronological-order
+    result is just the LUCK of the particular sequence a fixed set of
+    trades happened to occur in? Reshuffles the same resolved trades'
+    pnl_pct values into n_simulations random orderings, sequentially
+    compounds each (same "not a real concurrent-position portfolio sim"
+    simplification as compute_max_drawdown()), and reports the resulting
+    max_drawdown distribution -- a materially worse P95/worst case than
+    the actual chronological run means the smooth-looking real equity
+    curve was partly lucky ordering, not just genuine edge quality.
+
+    Reshuffles ORDER only, not trade SELECTION -- this answers "how lucky
+    was the sequence", not "how lucky was the sample" (that's what
+    ticker-holdout already checks, see item 69).
+
+    Returns None with fewer than 3 resolved trades (mirrors
+    compute_k_ratio()'s floor -- not enough trades for a distribution to
+    mean anything)."""
+    resolved = [t for t in trades if t["status"] != "OPEN"]
+    if len(resolved) < 3:
+        return None
+
+    pnl_pct = np.array([t["pnl_pct"] for t in resolved], dtype=float)
+    rng = np.random.default_rng(seed)
+    shuffled = rng.permuted(np.tile(pnl_pct, (n_simulations, 1)), axis=1)
+
+    equity = np.cumprod(1 + shuffled / 100, axis=1)
+    peak = np.maximum.accumulate(equity, axis=1)
+    drawdown = np.where(peak > 0, (peak - equity) / peak, 0.0)
+    max_dd_pct = drawdown.max(axis=1) * 100
+
+    return {
+        "n_simulations": n_simulations,
+        "n_trades": len(resolved),
+        "actual_chronological_max_drawdown": compute_max_drawdown(trades),
+        "monte_carlo_mean": round(float(max_dd_pct.mean()), 2),
+        "monte_carlo_median": round(float(np.median(max_dd_pct)), 2),
+        "monte_carlo_p95": round(float(np.percentile(max_dd_pct, 95)), 2),
+        "monte_carlo_worst": round(float(max_dd_pct.max()), 2),
+    }
+
+
+def compute_k_ratio(trades: list[dict]) -> float | None:
+    """K-ratio: how CONSISTENTLY a sequential equity curve compounds over
+    calendar time, distinct from sharpe_like (mean/stdev of per-trade
+    returns) which is blind to *ordering* -- two configs with identical
+    win_rate/sharpe_like can still differ sharply in whether gains accrue
+    steadily or in one lumpy cluster. Built the same way as
+    compute_max_drawdown(): compound resolved trades into a single
+    sequential equity curve in chronological (entry_date) order (same
+    "not a real concurrent-position portfolio sim" caveat applies), then
+    fit an OLS regression of log(equity) against elapsed calendar days
+    (log-space so compounding growth is linear, the standard K-ratio
+    setup). K-ratio is the regression slope's t-statistic (slope divided
+    by its own standard error) -- large and positive means equity grew
+    steadily and reliably in a straight line; near zero or negative means
+    the trend is noisy, flat, or reversing.
+
+    Deliberately RAW, not annualized or scaled by sample size -- same
+    "comparable only within a similarly-sized/timed run" convention
+    sharpe_like already follows (see strategy-validation-pipeline memory
+    point 12): only compare k_ratio between runs over the same calendar
+    window and trade universe, never across runs of different length.
+
+    Returns None with fewer than 3 resolved trades, when trades don't
+    carry entry_date at all (same degrade-gracefully convention as
+    _annualize_sharpe(), for live-Mongo-pooled trades that lack it), when
+    every trade shares one entry_date (no time axis to regress against),
+    or in the degenerate zero-residual-variance case (avoids a
+    divide-by-zero rather than returning a nonsensical infinite value)."""
+    resolved = [t for t in trades if t["status"] != "OPEN"]
+    if len(resolved) < 3 or any("entry_date" not in t for t in resolved):
+        return None
+
+    ordered = sorted(resolved, key=lambda t: t["entry_date"])
+    start = ordered[0]["entry_date"]
+    equity = 1.0
+    xs, ys = [], []
+    for t in ordered:
+        equity *= (1 + t["pnl_pct"] / 100)
+        if equity <= 0:
+            return None
+        xs.append(float((t["entry_date"] - start).days))
+        ys.append(math.log(equity))
+
+    x = pd.Series(xs)
+    y = pd.Series(ys)
+    n = len(x)
+    sxx = float(((x - x.mean()) ** 2).sum())
+    if sxx == 0:
+        return None
+    slope = float(((x - x.mean()) * (y - y.mean())).sum() / sxx)
+    intercept = float(y.mean() - slope * x.mean())
+    residuals = y - (intercept + slope * x)
+    residual_var = float((residuals ** 2).sum()) / (n - 2)
+    se_slope = (residual_var / sxx) ** 0.5
+    if se_slope == 0:
+        return None
+    return round(slope / se_slope, 3)
+
+
 def flatten_out_sample_trades(fold_results: list) -> list[dict]:
     """All resolved (non-OPEN) out-of-sample trades across every fold,
     pooled WITHOUT weighting -- unlike summarize_weighted() (which needs
@@ -2427,6 +2786,7 @@ def _run_fold_sequential(
     fold: Fold, ticker_data: dict[str, pd.DataFrame], market_data: pd.DataFrame,
     config: TradingConfig, earnings_data: dict, sector_lookup: dict, strategy: str,
     sector_data: dict[str, pd.DataFrame] | None = None,
+    pair_price_panels: dict[str, pd.DataFrame] | None = None,
 ) -> FoldResult:
     """The actual per-fold work, shared by both the sequential and
     parallel paths of run_walk_forward() -- one fold's in-sample and
@@ -2434,11 +2794,11 @@ def _run_fold_sequential(
     function (not a closure) so it's picklable for ProcessPoolExecutor."""
     in_trades = run_backtest(
         ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config,
-        earnings_data, sector_lookup, strategy, sector_data,
+        earnings_data, sector_lookup, strategy, sector_data, pair_price_panels,
     )
     out_trades = run_backtest(
         ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config,
-        earnings_data, sector_lookup, strategy, sector_data,
+        earnings_data, sector_lookup, strategy, sector_data, pair_price_panels,
     )
     return FoldResult(
         fold=fold,
@@ -2464,29 +2824,37 @@ _worker_market_data: pd.DataFrame | None = None
 # supplied to run_walk_forward() at all -- every worker's Sector_Relative_Strength
 # then reads None/NaN, same as before this field existed.
 _worker_sector_data: dict[str, pd.DataFrame] | None = None
+# Pairs-strategy peer price panels (sector NAME -> wide Close-price
+# DataFrame of every ticker in that sector) -- same "loaded once per
+# worker, not once per fold" treatment as sector_data above
+# (improvements.txt item 83). None means no peer data was supplied at all,
+# every worker's Pair_Signal then always reads False.
+_worker_pair_price_panels: dict[str, pd.DataFrame] | None = None
 
 
 def _init_worker(
     ticker_data: dict[str, pd.DataFrame], market_data: pd.DataFrame,
     sector_data: dict[str, pd.DataFrame] | None = None,
+    pair_price_panels: dict[str, pd.DataFrame] | None = None,
 ) -> None:
-    global _worker_ticker_data, _worker_market_data, _worker_sector_data
+    global _worker_ticker_data, _worker_market_data, _worker_sector_data, _worker_pair_price_panels
     _worker_ticker_data = ticker_data
     _worker_market_data = market_data
     _worker_sector_data = sector_data
+    _worker_pair_price_panels = pair_price_panels
 
 
 def _run_fold_worker(
     fold: Fold, config: TradingConfig, earnings_data: dict, sector_lookup: dict, strategy: str,
 ) -> FoldResult:
     """Same work as _run_fold_sequential(), but reads ticker_data/market_data/
-    sector_data from this worker process's own module-level copy (set once by
-    _init_worker()) instead of taking them as arguments -- only `fold` and
-    `config` (small, cheap to pickle) actually cross the process boundary
-    per task."""
+    sector_data/pair_price_panels from this worker process's own module-level
+    copy (set once by _init_worker()) instead of taking them as arguments --
+    only `fold` and `config` (small, cheap to pickle) actually cross the
+    process boundary per task."""
     return _run_fold_sequential(
         fold, _worker_ticker_data, _worker_market_data, config, earnings_data, sector_lookup, strategy,
-        _worker_sector_data,
+        _worker_sector_data, _worker_pair_price_panels,
     )
 
 
@@ -2501,6 +2869,7 @@ def run_walk_forward(
     parallel: bool = True,
     max_workers: int | None = None,
     sector_data: dict[str, pd.DataFrame] | None = None,
+    pair_price_panels: dict[str, pd.DataFrame] | None = None,
 ) -> list[FoldResult]:
     """Run the backtest across every fold, in-sample and out-of-sample
     separately. Optuna (Phase 5) evaluates a candidate config by scoring it
@@ -2536,11 +2905,19 @@ def run_walk_forward(
     both the sequential and parallel paths (loaded once per worker process
     via the pool initializer on the parallel path, same treatment as
     ticker_data/market_data). None (default) means no sector data at all,
-    identical to every caller from before this parameter existed."""
+    identical to every caller from before this parameter existed.
+
+    `pair_price_panels` (optional, sector NAME -> wide Close-price
+    DataFrame of every ticker in that sector) backs the "pairs" strategy's
+    partner-selection/spread-zscore mechanism (improvements.txt item 83) --
+    threaded through identically to sector_data above, both paths. None
+    (default) means no peer data at all, identical to every caller from
+    before this parameter existed."""
     if not parallel or len(folds) <= 1:
         return [
             _run_fold_sequential(
                 fold, ticker_data, market_data, config, earnings_data, sector_lookup, strategy, sector_data,
+                pair_price_panels,
             )
             for fold in folds
         ]
@@ -2550,7 +2927,7 @@ def run_walk_forward(
 
     with ProcessPoolExecutor(
         max_workers=max_workers, initializer=_init_worker,
-        initargs=(ticker_data, market_data, sector_data),
+        initargs=(ticker_data, market_data, sector_data, pair_price_panels),
     ) as executor:
         futures = [
             executor.submit(_run_fold_worker, fold, config, earnings_data, sector_lookup, strategy)

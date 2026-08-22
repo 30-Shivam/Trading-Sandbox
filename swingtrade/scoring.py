@@ -311,6 +311,47 @@ def add_momentum_burst_trade_score(df: pd.DataFrame, config: TradingConfig = DEF
     return df
 
 
+def add_pairs_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    """Mean-reversion PAIRS counterpart to add_trade_score()/add_breakout_trade_score()/
+    add_squeeze_breakout_trade_score()/etc. -- blends RRR and
+    Signal_Strength_Pct (z-score points past pairs_zscore_entry_max) into a
+    0-100 Trade_Score for rows produced by pairs_levels_from_frame(),
+    reusing signal_for_score()'s thresholds so a pairs Trade_Score means
+    the same thing on the same 0-100 scale as every other strategy.
+
+    Distance_to_Buy_Pct is always 0 for this strategy (Buy_Price IS
+    Last_Close) -- Signal_Strength_Pct (in z-score units here, not a %)
+    fills that role instead, same "differentiating term" pattern
+    squeeze_breakout/momentum_burst use.
+
+    Hard gate, not just a scoring input: a ticker whose Pair_Signal is
+    False (no partner found/cleared pairs_min_correlation, or the spread
+    z-score didn't clear pairs_zscore_entry_max, or outside the shared
+    macro-uptrend/liquidity gates) gets Trade_Score=0/Ignore, full stop --
+    same "not eligible at all" semantics as every other strategy's hard
+    gate, not merely a low score.
+
+    Lean v1, no optional "sharpening" filters yet (unlike breakout/
+    squeeze_breakout/adx_trend_entry's own Phase 2 additions) -- mirrors
+    how every other strategy in this project launched before any filters
+    were added, per this project's own established discipline."""
+    df = df.copy()
+
+    rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+
+    strength_clipped = df["Signal_Strength_Pct"].clip(lower=0, upper=config.pairs_zscore_strength_cap)
+    strength_score = (strength_clipped / config.pairs_zscore_strength_cap) * config.distance_score_weight
+
+    total_weight = config.rrr_score_weight + config.distance_score_weight
+    rescale = (100 / total_weight) if total_weight > 0 else 0.0
+
+    raw_score = ((rrr_score + strength_score) * rescale).clip(lower=0)
+
+    df["Trade_Score"] = raw_score.where(df["Pair_Signal"], 0.0).round(1)
+    df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
+    return df
+
+
 def add_squeeze_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
     """Squeeze-breakout counterpart to add_trade_score()/add_breakout_trade_score()/
     add_pullback_trade_score()/add_breakout_retest_trade_score()/add_week52_trade_score()/

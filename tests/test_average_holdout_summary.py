@@ -27,6 +27,7 @@ def fake_summarize(trades: list[dict]) -> dict:
     return {
         "trade_count": len(trades),
         "sharpe_like": sum(values) / len(values),
+        "k_ratio": sum(values) / len(values) * 2,  # deterministic, distinct from sharpe_like
         "annualized_sharpe_like": None,  # always None -- tests the None-skipping path
     }
 
@@ -82,6 +83,34 @@ def test_min_max_spread_reported():
 def test_single_seed_min_equals_max():
     _, holdout_avg = optimize.average_holdout_summary(TRADES, SECTOR_LOOKUP, 0.25, [42], fake_summarize)
     assert holdout_avg["_sharpe_like_min"] == holdout_avg["_sharpe_like_max"] == holdout_avg["sharpe_like"]
+
+
+def test_k_ratio_min_max_spread_reported():
+    # Added after a real 2026-08-19 investigation (improvements.txt item 80)
+    # found the averaged k_ratio alone (sharpe_like's own min/max was already
+    # tracked, but k_ratio's wasn't) hid whether an RSI strategy's holdout
+    # k_ratio was consistently negative across seeds or wildly seed-dependent
+    # (one spot-checked seed came back strongly positive against a strongly
+    # negative 10-seed average) -- couldn't tell which without this.
+    seeds = [1, 2, 3]
+    _, holdout_avg = optimize.average_holdout_summary(TRADES, SECTOR_LOOKUP, 0.25, seeds, fake_summarize)
+    expected = _expected_bucket(seeds, 0.25, want_holdout=True)
+    expected_values = [s["k_ratio"] for s in expected]
+    assert holdout_avg["_k_ratio_min"] == round(min(expected_values), 4)
+    assert holdout_avg["_k_ratio_max"] == round(max(expected_values), 4)
+    # k_ratio's own min/max must be independent of sharpe_like's -- distinct
+    # formulas above, so they should never coincide.
+    assert holdout_avg["_k_ratio_min"] != holdout_avg["_sharpe_like_min"]
+
+
+def test_k_ratio_min_max_none_when_k_ratio_always_none():
+    def summarize_no_kratio(trades: list[dict]) -> dict:
+        return {"trade_count": len(trades), "sharpe_like": 1.0, "k_ratio": None}
+
+    _, holdout_avg = optimize.average_holdout_summary(TRADES, SECTOR_LOOKUP, 0.25, [1, 2, 3], summarize_no_kratio)
+    assert holdout_avg["_k_ratio_min"] is None
+    assert holdout_avg["_k_ratio_max"] is None
+    assert holdout_avg["k_ratio"] is None
 
 
 def test_zero_holdout_frac_gives_empty_holdout_every_seed():

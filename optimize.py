@@ -146,6 +146,7 @@ Usage:
 """
 
 import argparse
+import math
 import os
 import random
 import sys
@@ -382,6 +383,19 @@ MA_CROSSOVER_LONG_WINDOW_RANGE = (30, 100)
 # tested on TUNE+HOLD together, so these bounds are known-reasonable, not
 # a fresh guess.
 
+# Mean-reversion PAIRS strategy (improvements.txt items 82/83) -- lean v1's
+# first Optuna search, mirrors ma_crossover's own minimal-dimension launch
+# (no optional filters yet to tune). Bounds centered on the lean-v1
+# defaults that already cleared the random-entry benchmark cleanly
+# (item 82), widened enough either direction for Optuna to find something
+# better without drifting into degenerate territory (e.g. a correlation
+# floor near 1.0 that would almost never find a partner at all).
+PAIRS_MIN_CORRELATION_RANGE = (0.4, 0.85)
+PAIRS_ZSCORE_ENTRY_MAX_RANGE = (-3.5, -1.0)
+PAIRS_ZSCORE_WINDOW_DAYS_RANGE = (30, 120)
+PAIRS_SPREAD_WINDOW_DAYS_RANGE = (5, 30)
+PAIRS_LOOKBACK_DAYS_RANGE = (45, 180)
+
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
 # tune them would just teach it to zero out the very realism they exist to add.
@@ -431,6 +445,109 @@ def is_below_win_rate_floor(win_rate: float | None, min_win_rate: float | None) 
     if min_win_rate is None:
         return False
     return win_rate is None or win_rate < min_win_rate
+
+
+# Deflated Sharpe Ratio (Bailey & Lopez de Prado) -- corrects an observed
+# Sharpe ratio for SELECTION BIAS from trying many candidates, a different
+# question from anything the ticker-holdout multi-seed averaging (item 69)
+# checks (does the edge generalize across tickers). Given N trials, each
+# with its own Sharpe varying by sharpe_std, DSR is the probability the
+# WINNING trial's Sharpe is genuinely above the expected best-of-N you'd
+# see by chance alone with zero real skill -- see main()'s own reporting
+# for how n_trials/sharpe_std/observed_sharpe are derived from a real
+# search's own study.trials, and the real caveats (TPE trials aren't
+# strictly independent; skewness/kurtosis default to normal-distribution
+# values) stated plainly in that report, not hidden here.
+EULER_MASCHERONI = 0.5772156649015329
+
+
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF (`Φ`) -- exact via math.erf(), no approximation
+    needed (unlike the inverse below)."""
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def _norm_ppf(p: float) -> float:
+    """Inverse standard normal CDF (`Φ⁻¹`, the quantile function) -- no
+    scipy in this environment (confirmed: ModuleNotFoundError; matches
+    ic_tracking.py's own established "no scipy" convention), so this
+    implements Peter Acklam's rational approximation, a standard,
+    widely-published algorithm for exactly this scipy-free case (absolute
+    error < 1.15e-9). Raises ValueError outside (0, 1), same as scipy's
+    own norm.ppf would for an invalid probability."""
+    if not (0.0 < p < 1.0):
+        raise ValueError(f"p must be in (0, 1), got {p}")
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+    p_low = 0.02425
+    p_high = 1 - p_low
+
+    if p < p_low:
+        q = math.sqrt(-2 * math.log(p))
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+    if p <= p_high:
+        q = p - 0.5
+        r = q * q
+        return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
+               (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
+    q = math.sqrt(-2 * math.log(1 - p))
+    return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+
+
+def expected_max_sharpe_null(sharpe_std: float, n_trials: int) -> float | None:
+    """The expected BEST-of-N Sharpe ratio you'd see from N trials that all
+    have ZERO real skill, given how spread out (sharpe_std) their own
+    Sharpe estimates were -- this is DSR's "SR_0" null-hypothesis baseline
+    the observed winning Sharpe gets compared against. Returns None (not a
+    fabricated number) for n_trials < 1 or non-positive sharpe_std --
+    without real variation across trials there's nothing to estimate a
+    selection-bias correction from. n_trials == 1 returns 0.0 -- picking a
+    "winner" from a single trial carries no selection bias at all."""
+    if n_trials < 1 or sharpe_std <= 0:
+        return None
+    if n_trials == 1:
+        return 0.0
+    term1 = (1 - EULER_MASCHERONI) * _norm_ppf(1 - 1.0 / n_trials)
+    term2 = EULER_MASCHERONI * _norm_ppf(1 - 1.0 / (n_trials * math.e))
+    return sharpe_std * (term1 + term2)
+
+
+def deflated_sharpe_ratio(
+    observed_sharpe: float, sharpe_std: float, n_trials: int, n_observations: int,
+    skewness: float = 0.0, kurtosis: float = 3.0,
+) -> float | None:
+    """Probability (0-1, via the normal CDF -- NOT a rescaled Sharpe
+    number) that `observed_sharpe` -- the winning trial's own Sharpe --
+    is genuinely above the expected best-of-`n_trials` you'd see by chance
+    alone (see expected_max_sharpe_null()), given the estimator's own
+    standard error at `n_observations` pooled trades. `skewness`/`kurtosis`
+    default to the normal-distribution values (0, 3) -- an explicit,
+    documented simplification (the true correction needs the winning
+    trial's raw per-trade return distribution, which isn't currently
+    captured per-trial, only the summarized metrics dict is -- see
+    improvements.txt), not a hidden approximation. Returns None if
+    n_observations is too small to estimate a standard error from, or if
+    expected_max_sharpe_null() itself returns None."""
+    if n_observations is None or n_observations < 2:
+        return None
+    sr0 = expected_max_sharpe_null(sharpe_std, n_trials)
+    if sr0 is None:
+        return None
+    variance_term = 1 - skewness * observed_sharpe + ((kurtosis - 1) / 4) * observed_sharpe ** 2
+    if variance_term <= 0:
+        return None
+    se_sharpe = math.sqrt(variance_term / (n_observations - 1))
+    if se_sharpe == 0:
+        return None
+    return _norm_cdf((observed_sharpe - sr0) / se_sharpe)
 
 
 def taper_drawdown_for_sample_size(max_dd: float, effective_trade_count: float) -> float:
@@ -508,9 +625,16 @@ def average_holdout_summary(
     from summarize_fn averaged across seeds (None values skipped, not
     treated as 0 -- annualized_sharpe_like/trades_per_year can legitimately
     be None on a thin per-seed split), PLUS `_sharpe_like_min`/
-    `_sharpe_like_max`/`_seeds_used` so the spread itself stays visible --
-    hiding the instability behind one averaged number would repeat today's
-    mistake at one more level of abstraction."""
+    `_sharpe_like_max`/`_k_ratio_min`/`_k_ratio_max`/`_seeds_used` so the
+    spread itself stays visible -- hiding the instability behind one
+    averaged number would repeat today's mistake at one more level of
+    abstraction. k_ratio's own min/max matter for the same reason sharpe_
+    like's do: a 2026-08-19 RSI-strategy check found its 10-seed-AVERAGED
+    holdout k_ratio was strongly negative (-26.65) while a single spot-
+    checked seed (42) alone came back strongly POSITIVE (+55.8) -- the
+    averaged k_ratio alone couldn't distinguish "consistently negative
+    across seeds" from "wildly seed-dependent, averaging out negative by
+    coincidence" until this min/max was added (improvements.txt item 80)."""
 
     def _average_bucket(per_seed_summaries: list[dict]) -> dict:
         # A key is "numeric" if every value seen for it, across every seed,
@@ -535,6 +659,9 @@ def average_holdout_summary(
         sharpe_values = [s["sharpe_like"] for s in per_seed_summaries if s.get("sharpe_like") is not None]
         averaged["_sharpe_like_min"] = round(min(sharpe_values), 4) if sharpe_values else None
         averaged["_sharpe_like_max"] = round(max(sharpe_values), 4) if sharpe_values else None
+        k_ratio_values = [s["k_ratio"] for s in per_seed_summaries if s.get("k_ratio") is not None]
+        averaged["_k_ratio_min"] = round(min(k_ratio_values), 4) if k_ratio_values else None
+        averaged["_k_ratio_max"] = round(max(k_ratio_values), 4) if k_ratio_values else None
         averaged["_seeds_used"] = len(per_seed_summaries)
         return averaged
 
@@ -602,6 +729,7 @@ def build_objective(
     min_effective_trade_count: float | None = None,
     min_win_rate: float | None = None,
     sector_data: dict[str, pd.DataFrame] | None = None,
+    pair_price_panels: dict[str, pd.DataFrame] | None = None,
 ):
     """`multi_objective=False` (default) is byte-for-byte the original
     single-scalar-objective behavior -- unchanged, so every existing script/
@@ -652,7 +780,14 @@ def build_objective(
     (improvements.txt items 68/70/71) -- threaded straight through to
     run_walk_forward(). None (default) means every trial's
     Sector_Relative_Strength reads None/NaN, same as before this
-    parameter existed."""
+    parameter existed.
+
+    `pair_price_panels` (optional, sector NAME -> wide Close-price
+    DataFrame of every ticker in that sector) backs the "pairs" strategy's
+    partner-selection/spread-zscore mechanism (improvements.txt item 83) --
+    threaded straight through to run_walk_forward() the same way
+    sector_data is. None (default) means every trial's Pair_Signal always
+    reads False."""
     def objective(trial: optuna.Trial):
         # Shared by every strategy branch below -- hoisted out of the
         # per-strategy dicts (used to be 7 duplicated independent-sampling
@@ -781,7 +916,7 @@ def build_objective(
                 "atr_take_profit_multiplier": atr_take_profit_multiplier,
                 "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
-        else:
+        elif strategy == "ma_crossover":
             params = {
                 "ma_crossover_short_window": trial.suggest_int(
                     "ma_crossover_short_window", *MA_CROSSOVER_SHORT_WINDOW_RANGE
@@ -795,6 +930,26 @@ def build_objective(
                 "atr_take_profit_multiplier": atr_take_profit_multiplier,
                 "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
+        else:
+            params = {
+                "pairs_min_correlation": trial.suggest_float(
+                    "pairs_min_correlation", *PAIRS_MIN_CORRELATION_RANGE
+                ),
+                "pairs_zscore_entry_max": trial.suggest_float(
+                    "pairs_zscore_entry_max", *PAIRS_ZSCORE_ENTRY_MAX_RANGE
+                ),
+                "pairs_zscore_window_days": trial.suggest_int(
+                    "pairs_zscore_window_days", *PAIRS_ZSCORE_WINDOW_DAYS_RANGE
+                ),
+                "pairs_spread_window_days": trial.suggest_int(
+                    "pairs_spread_window_days", *PAIRS_SPREAD_WINDOW_DAYS_RANGE
+                ),
+                "pairs_lookback_days": trial.suggest_int(
+                    "pairs_lookback_days", *PAIRS_LOOKBACK_DAYS_RANGE
+                ),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
+            }
         candidate = swingtrade.TradingConfig(**{
             **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": strategy, **params,
         })
@@ -802,7 +957,7 @@ def build_objective(
         fold_results = swingtrade.run_walk_forward(
             ticker_data, market_data, folds, candidate, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=strategy, max_workers=max_workers,
-            sector_data=sector_data,
+            sector_data=sector_data, pair_price_panels=pair_price_panels,
         )
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
@@ -879,7 +1034,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--strategy",
-        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout", "ma_crossover"],
+        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout", "ma_crossover", "pairs"],
         default="rsi",
         help="Which signal to search parameters for. Default: rsi.",
     )
@@ -1032,6 +1187,20 @@ def main():
         print("[ERROR] No ticker data available.", file=sys.stderr)
         sys.exit(1)
 
+    # Pairs-strategy peer price panels (improvements.txt item 83) -- no new
+    # network fetch, every ticker's OHLCV is already in ticker_data. One
+    # wide Close-price panel per sector (>= 2 members), same pattern
+    # benchmark_random_entry.py's own sector_price_panels uses.
+    pair_price_panels: dict[str, pd.DataFrame] = {}
+    if args.strategy == "pairs":
+        by_sector: dict[str, list[str]] = {}
+        for t in ticker_data:
+            by_sector.setdefault(sector_lookup.get(t, "Unknown"), []).append(t)
+        for sector, members in by_sector.items():
+            if len(members) < 2:
+                continue
+            pair_price_panels[sector] = pd.DataFrame({m: ticker_data[m]["Close"] for m in members})
+
     earnings_data = {}
     if args.with_catalyst and args.strategy == "squeeze_breakout":
         print(f"\nFetching historical earnings dates for {len(ticker_data)} ticker(s)...")
@@ -1068,7 +1237,7 @@ def main():
     baseline_results = swingtrade.run_walk_forward(
         tune_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
         sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
-        sector_data=sector_data,
+        sector_data=sector_data, pair_price_panels=pair_price_panels,
     )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
@@ -1106,7 +1275,7 @@ def main():
             earnings_data=earnings_data,
             min_effective_trade_count=min_effective_trade_count,
             min_win_rate=min_win_rate,
-            sector_data=sector_data,
+            sector_data=sector_data, pair_price_panels=pair_price_panels,
         ),
         n_trials=args.trials, show_progress_bar=False,
     )
@@ -1169,6 +1338,49 @@ def main():
                   "in-sample window.")
             return
 
+    # Deflated Sharpe Ratio (Bailey & Lopez de Prado, see optimize.py's own
+    # deflated_sharpe_ratio()) -- corrects for SELECTION BIAS from trying
+    # many candidates, a different question from the ticker-holdout check
+    # above (does the edge generalize across tickers). Uses data already on
+    # hand from this search -- no re-simulation.
+    def _trial_sharpe(t):
+        # study.trials includes every trial regardless of state -- a FAILED/
+        # PRUNED/RUNNING trial has t.value/t.values as None, not a real
+        # score, so guard both paths rather than assume COMPLETE.
+        if args.multi_objective:
+            return t.values[0] if t.values else None
+        return t.value
+
+    scored_trials = [t for t in study.trials if _trial_sharpe(t) is not None and _trial_sharpe(t) > UNDER_SAMPLED_PENALTY]
+    n_trials = len(scored_trials)
+    sharpe_values = [_trial_sharpe(t) for t in scored_trials]
+    sharpe_std = float(pd.Series(sharpe_values).std()) if len(sharpe_values) > 1 else 0.0
+    observed_sharpe = _trial_sharpe(best)
+    n_observations = best_metrics.get("trade_count")
+
+    search_dsr = deflated_sharpe_ratio(observed_sharpe, sharpe_std, n_trials, n_observations)
+    project_n_trials = max(n_trials, storage.system_config.get_next_version() - 1)
+    project_dsr = deflated_sharpe_ratio(observed_sharpe, sharpe_std, project_n_trials, n_observations)
+
+    print()
+    print(f"=== Deflated Sharpe Ratio (selection-bias correction, {n_trials} scored trial(s) "
+          f"this search, sharpe_std={sharpe_std:.4f}) ===")
+    if search_dsr is None:
+        print("  Not enough trials/observations to estimate -- skipped.")
+    else:
+        print(f"  Search-level DSR: {search_dsr:.1%} confidence this beats what {n_trials} "
+              f"trials would produce by chance alone (zero real skill).")
+        print(f"  Project-wide DSR: {project_dsr:.1%} confidence using {project_n_trials} "
+              f"(every candidate System_Config ever written across this whole project) as N -- "
+              f"a much more conservative, whole-project view, reusing this search's own "
+              f"sharpe_std as the best available proxy (not a rigorous full-history "
+              f"recomputation -- no per-trial Sharpe is stored from past searches).")
+        print("  Caveat: assumes independent trials -- Optuna's TPE sampler deliberately exploits "
+              "promising regions, so real trials are somewhat correlated, making this a real but "
+              "imperfect approximation. Also assumes normal returns (skewness=0, kurtosis=3) -- "
+              "the true correction would need the winning trial's raw per-trade return "
+              "distribution, not just its summarized metrics.")
+
     candidate_config = build_candidate_config(
         args.strategy, best.params, args.pin_atr_take_profit_multiplier, args.pin_stop_loss_atr_multiplier,
     )
@@ -1178,14 +1390,14 @@ def main():
         holdout_baseline_results = swingtrade.run_walk_forward(
             holdout_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
-            sector_data=sector_data,
+            sector_data=sector_data, pair_price_panels=pair_price_panels,
         )
         holdout_baseline_metrics = summarize_weighted(holdout_baseline_results, end, args.recency_half_life_days)
 
         holdout_candidate_results = swingtrade.run_walk_forward(
             holdout_ticker_data, market_data, folds, candidate_config, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
-            sector_data=sector_data,
+            sector_data=sector_data, pair_price_panels=pair_price_panels,
         )
         holdout_candidate_metrics = summarize_weighted(holdout_candidate_results, end, args.recency_half_life_days)
 

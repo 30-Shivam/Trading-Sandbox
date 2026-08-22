@@ -107,7 +107,7 @@ REQUEST_DELAY_SEC = 0.5  # same pacing every other yfinance-calling loop in
 # label, so the ensembling step itself can be judged against its own best
 # individual input over time, not just assumed to help.
 METHODOLOGIES = [
-    "ma_crossover", "squeeze_breakout", "regime_switcher", "llm_agent",
+    "ma_crossover", "squeeze_breakout", "rsi_mean_reversion", "pairs", "regime_switcher", "llm_agent",
     "best_ideas_sector_rs", "best_ideas_qualitative", "best_ideas_meta",
 ]
 
@@ -481,10 +481,19 @@ def run_best_ideas(
             atr = _fallback_atr(df, config)
             rsi = None
             currency = bundle[ticker].get("currency", "USD")
-            next_earnings = bundle[ticker].get("next_earnings")
+            # bundle stores a raw pd.Timestamp|None; every mechanical strategy's
+            # own Next_Earnings_Date (swingtrade/levels.py) is a datetime.date
+            # via .date() -- mixing Timestamp and date objects in one composite
+            # column crashes pyarrow's Arrow conversion for the dashboard table
+            # (inconsistent object dtype), so convert here too for consistency.
+            next_earnings_ts = bundle[ticker].get("next_earnings")
+            next_earnings = next_earnings_ts.date() if next_earnings_ts is not None else None
             catalyst_warning = False
             top_headline = bundle[ticker].get("top_headline", "")
-            as_of = str(df.index[-1].date())
+            # Same inconsistent-object-dtype pyarrow crash as Next_Earnings_Date
+            # above, one column over: every mechanical strategy's own As_Of
+            # (swingtrade/levels.py) is a datetime.date, not a str -- match it.
+            as_of = df.index[-1].date()
 
         if atr is None:
             continue  # can't build a Buy/Sell/Stop bracket without it -- skip, don't fabricate
@@ -494,6 +503,21 @@ def run_best_ideas(
             available_scores["ma_crossover"] = float(ticker_mech["ma_crossover"]["Trade_Score"])
         if "squeeze_breakout" in ticker_mech:
             available_scores["squeeze_breakout"] = float(ticker_mech["squeeze_breakout"]["Trade_Score"])
+        if "rsi" in ticker_mech:
+            # ticker_mech is keyed by strategy_frames's own keys, which come
+            # from secondary_config.strategy -- always the bare dispatch
+            # string "rsi" (config.strategy must stay "rsi" for scoring to
+            # work). available_scores/METHODOLOGIES use the clean, IC-
+            # tracked label instead -- same bare-dispatch-name-in,
+            # clean-label-out split as config_loader.SECONDARY_LOG_STRATEGY_
+            # OVERRIDES uses for what gets logged (improvements.txt item 81).
+            available_scores["rsi_mean_reversion"] = float(ticker_mech["rsi"]["Trade_Score"])
+        if "pairs" in ticker_mech:
+            # "pairs" logs under its own real label directly (no contamination
+            # risk existed under that name -- confirmed via Mongo before
+            # wiring, item 82/84 -- so no override split is needed here,
+            # unlike rsi's own bare-dispatch-name-in/clean-label-out case).
+            available_scores["pairs"] = float(ticker_mech["pairs"]["Trade_Score"])
         regime_pick = regime_by_ticker.get(ticker)
         if regime_pick is not None:
             available_scores["regime_switcher"] = float(regime_pick["Trade_Score"])

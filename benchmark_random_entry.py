@@ -80,6 +80,17 @@ six optional "sharpening" filters either, they were added incrementally
 after it was already trusted; the same treatment is a planned follow-up
 for this strategy if this lean version clears the same bar. Checked under
 BOTH entry-fill models from the start too (see --adx-trend-entry-entry-fill).
+--strategy pairs tests the mean-reversion PAIRS signal (buy a ticker when
+it has diverged unusually far BELOW its most-correlated same-sector peer
+over a recent window -- Pair_Spread_Zscore at/below config.pairs_zscore_entry_max
+-- swingtrade.simulate_pairs_signals / simulate_random_pairs_entries),
+a genuinely different signal family from every trend/volatility-following
+strategy above (ticker-vs-peer divergence, not ticker/sector-vs-market
+momentum). LONG-ONLY laggard-convergence (no short leg -- this codebase
+has no short-position support anywhere). Deliberately lean v1, same
+"no optional filters yet, add them only if this clears the bar" treatment
+adx_trend_entry got -- this IS the critical validation gate for this
+strategy too.
 
 Applies the same ticker-holdout split as optimize.py (--holdout-frac,
 --holdout-seed) so the comparison also holds up (or doesn't) on tickers
@@ -112,7 +123,7 @@ from optimize import DEFAULT_HOLDOUT_SEEDS, average_holdout_summary
 from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history
 from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
-EARNINGS_AWARE_STRATEGIES = ("squeeze_breakout", "ma_crossover")  # the only simulate_*_signals()/
+EARNINGS_AWARE_STRATEGIES = ("squeeze_breakout", "ma_crossover", "pairs")  # the only simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
                                                                    # accept earnings_dates -- see
                                                                    # swingtrade/backtest.py
@@ -121,6 +132,12 @@ SECTOR_AWARE_STRATEGIES = ("breakout", "squeeze_breakout", "ma_crossover")  # th
                                                                    # random baselines -- see
                                                                    # improvements.txt items 68/70/71)
                                                                    # that accept sector_ohlcv
+PAIR_AWARE_STRATEGIES = ("pairs",)  # the only REAL simulate_*_signals() (not the random
+                                                                   # baseline -- same "answers whether
+                                                                   # TIMING adds value" precedent as
+                                                                   # SECTOR_AWARE_STRATEGIES above) that
+                                                                   # accepts peer_prices -- see
+                                                                   # improvements.txt item 82
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -166,7 +183,7 @@ def main():
         "--strategy",
         choices=[
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
-            "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover",
+            "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover", "pairs",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -357,6 +374,19 @@ def main():
                 if not etf_df.empty:
                     sector_data[sector] = etf_df
 
+    sector_price_panels: dict[str, pd.DataFrame] = {}
+    if args.strategy in PAIR_AWARE_STRATEGIES:
+        # No new network fetch -- every ticker's OHLCV is already in
+        # ticker_data. One wide Close-price panel per sector (>= 2 members),
+        # built once and sliced per ticker below (see peer_kwargs()).
+        by_sector: dict[str, list[str]] = {}
+        for t in ticker_data:
+            by_sector.setdefault(sector_lookup.get(t, "Unknown"), []).append(t)
+        for sector, members in by_sector.items():
+            if len(members) < 2:
+                continue
+            sector_price_panels[sector] = pd.DataFrame({m: ticker_data[m]["Close"] for m in members})
+
     if args.holdout_frac > 0:
         print(f"Ticker holdout: frac={args.holdout_frac}, averaging TUNE/HOLDOUT over "
               f"{len(holdout_seeds)} seeds ({holdout_seeds}) -- see improvements.txt item 69.")
@@ -387,6 +417,9 @@ def main():
     elif args.strategy == "adx_trend_entry":
         real_fn, random_fn = swingtrade.simulate_adx_trend_entry_signals, swingtrade.simulate_random_adx_trend_entry_entries
         real_label = "ADX_Trend_Entry-timed"
+    elif args.strategy == "pairs":
+        real_fn, random_fn = swingtrade.simulate_pairs_signals, swingtrade.simulate_random_pairs_entries
+        real_label = "Pairs-timed"
     else:
         real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
         real_label = "MA_Crossover-timed"
@@ -396,18 +429,25 @@ def main():
     real_counts = {}
     print(f"\nSimulating REAL {real_label} strategy and matched-count RANDOM-entry baseline "
           f"for {len(ticker_data)} ticker(s), {start.date()}..{end.date()}...")
-    earnings_kwargs = lambda ticker: (  # noqa: E731 -- only squeeze_breakout/ma_crossover accept earnings_dates
+    earnings_kwargs = lambda ticker: (  # noqa: E731 -- see EARNINGS_AWARE_STRATEGIES
         {"earnings_dates": earnings_data.get(ticker)} if args.strategy in EARNINGS_AWARE_STRATEGIES else {}
     )
     sector_kwargs = lambda ticker: (  # noqa: E731
         {"sector_ohlcv": sector_data.get(sector_lookup.get(ticker, "Unknown"))}
         if args.strategy in SECTOR_AWARE_STRATEGIES else {}
     )
+    def peer_kwargs(ticker):
+        if args.strategy not in PAIR_AWARE_STRATEGIES:
+            return {}
+        panel = sector_price_panels.get(sector_lookup.get(ticker, "Unknown"))
+        if panel is None or ticker not in panel.columns:
+            return {"peer_prices": None}
+        return {"peer_prices": panel.drop(columns=[ticker])}
     for i, (ticker, ohlcv) in enumerate(ticker_data.items()):
         sector = sector_lookup.get(ticker, "Unknown")
         real = real_fn(
             ticker, ohlcv, market_data, start, end, config,
-            **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker),
+            **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker), **peer_kwargs(ticker),
         )
         real_trades.extend(real)
         real_counts[ticker] = len(real)
@@ -427,6 +467,13 @@ def main():
     print(f"  REAL   ({real_label}): {summarize(real_trades)}")
     print(f"  RANDOM (matched count): {summarize(random_trades)}")
 
+    print("\n=== BY YEAR (does the edge hold up over time, or is it concentrated in one stretch?) ===")
+    real_by_year = swingtrade.summarize_by_period(real_trades, summarize)
+    random_by_year = swingtrade.summarize_by_period(random_trades, summarize)
+    for year in sorted(set(real_by_year) | set(random_by_year)):
+        print(f"  {year}  REAL   ({real_label}): {real_by_year.get(year)}")
+        print(f"  {year}  RANDOM (matched count): {random_by_year.get(year)}")
+
     if args.holdout_frac > 0:
         real_tune_avg, real_holdout_avg = average_holdout_summary(
             real_trades, sector_lookup, args.holdout_frac, holdout_seeds, summarize
@@ -442,6 +489,10 @@ def main():
         print(f"\n=== HOLDOUT (avg of {len(holdout_seeds)} seeds) ===")
         print(f"  REAL   ({real_label}): {real_holdout_avg}")
         print(f"  RANDOM (matched count): {random_holdout_avg}")
+
+    print("\n=== MONTE CARLO DRAWDOWN (1000 reshuffles of each's own trade order) ===")
+    print(f"  REAL   ({real_label}): {swingtrade.monte_carlo_drawdown(real_trades)}")
+    print(f"  RANDOM (matched count): {swingtrade.monte_carlo_drawdown(random_trades)}")
 
     print()
     print(f"If REAL's sharpe_like/win_rate isn't meaningfully better than RANDOM's (same trade")

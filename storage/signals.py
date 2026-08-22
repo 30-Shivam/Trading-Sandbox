@@ -174,7 +174,13 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
         "sell_price": _native(row["Sell_Price"]),
         "stop_loss": _native(row["Stop_Loss"]),
         "rrr": _native(row["RRR"]),
-        "rsi": _native(row["RSI"]),
+        # RSI is present in every OTHER strategy's row dict (informational
+        # even where not used for gating), but "pairs" (improvements.txt
+        # item 82) has no RSI concept at all and never carries this key --
+        # first strategy in this project's history to omit it, so this must
+        # degrade gracefully like every other strategy-specific optional
+        # field below rather than assume the key always exists.
+        "rsi": _native(row.get("RSI")),
         "atr": _native(row["ATR"]),
         "distance_to_buy_pct": _native(row["Distance_to_Buy_Pct"]),
         "shares_to_buy": _native(row["Shares_To_Buy"]),
@@ -206,6 +212,15 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
         # differently -- the actual hypothesis this feature exists to test.
         "regime": _native(row.get("Regime")),
         "source_strategy": _native(row.get("Source_Strategy")),
+        # "pairs" rows only (strategy="pairs", improvements.txt item 82) --
+        # which same-sector peer triggered the signal and the real
+        # correlation/z-score behind it, None for every other strategy's
+        # rows. Persisted for later audit/display, same "don't discard the
+        # strategy's own distinguishing detail" treatment regime/
+        # source_strategy above already get.
+        "pair_partner": _native(row.get("Pair_Partner")),
+        "pair_correlation": _native(row.get("Pair_Correlation")),
+        "pair_spread_zscore": _native(row.get("Pair_Spread_Zscore")),
         # best_ideas.py rows only (strategy="best_ideas") -- the
         # meta-synthesis LLM's own written rationale (str|None) and a
         # snapshot of {methodology: {"score":, "weight":}} used to build
