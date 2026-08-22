@@ -86,6 +86,20 @@ per strategy.
 import json
 import os
 
+from dotenv import load_dotenv
+
+# Reads GEMINI_API_KEY/GROQ_API_KEY from the environment -- this module used
+# to rely entirely on SOME OTHER already-imported module (storage/mongo.py,
+# notifications.py) having called load_dotenv() first as a side effect,
+# which only worked by import-order luck in every real caller (ingest.py
+# imports notifications; dip_buy_analyzer.py/llm_strategy_research.py both
+# import storage). Found 2026-08-22 debugging why a bare `import llm_agent`
+# saw _gemini_available()/_groq_available() as False even with real,
+# non-empty keys configured -- this module should never depend on a caller's
+# own unrelated imports for its own credentials to load. Matches
+# storage/mongo.py's own identical load_dotenv() call for the same reason.
+load_dotenv()
+
 GEMINI_MODEL = "gemini-3.5-flash"  # gemini-2.5-flash was retired for this
                                     # account ("no longer available to new
                                     # users", a permanent 404, not
@@ -95,7 +109,21 @@ GEMINI_MODEL = "gemini-3.5-flash"  # gemini-2.5-flash was retired for this
                                     # below, it can spend its entire
                                     # max_output_tokens budget on internal
                                     # reasoning and return truncated JSON.
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"  # llama-3.3-70b-versatile was retired for
+                                    # this account (404 "does not exist or you
+                                    # do not have access to it") -- found
+                                    # 2026-08-22 while verifying real API
+                                    # credentials for llm_strategy_research.py
+                                    # (improvements.txt item 93), the exact
+                                    # same failure mode as GEMINI_MODEL's own
+                                    # earlier retirement above. Confirmed
+                                    # against this account's real available
+                                    # model list (client.models.list()) and
+                                    # live-verified with a real JSON-mode call
+                                    # before switching -- the largest
+                                    # general-purpose chat model currently
+                                    # available, matching Groq's own role here
+                                    # as the "genuine judgment call" fallback.
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 MAX_HEADLINES = 5
 MAX_MACRO_HEADLINES = 5
@@ -680,13 +708,19 @@ def _build_meta_synthesis_prompt(ticker: str, context: dict) -> str:
     )
 
 
-def _call_gemini(prompt: str, parse_fn=_parse_response) -> dict | None:
+def call_gemini(prompt: str, parse_fn=_parse_response, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> dict | None:
     """PRIMARY provider -- see module docstring for why. Returns None
     (never raises) on any failure so callers can fall through to Groq.
     `parse_fn` is pluggable (defaults to _parse_response, the
     evaluate_ticker() schema) so evaluate_holding() can reuse this exact
     call machinery with _parse_holding_response instead -- only the
-    expected JSON shape differs, not how either provider is called."""
+    expected JSON shape differs, not how either provider is called.
+    `max_output_tokens` defaults to MAX_OUTPUT_TOKENS (right-sized for the
+    short decision/confidence/rationale schema every existing caller uses)
+    -- override it for a caller whose own expected JSON shape is
+    genuinely larger (e.g. llm_strategy_research.propose_rule()'s nested
+    rule object), found 2026-08-22 when the default budget was silently
+    truncating that schema's response mid-JSON."""
     try:
         from google import genai
         from google.genai import types
@@ -698,7 +732,7 @@ def _call_gemini(prompt: str, parse_fn=_parse_response) -> dict | None:
             model=GEMINI_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
-                max_output_tokens=MAX_OUTPUT_TOKENS,
+                max_output_tokens=max_output_tokens,
                 response_mime_type="application/json",
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
@@ -711,13 +745,14 @@ def _call_gemini(prompt: str, parse_fn=_parse_response) -> dict | None:
         return None
 
 
-def _call_groq(prompt: str, parse_fn=_parse_response) -> dict | None:
+def call_groq(prompt: str, parse_fn=_parse_response, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> dict | None:
     """FALLBACK provider -- only tried if Gemini is unavailable or its call
     fails/returns an unusable response. Uses the standard `openai` SDK
     pointed at Groq's OpenAI-compatible endpoint (see GROQ_BASE_URL) --
     Groq's own API is a drop-in match for the Chat Completions shape, no
     Groq-specific SDK needed. Returns None (never raises) on any failure.
-    `parse_fn` pluggable, see _call_gemini()'s docstring."""
+    `parse_fn`/`max_output_tokens` pluggable, see call_gemini()'s
+    docstring."""
     try:
         import openai
     except ImportError:
@@ -727,7 +762,7 @@ def _call_groq(prompt: str, parse_fn=_parse_response) -> dict | None:
         response = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=MAX_OUTPUT_TOKENS,
+            max_tokens=max_output_tokens,
             response_format={"type": "json_object"},
         )
         text = (response.choices[0].message.content or "").strip()
@@ -852,8 +887,8 @@ def evaluate_ticker(ticker: str, context: dict, variant: str = "balanced") -> di
     dashboard's live tab always uses the default and never passes this."""
     build_fn = PROMPT_VARIANTS.get(variant, _build_prompt)
     prompt, _ = build_fn(ticker, context)
-    gemini_result = _call_gemini(prompt) if _gemini_available() else None
-    groq_result = _call_groq(prompt) if _groq_available() else None
+    gemini_result = call_gemini(prompt) if _gemini_available() else None
+    groq_result = call_groq(prompt) if _groq_available() else None
     return _resolve_dual(gemini_result, groq_result, "decision", CONSERVATIVE_ORDER_DECISION)
 
 
@@ -888,11 +923,11 @@ def audit_verdict(ticker: str, context: dict, verdict: dict) -> dict | None:
     function here."""
     prompt = _build_audit_prompt(ticker, context, verdict)
     if _gemini_available():
-        result = _call_gemini(prompt, parse_fn=_parse_audit_response)
+        result = call_gemini(prompt, parse_fn=_parse_audit_response)
         if result is not None:
             return result
     if _groq_available():
-        return _call_groq(prompt, parse_fn=_parse_audit_response)
+        return call_groq(prompt, parse_fn=_parse_audit_response)
     return None
 
 
@@ -929,8 +964,8 @@ def evaluate_holding(ticker: str, context: dict) -> dict | None:
     "secondary_decision": str | None, "secondary_confidence": float | None}
     or None. See _resolve_dual()'s own docstring for the four new keys."""
     prompt = _build_holding_prompt(ticker, context)
-    gemini_result = _call_gemini(prompt, parse_fn=_parse_holding_response) if _gemini_available() else None
-    groq_result = _call_groq(prompt, parse_fn=_parse_holding_response) if _groq_available() else None
+    gemini_result = call_gemini(prompt, parse_fn=_parse_holding_response) if _gemini_available() else None
+    groq_result = call_groq(prompt, parse_fn=_parse_holding_response) if _groq_available() else None
     return _resolve_dual(gemini_result, groq_result, "action", CONSERVATIVE_ORDER_HOLD_ACTION)
 
 
@@ -972,6 +1007,6 @@ def evaluate_meta_synthesis(ticker: str, context: dict) -> dict | None:
     "secondary_provider":, "secondary_decision":, "secondary_confidence":}
     -- or None."""
     prompt = _build_meta_synthesis_prompt(ticker, context)
-    gemini_result = _call_gemini(prompt) if _gemini_available() else None
-    groq_result = _call_groq(prompt) if _groq_available() else None
+    gemini_result = call_gemini(prompt) if _gemini_available() else None
+    groq_result = call_groq(prompt) if _groq_available() else None
     return _resolve_dual(gemini_result, groq_result, "decision", CONSERVATIVE_ORDER_DECISION)

@@ -71,6 +71,7 @@ from .levels import (
     breakout_retest_levels_from_frame,
     insider_buying_levels_from_frame,
     levels_from_rsi_frame,
+    llm_strategy_levels_from_frame,
     ma_crossover_levels_from_frame,
     market_uptrend_from_frame,
     momentum_burst_levels_from_frame,
@@ -78,6 +79,7 @@ from .levels import (
     precompute_breakout_frame,
     precompute_breakout_retest_frame,
     precompute_insider_buying_frame,
+    precompute_llm_strategy_frame,
     precompute_ma_crossover_frame,
     precompute_momentum_burst_frame,
     precompute_pairs_frame,
@@ -87,6 +89,7 @@ from .levels import (
     precompute_week52_frame,
     pairs_levels_from_frame,
     pullback_levels_from_frame,
+    rule_exit_to_config,
     squeeze_breakout_levels_from_frame,
     week52_levels_from_frame,
 )
@@ -2060,6 +2063,195 @@ def simulate_random_insider_buying_entries(
             "entry_date": entry_date.date(),
             "sector": sector,
             "signal": "Random_Insider_Buying",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": catalyst_warning,
+            **result,
+        })
+
+    return trades
+
+
+def simulate_llm_strategy_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    rule: dict,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """LLM-INVENTED-STRATEGY counterpart to simulate_signals()/simulate_insider_buying_signals()/
+    etc. -- buys a ticker when `rule`'s own conditions (an LLM-proposed
+    combination of already-computed indicators, see
+    swingtrade/levels.evaluate_llm_rule_conditions()) fire, in a confirmed
+    macro uptrend (NOT something the rule can configure around -- the
+    shared gate every strategy respects). Exit mechanics (fixed ATR
+    bracket, trailing stop, or a custom holding period) are selected by
+    `rule["exit"]["type"]` via rule_exit_to_config() -- the LLM only picks
+    among this project's already-built, already-tested settlement
+    mechanics (`_settle()` already dispatches on `config.trailing_stop_enabled`
+    for exactly this reason), it never invents new settlement code.
+
+    Entry fill is always the resting-limit-order model (`_find_entry_fill()`)
+    -- rule DSL v1 doesn't expose entry-fill-model selection, only entry
+    conditions and exit mechanics, matching what was actually scoped."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+    effective_config = rule_exit_to_config(rule, config)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, effective_config)
+    frame = precompute_llm_strategy_frame(ohlcv, rule, effective_config, market_df=market_ohlcv)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, effective_config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = llm_strategy_levels_from_frame(
+                ticker, frame, as_of, effective_config, next_earnings_date=next_earnings,
+            )
+        except RuntimeError:
+            continue
+
+        if not levels["LLM_Strategy_Signal"]:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, effective_config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - effective_config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + effective_config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=effective_config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "LLM_Strategy",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_llm_strategy_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    rule: dict,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_llm_strategy_signals() -- same
+    idea as every other simulate_random_*_entries() function, using the
+    SAME rule's own macro/liquidity gates and exit mechanics (via the
+    identical rule_exit_to_config()), so it isolates whether the rule's
+    own entry TIMING adds value over a random day, using the identical
+    Buy_Price formula and entry/exit structure. `n_trades` should be
+    simulate_llm_strategy_signals()'s real signal count for this
+    ticker/window, so trade volume is matched. This is the critical
+    validation gate every strategy in this project has needed -- see
+    llm_strategy_research.py's own run_daily_cycle()."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+    effective_config = rule_exit_to_config(rule, config)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, effective_config)
+    frame = precompute_llm_strategy_frame(ohlcv, rule, effective_config, market_df=market_ohlcv)
+
+    candidates = []  # (as_of, buy_price, atr, catalyst_warning) for every day that passed the macro/liquidity gates, rule signal or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, effective_config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = llm_strategy_levels_from_frame(
+                ticker, frame, as_of, effective_config, next_earnings_date=next_earnings,
+            )
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr, catalyst_warning in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        fill = _find_entry_fill(buy_price, bars_after_signal, effective_config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - effective_config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + effective_config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=effective_config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_LLM_Strategy",
             "atr": atr,
             "buy_price": entry_price,
             "signal_buy_price": buy_price,

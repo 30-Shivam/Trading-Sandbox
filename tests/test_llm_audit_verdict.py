@@ -4,7 +4,7 @@ own PARALLEL dual-provider consensus (see test_llm_resolve_dual.py).
 _parse_audit_response()/_build_audit_prompt() are pure functions and
 directly testable; audit_verdict() itself makes real API calls (same
 "not directly tested, only its pure building blocks are" precedent as
-_call_gemini()/_call_groq() -- see test_llm_resolve_dual.py's own docstring).
+call_gemini()/call_groq() -- see test_llm_resolve_dual.py's own docstring).
 """
 import llm_agent
 
