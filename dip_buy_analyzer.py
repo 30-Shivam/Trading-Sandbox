@@ -1278,11 +1278,14 @@ def main():
             "(daily breadth is too thin for a strict per-day IC) -- IR is mean(IC)/std(IC) "
             "across those windows: how STABLE the ranking skill is, not just whether it "
             "showed up once. This is what actually sets each methodology's blend weight "
-            "above -- see ic_tracking.py. A methodology needs BOTH >= 20 settled trades AND "
-            "2+ rolling windows (so IR has more than one data point to compute a stdev from) "
-            "before its IR drives its weight; until then it contributes at a neutral, equal "
-            "prior -- clearing the trade-count floor alone is not enough, since a single "
-            "window's IC can't yet say anything about STABILITY."
+            "above -- see ic_tracking.py. Signals are tier-weighted (real Strong Buy/Buy = "
+            "1.0, Watch-only research signals = 0.5, research_loosened = 0.25) so one "
+            "correlated batch of Watch signals can't fake a trustworthy sample. A methodology "
+            "needs BOTH >= 20 EFFECTIVE (tier-weighted) settled trades AND 2+ rolling windows "
+            "(so IR has more than one data point to compute a stdev from) before its IR drives "
+            "its weight; until then it contributes at a neutral, equal prior -- clearing the "
+            "trade-count floor alone is not enough, since a single window's IC can't yet say "
+            "anything about STABILITY."
         )
         methodology_names = best_ideas.METHODOLOGIES + ["best_ideas"]
         methodology_weights = {name: ic_tracking.ensemble_weight(ic_reports.get(name) or {}) for name in methodology_names}
@@ -1296,7 +1299,9 @@ def main():
             )
         ic_cols = st.columns(len(methodology_names))
         for col, name in zip(ic_cols, methodology_names):
-            report = ic_reports.get(name) or {"n_settled": 0, "overall_ic": None, "ir": None, "trust_floor_met": False}
+            report = ic_reports.get(name) or {
+                "n_settled": 0, "effective_n_settled": 0.0, "overall_ic": None, "ir": None, "trust_floor_met": False,
+            }
             weight = methodology_weights[name]
             n_windows = len(report.get("ic_series") or [])
             with col:
@@ -1305,10 +1310,15 @@ def main():
                 if report["n_settled"] == 0:
                     st.caption("0 settled trades yet.")
                 else:
+                    effective_n = report.get("effective_n_settled", report["n_settled"])
+                    st.metric("Effective (tier-weighted)", f"{effective_n:.1f}")
                     st.metric("Overall IC", f"{report['overall_ic']:.2f}" if report["overall_ic"] is not None else "n/a")
                     st.metric("IR", f"{report['ir']:.2f}" if report["ir"] is not None else "n/a")
                     if not report["trust_floor_met"]:
-                        st.caption(f"Below trust floor ({report['n_settled']}/20 settled) -- equal-weight prior")
+                        st.caption(
+                            f"Below trust floor ({effective_n:.1f}/20 effective, {report['n_settled']} raw settled) "
+                            "-- equal-weight prior"
+                        )
                     elif report["ir"] is None:
                         st.caption(
                             f"Trust floor met, but only {n_windows} rolling window(s) so far (need 2+ for IR) "

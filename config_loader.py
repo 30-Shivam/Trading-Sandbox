@@ -135,7 +135,15 @@ import swingtrade
 # "pairs" label directly. Real capital consequence: gets the same default
 # $5,000 cash pool every other newly-cleared secondary strategy has gotten.
 SECONDARY_STRATEGY_VERSIONS = {
-    "Squeeze Breakout": 39,
+    # Promoted 2026-08-21 (v39 -> v53), per explicit user request: v53 was
+    # the strongest candidate found across the whole squeeze_breakout
+    # investigation (improvements.txt items 59/61/62) -- beats v39 outright
+    # on 2 of 3 cuts, ties the 3rd, best frequency retention of any
+    # candidate tried -- and was never promoted despite clearing validation
+    # weeks earlier. Made more urgent by item 88's real full-scale finding
+    # the same day: v39 had started LOSING to its own matched-random
+    # baseline on HOLDOUT (sharpe_like 0.0124 vs 0.0206).
+    "Squeeze Breakout": 53,
     "RSI Mean-Reversion": 17,
     "Mean-Reversion Pairs": 58,
 }

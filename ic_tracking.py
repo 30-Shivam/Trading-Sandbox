@@ -32,6 +32,18 @@ new READ path over the two existing collections.
 No new dependency: rank correlation is computed via pandas' own
 Series.rank() + Pearson correlation on the ranks, not scipy.stats.spearmanr
 (scipy is not currently a requirement of this project).
+
+Tier-weighted (2026-08-21, per explicit user request): every signal also
+carries a "tier" -- "actionable" (real Strong Buy/Buy, real
+capital-eligible) vs "research"/"research_loosened" (Watch-only, logged
+purely to accumulate outcome data faster, never real capital -- see
+storage/signals.py's own tier docstring). A real actionable entry should
+count more toward a methodology's demonstrated track record than a
+Watch-tier one. Concrete motivation: RSI mean-reversion's first live day
+fired 38 highly correlated signals in one broad tech-sector
+pullback+recovery, 31 of them research-tier -- unweighted, that single
+event could push a methodology past the trust floor on the strength of
+its least capital-relevant signals. See TIER_WEIGHTS/_effective_count().
 """
 
 import pandas as pd
@@ -51,40 +63,122 @@ TRUST_FLOOR_TRADES = 20     # matches llm_agent.py's own established
                              # does NOT drive its blend weight, see
                              # ensemble_weight()
 
+# Per-tier weight for pooling Trade_Signals/Trade_Outcomes into IC/trust-floor
+# math (2026-08-21, per explicit user request) -- "actionable" (real Strong
+# Buy/Buy, real capital-eligible) signals should count more toward a
+# methodology's demonstrated track record than "research" (Watch-only,
+# logged purely to accumulate data faster, see storage/signals.py's own
+# tier docstring) or "research_loosened" (a DIFFERENT, deliberately loosened
+# config entirely) signals. Missing tier -> 1.0 (actionable), matching
+# storage/signals.py's own "missing tier field means actionable" convention
+# for pre-existing documents. Concrete motivation: RSI mean-reversion's
+# first live day (2026-08-20) fired 38 correlated signals in one broad
+# tech-sector pullback+recovery, 31 of them research-tier -- without
+# weighting, that single lucky/unlucky day could push a methodology's raw
+# n_settled past TRUST_FLOOR_TRADES on the strength of its least
+# capital-relevant signals.
+TIER_WEIGHTS = {
+    "actionable": 1.0,
+    "research": 0.5,
+    "research_loosened": 0.25,
+}
+DEFAULT_TIER_WEIGHT = 1.0
 
-def rank_ic(scores, pnls) -> float | None:
+
+def _effective_count(weights) -> float:
+    """Kish's effective sample size -- same formula
+    swingtrade.backtest.summarize_trades_weighted() already uses for the
+    identical reason: a large pile of low-weight (research-tier) trades
+    shouldn't be able to fake a trustworthy sample size the way a raw count
+    would. effective_n = (sum(w))^2 / sum(w^2) -- equals len(weights) when
+    every weight is equal, and shrinks toward the count of only the
+    highest-weight trades as the pool skews toward low-weight ones. Returns
+    0.0 for an empty or non-positive-total weight list."""
+    if not weights:
+        return 0.0
+    total = sum(weights)
+    if total <= 0:
+        return 0.0
+    sq_sum = sum(w * w for w in weights)
+    if sq_sum <= 0:
+        return 0.0
+    return total * total / sq_sum
+
+
+def _weighted_corr(x: pd.Series, y: pd.Series, w: pd.Series) -> float | None:
+    """Weighted Pearson correlation -- used here on RANK sequences (see
+    rank_ic()'s `weights` param), so this is a weighted Spearman
+    correlation in effect. Ranks themselves stay plain/positional
+    (unweighted); only each pair's CONTRIBUTION to the correlation
+    strength is weighted -- the same "weight the aggregate, not each
+    trade's own resolved outcome" pattern
+    swingtrade.backtest.summarize_trades_weighted() already follows.
+    Returns None if either weighted variance is non-positive (degenerate,
+    same convention as the unweighted case's nunique() < 2 check)."""
+    total = float(w.sum())
+    if total <= 0:
+        return None
+    mx = float((w * x).sum() / total)
+    my = float((w * y).sum() / total)
+    var_x = float((w * (x - mx) ** 2).sum() / total)
+    var_y = float((w * (y - my) ** 2).sum() / total)
+    if var_x <= 0 or var_y <= 0:
+        return None
+    cov = float((w * (x - mx) * (y - my)).sum() / total)
+    return cov / (var_x ** 0.5 * var_y ** 0.5)
+
+
+def rank_ic(scores, pnls, weights=None) -> float | None:
     """Spearman rank correlation between `scores` (a methodology's own
     score at signal time) and `pnls` (realized forward pnl_pct at
     settlement). Returns None (never 0.0 -- "no measurable skill" and "not
     enough data to tell" are different claims that callers should not
     conflate) if fewer than MIN_TRADES_FOR_ANY_IC pairs, the two sequences
     have mismatched lengths, or either series is constant (a rank
-    correlation against a constant series is undefined, not zero)."""
+    correlation against a constant series is undefined, not zero).
+
+    `weights` (optional, e.g. TIER_WEIGHTS per pair): when given, computes
+    a WEIGHTED correlation between the (unweighted) rank sequences instead
+    of the plain unweighted one -- see _weighted_corr(). None/omitted
+    reproduces the original unweighted behavior exactly, so every existing
+    caller (e.g. reoptimize_sector_rs.py's own backtest-driven IC, which
+    has no tier concept at all) is unaffected."""
     if len(scores) != len(pnls) or len(scores) < MIN_TRADES_FOR_ANY_IC:
+        return None
+    if weights is not None and len(weights) != len(scores):
         return None
     s = pd.Series(list(scores), dtype=float)
     p = pd.Series(list(pnls), dtype=float)
     if s.nunique() < 2 or p.nunique() < 2:
         return None
-    ic = s.rank().corr(p.rank())
-    return float(ic) if pd.notna(ic) else None
+    rs, rp = s.rank(), p.rank()
+    if weights is None:
+        ic = rs.corr(rp)
+        return float(ic) if pd.notna(ic) else None
+    w = pd.Series(list(weights), dtype=float)
+    return _weighted_corr(rs, rp, w)
 
 
 def windowed_ic_series(records: list[dict], window_days: int = IC_WINDOW_DAYS) -> list[dict]:
     """`records`: [{"signal_date": "YYYY-MM-DD", "score": float,
-    "pnl_pct": float}, ...] (order doesn't matter). Buckets into
-    successive `window_days`-wide calendar windows spanning the earliest to
-    latest signal_date -- NOT a strict per-day IC, see module docstring for
-    why -- computes one pooled rank_ic() per window, and SKIPS any window
-    with fewer than MIN_TRADES_PER_WINDOW records (still too thin to trust
-    even pooled). Returns
-    [{"window_start": date, "window_end": date, "ic": float, "n": int}, ...]
-    in chronological order -- empty list if there's nothing to bucket or
-    every window is too thin."""
+    "pnl_pct": float}, ...] (order doesn't matter) -- an optional "weight"
+    key (see TIER_WEIGHTS) makes this a tier-weighted window: the window's
+    own IC is computed via rank_ic(..., weights=...), and the
+    MIN_TRADES_PER_WINDOW floor is checked against the window's EFFECTIVE
+    count (_effective_count()), not its raw record count, so a window
+    padded mostly with low-weight research-tier signals can't clear the
+    floor on volume alone. Records without a "weight" key reproduce the
+    original unweighted behavior exactly. Buckets into successive
+    `window_days`-wide calendar windows spanning the earliest to latest
+    signal_date -- NOT a strict per-day IC, see module docstring for why.
+    Returns [{"window_start": date, "window_end": date, "ic": float,
+    "n": int, "effective_n": float}, ...] in chronological order -- empty
+    list if there's nothing to bucket or every window is too thin."""
     if not records:
         return []
     df = pd.DataFrame(records)
     df["signal_date"] = pd.to_datetime(df["signal_date"])
+    has_weights = "weight" in df.columns
     start = df["signal_date"].min()
     end = df["signal_date"].max()
     windows = []
@@ -92,12 +186,14 @@ def windowed_ic_series(records: list[dict], window_days: int = IC_WINDOW_DAYS) -
     while window_start <= end:
         window_end = window_start + pd.Timedelta(days=window_days)
         chunk = df[(df["signal_date"] >= window_start) & (df["signal_date"] < window_end)]
-        if len(chunk) >= MIN_TRADES_PER_WINDOW:
-            ic = rank_ic(chunk["score"].tolist(), chunk["pnl_pct"].tolist())
+        weights = chunk["weight"].tolist() if has_weights else None
+        effective_n = _effective_count(weights) if weights is not None else float(len(chunk))
+        if effective_n >= MIN_TRADES_PER_WINDOW:
+            ic = rank_ic(chunk["score"].tolist(), chunk["pnl_pct"].tolist(), weights=weights)
             if ic is not None:
                 windows.append({
                     "window_start": window_start.date(), "window_end": window_end.date(),
-                    "ic": ic, "n": len(chunk),
+                    "ic": ic, "n": len(chunk), "effective_n": round(effective_n, 1),
                 })
         window_start = window_end
     return windows
@@ -131,12 +227,19 @@ def fetch_score_pnl_pairs(strategy: str, score_field: str = "trade_score") -> li
     part of their own unique index (see storage/signals.py,
     storage/outcomes.py), so this is a simple two-query-and-merge in
     Python, not a fragile cross-collection guess. Returns
-    [{"signal_date":, "score":, "pnl_pct":}, ...] for every settled trade
-    under this strategy where BOTH the originating signal's score and its
-    pnl_pct are present -- silently skips a settled outcome whose source
-    signal is missing the score field (shouldn't happen for any current
-    methodology, all of which always write trade_score, but this is a read
-    path and should degrade rather than crash if it ever does).
+    [{"signal_date":, "score":, "pnl_pct":, "tier":, "weight":}, ...] for
+    every settled trade under this strategy where BOTH the originating
+    signal's score and its pnl_pct are present -- silently skips a settled
+    outcome whose source signal is missing the score field (shouldn't
+    happen for any current methodology, all of which always write
+    trade_score, but this is a read path and should degrade rather than
+    crash if it ever does).
+
+    `tier`/`weight` (2026-08-21): the originating signal's own "actionable"
+    | "research" | "research_loosened" tier (see storage/signals.py) and
+    its TIER_WEIGHTS lookup -- missing tier defaults to "actionable"/1.0,
+    matching storage/signals.py's own convention for pre-existing
+    documents written before the tier field existed.
 
     `score_field` lets a future methodology's "score" be read from a
     different Trade_Signals field if trade_score isn't the right one for
@@ -150,16 +253,21 @@ def fetch_score_pnl_pairs(strategy: str, score_field: str = "trade_score") -> li
     if not outcomes:
         return []
     signals_by_key = {
-        (doc["ticker"], doc["signal_date"]): doc.get(score_field)
-        for doc in db["Trade_Signals"].find({"strategy": strategy}, {"ticker": 1, "signal_date": 1, score_field: 1})
+        (doc["ticker"], doc["signal_date"]): (doc.get(score_field), doc.get("tier"))
+        for doc in db["Trade_Signals"].find(
+            {"strategy": strategy}, {"ticker": 1, "signal_date": 1, score_field: 1, "tier": 1}
+        )
     }
     pairs = []
     for outcome in outcomes:
-        score = signals_by_key.get((outcome["ticker"], outcome["signal_date"]))
-        if score is None:
+        signal = signals_by_key.get((outcome["ticker"], outcome["signal_date"]))
+        if signal is None or signal[0] is None:
             continue
+        score, tier = signal
+        tier = tier or "actionable"
         pairs.append({
             "signal_date": outcome["signal_date"], "score": float(score), "pnl_pct": float(outcome["pnl_pct"]),
+            "tier": tier, "weight": TIER_WEIGHTS.get(tier, DEFAULT_TIER_WEIGHT),
         })
     return pairs
 
@@ -167,27 +275,38 @@ def fetch_score_pnl_pairs(strategy: str, score_field: str = "trade_score") -> li
 def methodology_report(strategy: str, score_field: str = "trade_score", window_days: int = IC_WINDOW_DAYS) -> dict:
     """The full IC/IR picture for one methodology (`strategy` label) --
     everything ensemble_weight() and the dashboard need in one call.
-    `overall_ic` pools EVERY settled trade into one rank correlation (the
-    headline "does this methodology's score rank real outcomes correctly,
-    at all" figure); `ic_series`/`ir` measure whether that skill is STABLE
-    over time (see windowed_ic_series()/information_ratio()) -- a
+    `overall_ic` pools EVERY settled trade into one TIER-WEIGHTED rank
+    correlation (the headline "does this methodology's score rank real
+    outcomes correctly, at all" figure -- see rank_ic()'s `weights` param
+    and TIER_WEIGHTS); `ic_series`/`ir` measure whether that skill is
+    STABLE over time (see windowed_ic_series()/information_ratio()) -- a
     methodology can show a decent overall_ic built from one lucky window
     with an ir near zero (or None), which is exactly the distinction IR
     exists to catch, per the user's own explicit reasoning for wanting it.
 
-    Returns {"strategy":, "n_settled":, "overall_ic": float|None,
-    "ic_series": [...], "ir": float|None, "trust_floor_met": bool} --
-    trust_floor_met is n_settled >= TRUST_FLOOR_TRADES, the same bar
-    llm_agent.py's own tab already established; see ensemble_weight() for
-    how this gates whether ir actually drives a blend weight."""
+    Returns {"strategy":, "n_settled":, "effective_n_settled": float,
+    "overall_ic": float|None, "ic_series": [...], "ir": float|None,
+    "trust_floor_met": bool} -- `n_settled` is the raw count (unchanged
+    meaning: "how many signals have resolved"); `trust_floor_met` is now
+    gated on `effective_n_settled` (the tier-weighted Kish effective
+    sample size, see _effective_count()) >= TRUST_FLOOR_TRADES instead of
+    the raw count, per explicit user request -- real Strong Buy/Buy
+    ("actionable") signals should count more toward the trust floor than
+    Watch-only ("research") ones. See ensemble_weight() for how
+    trust_floor_met/ir together gate a methodology's blend weight."""
     pairs = fetch_score_pnl_pairs(strategy, score_field=score_field)
     n_settled = len(pairs)
-    overall_ic = rank_ic([p["score"] for p in pairs], [p["pnl_pct"] for p in pairs]) if pairs else None
+    weights = [p["weight"] for p in pairs]
+    effective_n_settled = round(_effective_count(weights), 1) if pairs else 0.0
+    overall_ic = (
+        rank_ic([p["score"] for p in pairs], [p["pnl_pct"] for p in pairs], weights=weights) if pairs else None
+    )
     ic_series = windowed_ic_series(pairs, window_days=window_days)
     ir = information_ratio([w["ic"] for w in ic_series])
     return {
-        "strategy": strategy, "n_settled": n_settled, "overall_ic": overall_ic,
-        "ic_series": ic_series, "ir": ir, "trust_floor_met": n_settled >= TRUST_FLOOR_TRADES,
+        "strategy": strategy, "n_settled": n_settled, "effective_n_settled": effective_n_settled,
+        "overall_ic": overall_ic, "ic_series": ic_series, "ir": ir,
+        "trust_floor_met": effective_n_settled >= TRUST_FLOOR_TRADES,
     }
 
 

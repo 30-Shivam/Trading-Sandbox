@@ -78,7 +78,7 @@ STALENESS_SHARPE_DROP_THRESHOLD = 0.03
 # pinned secondary.
 LIVE_STRATEGIES_FOR_STALENESS_CHECK = [
     ("ma_crossover", None, "simulate_ma_crossover_signals", "simulate_random_ma_crossover_entries"),
-    ("squeeze_breakout", 39, "simulate_squeeze_breakout_signals", "simulate_random_squeeze_breakout_entries"),
+    ("squeeze_breakout", 53, "simulate_squeeze_breakout_signals", "simulate_random_squeeze_breakout_entries"),
     ("rsi_mean_reversion", 17, "simulate_signals", "simulate_random_entries"),
     ("pairs", 58, "simulate_pairs_signals", "simulate_random_pairs_entries"),
 ]
