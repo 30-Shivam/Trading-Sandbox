@@ -1,5 +1,6 @@
 """
-Mark a logged signal as an actual, confirmed fill (improvements.txt point 1).
+Mark a logged signal as an actual, confirmed fill, or record that you
+passed on it and why (improvements.txt point 1 / item 92).
 
 Trade_Signals logs every mechanical Strong Buy/Buy the scanner finds -- most
 of those were never actually traded. settle_trades.py settles every one of
@@ -7,7 +8,11 @@ them regardless (that's what makes "is this signal any good" measurable at
 all), but that also means the live win rate you see by default measures
 "every signal's hypothetical outcome," not "what actually happened to
 trades I made." This script lets you tell the system which signals you
-actually acted on, so reporting can separate the two.
+actually acted on (confirming a fill also records a "acted_on" decision,
+see storage.record_user_decision()) or explicitly passed on and why, so
+reporting can separate hypothetical from real outcomes, AND so
+user_preferences.summarize_decisions() has real data to build a revealed-
+preference digest from over time.
 
 --price (optional) records your real fill price if it differed from the
 system's computed buy_price. Stop_Loss/Sell_Price are never touched --
@@ -15,11 +20,19 @@ they're absolute price levels computed at signal time, not relative to
 whatever price you actually got filled at -- only the entry price used for
 pnl_pct calculation changes.
 
+--pass records that you explicitly declined this signal, with your reason
+as free text -- a preference/journal concept, deliberately separate from
+confirmed_filled's own financial-truth concept (see
+storage.record_user_decision()'s own docstring). Does NOT call
+confirm_fill() or touch settlement -- a pass never happened, there's
+nothing to re-settle.
+
 Usage:
     python confirm_fill.py                                   # list pending (unconfirmed) signals
     python confirm_fill.py --ticker INTC --date 2026-07-24
     python confirm_fill.py --ticker INTC --date 2026-07-24 --price 89.75
     python confirm_fill.py --undo --ticker INTC --date 2026-07-24
+    python confirm_fill.py --ticker INTC --date 2026-07-24 --pass "too extended, RSI already overbought"
 """
 
 import argparse
@@ -56,6 +69,11 @@ def main():
     )
     parser.add_argument("--price", type=float, default=None, help="Your actual fill price, if different from the logged buy_price.")
     parser.add_argument("--undo", action="store_true", help="Unmark a previously confirmed fill.")
+    parser.add_argument(
+        "--pass", dest="pass_reason", default=None, metavar="REASON",
+        help="Record that you explicitly passed on this signal, with your reason as free text. "
+             "Mutually exclusive with confirming a fill -- does not touch confirmed_filled/settlement.",
+    )
     args = parser.parse_args()
 
     try:
@@ -68,11 +86,16 @@ def main():
         if args.undo:
             storage.unconfirm_fill(args.ticker, args.date, args.strategy)
             print(f"Unconfirmed {args.ticker} ({args.date}, strategy={args.strategy}).")
+            _resettle_if_already_settled(args.ticker, args.date, args.strategy)
+        elif args.pass_reason:
+            storage.record_user_decision(args.ticker, args.date, args.strategy, "passed", reason=args.pass_reason)
+            print(f"Recorded PASS on {args.ticker} ({args.date}, strategy={args.strategy}): {args.pass_reason}")
         else:
             storage.confirm_fill(args.ticker, args.date, args.strategy, fill_price=args.price)
+            storage.record_user_decision(args.ticker, args.date, args.strategy, "acted_on")
             price_note = f" at ${args.price:.2f}" if args.price else " (using the logged buy_price)"
             print(f"Confirmed {args.ticker} ({args.date}, strategy={args.strategy}) as filled{price_note}.")
-        _resettle_if_already_settled(args.ticker, args.date, args.strategy)
+            _resettle_if_already_settled(args.ticker, args.date, args.strategy)
         return
 
     pending = storage.get_signals_pending_confirmation()

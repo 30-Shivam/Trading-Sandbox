@@ -706,6 +706,36 @@ class TradingConfig:
                                            # other strategy has -- see
                                            # squeeze_breakout_entry_fill's comment
 
+    # Insider-buying (2026-08-21) -- buy when recent, real-dollar insider
+    # Form-4 purchases cluster within a lookback window, in a confirmed
+    # macro uptrend. See run_backtest.fetch_insider_purchases() for the
+    # data source (yfinance's insider_transactions, ~12-22mo of real
+    # history only -- NOT this project's usual 5y window) and its
+    # reporting-lag no-look-ahead handling.
+    insider_lookback_days: int = 14  # matches the source idea's own convention
+    insider_min_purchase_value: float = 50_000.0  # filters trivial/option-exercise-
+                                           # adjacent buys, pooled over the window
+    insider_min_distinct_buyers: int = 1  # >1 requires broader conviction, not
+                                           # just one insider repeatedly buying
+    insider_strength_cap_buyers: float = 2.0  # same role as
+                                           # squeeze_breakout_strength_cap_pct --
+                                           # add_insider_buying_trade_score's
+                                           # Signal_Strength_Pct (distinct buyers
+                                           # beyond insider_min_distinct_buyers,
+                                           # NOT a % -- see pairs_zscore_strength_cap's
+                                           # identical "reused field name, different
+                                           # units" precedent) earns full credit at
+                                           # this many EXTRA distinct buyers; raw
+                                           # dollar value isn't used here since real
+                                           # purchase sizes ($1M-$10M+) would blow
+                                           # past any sane cap almost immediately
+                                           # and stop differentiating anything
+    insider_reporting_lag_days: int = 3  # conservative guard against Start-Date's
+                                           # transaction-vs-filing-date ambiguity --
+                                           # see fetch_insider_purchases()
+    insider_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle every
+                                           # other strategy has
+
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,
     # trend-following), "pullback" (simulate_pullback_signals,

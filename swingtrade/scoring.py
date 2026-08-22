@@ -352,6 +352,45 @@ def add_pairs_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONF
     return df
 
 
+def add_insider_buying_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    """INSIDER-BUYING counterpart to add_trade_score()/add_squeeze_breakout_trade_score()/
+    add_pairs_trade_score()/etc. -- blends RRR and Signal_Strength_Pct
+    (distinct insiders beyond insider_min_distinct_buyers, see
+    insider_buying_levels_from_frame()) into a 0-100 Trade_Score for rows
+    produced by insider_buying_levels_from_frame(), reusing
+    signal_for_score()'s thresholds so an insider-buying Trade_Score means
+    the same thing on the same 0-100 scale as every other strategy.
+
+    Distance_to_Buy_Pct is always 0 for this strategy (Buy_Price IS
+    Last_Close) -- Signal_Strength_Pct fills that role instead, same
+    "differentiating term" pattern squeeze_breakout/pairs use.
+
+    Hard gate, not just a scoring input: a ticker whose Insider_Buy_Signal
+    is False (no qualifying purchase cluster, or outside the shared
+    macro-uptrend/liquidity gates) gets Trade_Score=0/Ignore, full stop --
+    same "not eligible at all" semantics as every other strategy's hard
+    gate, not merely a low score.
+
+    Lean v1, no optional "sharpening" filters yet -- mirrors how every
+    other strategy in this project launched before any filters were added,
+    per this project's own established discipline."""
+    df = df.copy()
+
+    rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+
+    strength_clipped = df["Signal_Strength_Pct"].clip(lower=0, upper=config.insider_strength_cap_buyers)
+    strength_score = (strength_clipped / config.insider_strength_cap_buyers) * config.distance_score_weight
+
+    total_weight = config.rrr_score_weight + config.distance_score_weight
+    rescale = (100 / total_weight) if total_weight > 0 else 0.0
+
+    raw_score = ((rrr_score + strength_score) * rescale).clip(lower=0)
+
+    df["Trade_Score"] = raw_score.where(df["Insider_Buy_Signal"], 0.0).round(1)
+    df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
+    return df
+
+
 def add_squeeze_breakout_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
     """Squeeze-breakout counterpart to add_trade_score()/add_breakout_trade_score()/
     add_pullback_trade_score()/add_breakout_retest_trade_score()/add_week52_trade_score()/

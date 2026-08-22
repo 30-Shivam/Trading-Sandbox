@@ -395,6 +395,10 @@ PAIRS_ZSCORE_ENTRY_MAX_RANGE = (-3.5, -1.0)
 PAIRS_ZSCORE_WINDOW_DAYS_RANGE = (30, 120)
 PAIRS_SPREAD_WINDOW_DAYS_RANGE = (5, 30)
 PAIRS_LOOKBACK_DAYS_RANGE = (45, 180)
+INSIDER_LOOKBACK_DAYS_RANGE = (7, 30)
+INSIDER_MIN_PURCHASE_VALUE_RANGE = (10_000.0, 250_000.0)
+INSIDER_MIN_DISTINCT_BUYERS_RANGE = (1, 3)
+INSIDER_REPORTING_LAG_DAYS_RANGE = (1, 5)
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -930,7 +934,7 @@ def build_objective(
                 "atr_take_profit_multiplier": atr_take_profit_multiplier,
                 "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
-        else:
+        elif strategy == "pairs":
             params = {
                 "pairs_min_correlation": trial.suggest_float(
                     "pairs_min_correlation", *PAIRS_MIN_CORRELATION_RANGE
@@ -946,6 +950,23 @@ def build_objective(
                 ),
                 "pairs_lookback_days": trial.suggest_int(
                     "pairs_lookback_days", *PAIRS_LOOKBACK_DAYS_RANGE
+                ),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
+            }
+        else:
+            params = {
+                "insider_lookback_days": trial.suggest_int(
+                    "insider_lookback_days", *INSIDER_LOOKBACK_DAYS_RANGE
+                ),
+                "insider_min_purchase_value": trial.suggest_float(
+                    "insider_min_purchase_value", *INSIDER_MIN_PURCHASE_VALUE_RANGE
+                ),
+                "insider_min_distinct_buyers": trial.suggest_int(
+                    "insider_min_distinct_buyers", *INSIDER_MIN_DISTINCT_BUYERS_RANGE
+                ),
+                "insider_reporting_lag_days": trial.suggest_int(
+                    "insider_reporting_lag_days", *INSIDER_REPORTING_LAG_DAYS_RANGE
                 ),
                 "atr_take_profit_multiplier": atr_take_profit_multiplier,
                 "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
@@ -1034,6 +1055,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--strategy",
+        # "insider_buying" deliberately NOT included yet -- its
+        # trial.suggest_*() branch exists in objective() (pre-wired for
+        # when this is needed), but insider_data isn't threaded through
+        # run_walk_forward()'s multiprocessing path (ProcessPoolExecutor
+        # initargs, like pair_price_panels is for "pairs") -- every worker
+        # would silently see insider_purchases=None, Insider_Buy_Signal
+        # always False, and every trial would hit UNDER_SAMPLED_PENALTY
+        # with zero real signals. Add that threading before enabling this.
         choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout", "ma_crossover", "pairs"],
         default="rsi",
         help="Which signal to search parameters for. Default: rsi.",

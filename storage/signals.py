@@ -74,6 +74,15 @@ Document shape (one per ticker per trading day):
                                       # final decision, llm_agent.py rows only.
         "secondary_decision": str | None,  # that provider's own decision/action
         "secondary_confidence": float | None,  # that provider's own confidence
+        "audit_result": str | None,  # "PASS" | "FAIL" | None -- llm_agent.py's
+                                      # audit_verdict(), rows whose decision was
+                                      # "Buy" only (see that function's own docstring
+                                      # for why). A SEPARATE, sequential adversarial
+                                      # review of this row's own rationale, distinct
+                                      # from provider_agreement's parallel dual-model
+                                      # consensus above.
+        "audit_notes": str | None,   # the auditor's own 1-2 sentence explanation,
+                                      # citing the specific unsupported claim if FAIL.
         "regime": str | None,        # "trending" | "choppy" | None -- regime_switcher.py
                                       # rows only (strategy="regime_switcher"), the
                                       # ADX-based classification that picked this row's
@@ -92,6 +101,13 @@ Document shape (one per ticker per trading day):
                                       # NOT written by log_trade_signal, see below
         "fill_price": float,         # present only if confirm_fill() was given one
         "confirmed_at": datetime,    # present only once confirmed
+        "user_decision": str,        # "acted_on" | "passed" | absent -- record_user_decision(),
+                                      # a preference/journal concept, deliberately SEPARATE
+                                      # from confirmed_filled's own financial-truth concept.
+                                      # NOT written by log_trade_signal, see below.
+        "user_decision_reason": str, # optional free text, mainly meaningful for "passed" --
+                                      # see user_preferences.summarize_decisions()
+        "user_decision_at": datetime,  # present only once a decision is recorded
         "created_at": datetime, "updated_at": datetime,
     }
 
@@ -122,6 +138,10 @@ same day), and if confirmed_filled were part of that $set, a confirmation
 you made this morning would get silently wiped out the next time ingest.py
 or the dashboard re-scans today. It's only ever touched by confirm_fill()/
 unconfirm_fill() below, so a scan can never undo a confirmation.
+
+user_decision/user_decision_reason/user_decision_at follow the identical
+never-in-$set discipline, for the identical reason -- see
+record_user_decision() below.
 """
 
 import math
@@ -203,6 +223,14 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
         "secondary_provider": _native(row.get("Secondary_Provider")),
         "secondary_decision": _native(row.get("Secondary_Decision")),
         "secondary_confidence": _native(row.get("Secondary_Confidence")),
+        # Adversarial second-pass review (llm_agent.py's audit_verdict())
+        # -- present only for strategy="llm_agent" rows whose decision was
+        # "Buy" (the only ones a human might act on; see audit_verdict()'s
+        # own docstring for why it isn't run on every verdict). None for
+        # every other row, same "these keys simply aren't in `row`"
+        # degrade-cleanly convention as provider_agreement above.
+        "audit_result": _native(row.get("Audit_Result")),
+        "audit_notes": row.get("Audit_Notes"),
         # regime_switcher.py rows only (strategy="regime_switcher") -- which
         # ADX-based regime was classified and which underlying mechanical
         # strategy's signal got surfaced as a result, None for every other
@@ -319,6 +347,37 @@ def unconfirm_fill(ticker: str, signal_date: str, strategy: str) -> None:
     db[COLLECTION_NAME].update_one(
         {"ticker": ticker, "signal_date": signal_date, "strategy": strategy},
         {"$set": {"confirmed_filled": False}, "$unset": {"fill_price": "", "confirmed_at": ""}},
+    )
+
+
+def record_user_decision(
+    ticker: str, signal_date: str, strategy: str, decision: str, reason: str | None = None,
+) -> None:
+    """Record what the user actually DID with a logged signal -- a
+    preference/journal concept, deliberately SEPARATE from confirm_fill()'s
+    own financial-truth concept (whether a real fill happened, at what
+    price). A user can choose to act on a signal whose limit order never
+    actually touched (confirmed_filled stays False), and "passed" needs to
+    exist independent of any fill concept at all -- so this is its own
+    field, not folded into confirmed_filled.
+
+    `decision` must be "acted_on" or "passed". `reason` (optional, mainly
+    meaningful for "passed") is free text -- see user_preferences.py's
+    summarize_decisions() for how this gets read back. Same "not part of
+    _build_document()'s $set" discipline confirmed_filled already
+    established (see that field's own comment above) -- a routine re-scan
+    of the same ticker/day must never silently wipe a recorded decision,
+    so this is only ever touched by this function (and its CLI, see
+    confirm_fill.py's --pass mode)."""
+    if decision not in ("acted_on", "passed"):
+        raise ValueError(f"decision must be 'acted_on' or 'passed', got {decision!r}")
+    db = get_db()
+    update = {"user_decision": decision, "user_decision_at": datetime.now(timezone.utc)}
+    if reason is not None:
+        update["user_decision_reason"] = reason
+    db[COLLECTION_NAME].update_one(
+        {"ticker": ticker, "signal_date": signal_date, "strategy": strategy},
+        {"$set": update},
     )
 
 

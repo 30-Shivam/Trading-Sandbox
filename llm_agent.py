@@ -226,6 +226,28 @@ def _parse_holding_response(text: str) -> dict | None:
     }
 
 
+def _parse_audit_response(text: str) -> dict | None:
+    """Parse and validate audit_verdict()'s JSON response -- same
+    conservative "malformed shape means None, never fabricate" philosophy
+    as _parse_response()."""
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    audit_result = data.get("audit_result")
+    if audit_result not in ("PASS", "FAIL"):
+        return None
+
+    audit_notes = data.get("audit_notes")
+    if not isinstance(audit_notes, str) or not audit_notes.strip():
+        return None
+
+    return {"audit_result": audit_result, "audit_notes": audit_notes.strip()}
+
+
 def _build_qualitative_block(ticker: str, qualitative: dict | None) -> str:
     """Shared by _build_prompt()/_build_holding_prompt() -- renders
     market_data.get_qualitative_snapshot()'s dict as one labeled paragraph
@@ -344,6 +366,74 @@ def _build_prompt(ticker: str, context: dict) -> tuple[str, int]:
         "strong the combined evidence is, not just the mechanical score alone."
     )
     return prompt, len(trimmed_headlines)
+
+
+def _build_audit_prompt(ticker: str, context: dict, verdict: dict) -> str:
+    """Build the adversarial-review prompt for audit_verdict() -- presents
+    the SAME context evaluate_ticker() saw, plus the verdict it produced,
+    and asks a FRESH pass to check whether the verdict's own rationale
+    actually holds up against that data. Reuses the same context-rendering
+    blocks _build_prompt() uses (headlines/mechanical scores/fundamentals/
+    macro/qualitative) so the auditor sees exactly what the original call
+    saw, not a summarized/lossy version of it -- deliberately duplicated
+    rather than factored out, since _build_prompt()'s own closing
+    instructions (fresh judgment) and this prompt's closing instructions
+    (adversarial review of an existing judgment) are genuinely different
+    tasks sharing only the context-rendering, same reasoning
+    _parse_holding_response() gives for staying separate from
+    _parse_response()."""
+    headlines = context.get("headlines") or []
+    trimmed_headlines = headlines[:MAX_HEADLINES]
+    headline_block = "\n".join(f"- {h}" for h in trimmed_headlines) if trimmed_headlines else "(none available)"
+
+    mechanical_scores = context.get("mechanical_scores") or {}
+    mechanical_block = (
+        ", ".join(f"{strategy}={score:.1f}" for strategy, score in mechanical_scores.items())
+        or "(none)"
+    )
+
+    fundamentals = context.get("fundamentals") or {}
+    fundamentals_block = ", ".join(f"{k}={v}" for k, v in fundamentals.items()) or "(unavailable)"
+
+    macro = context.get("macro")
+    macro_block = ""
+    if macro:
+        macro_headlines = macro.get("headlines") or []
+        trimmed_macro_headlines = macro_headlines[:MAX_MACRO_HEADLINES]
+        macro_headline_block = (
+            "\n".join(f"- {h}" for h in trimmed_macro_headlines) if trimmed_macro_headlines else "(none available)"
+        )
+        macro_block = (
+            f"\n\nBroader market backdrop (shared across every candidate): VIX={macro.get('vix')} "
+            f"(change {macro.get('vix_change_pct')}%), S&P-level macro headlines:\n{macro_headline_block}"
+        )
+
+    qualitative_block = _build_qualitative_block(ticker, context.get("qualitative"))
+
+    return (
+        f"A trading analyst was given the following data on {ticker} and asked for a "
+        f"Buy/Hold/Avoid judgment: Last_Close={context.get('last_close')}, "
+        f"RSI={context.get('rsi')}, ATR={context.get('atr')}, "
+        f"mechanical Trade_Score(s) by strategy: {mechanical_block}. "
+        f"Catalyst_Warning={context.get('catalyst_warning')}, "
+        f"next earnings date={context.get('next_earnings_date')}. "
+        f"Basic fundamentals: {fundamentals_block}. "
+        f"Its {len(trimmed_headlines)} most recent news headlines:\n{headline_block}"
+        f"{macro_block}{qualitative_block}\n\n"
+        f'The analyst responded: decision="{verdict.get("decision")}", '
+        f'confidence={verdict.get("confidence")}, rationale="{verdict.get("rationale")}".\n\n'
+        "You are a SEPARATE reviewer. You did not make this call and have no loyalty to "
+        "it -- assume it may be wrong and find out. Check, in order: does every specific "
+        "claim in the rationale (a number, a named catalyst, a sentiment characterization) "
+        "actually appear supported by the data given above, or is anything asserted that "
+        "the data doesn't actually show? Is the decision consistent with the rationale's "
+        'own tone (e.g. a bearish-sounding rationale paired with "Buy")? Is the stated '
+        "confidence level plausible given how hedged or certain the rationale's own "
+        "language is? You may NOT change the decision or rewrite the rationale -- report "
+        "only. Respond ONLY with a JSON object matching exactly this shape: "
+        '{"audit_result": "PASS" | "FAIL", "audit_notes": "<1-2 plain-language sentences -- '
+        'if FAIL, cite the SPECIFIC unsupported claim or inconsistency>"}.'
+    )
 
 
 def _build_prompt_qualitative_weighted(ticker: str, context: dict) -> tuple[str, int]:
@@ -765,6 +855,45 @@ def evaluate_ticker(ticker: str, context: dict, variant: str = "balanced") -> di
     gemini_result = _call_gemini(prompt) if _gemini_available() else None
     groq_result = _call_groq(prompt) if _groq_available() else None
     return _resolve_dual(gemini_result, groq_result, "decision", CONSERVATIVE_ORDER_DECISION)
+
+
+def audit_verdict(ticker: str, context: dict, verdict: dict) -> dict | None:
+    """Adversarial SECOND PASS over an already-produced evaluate_ticker()
+    verdict -- a genuinely different check from _resolve_dual()'s own
+    dual-provider consensus (which asks two models the SAME fresh question
+    in PARALLEL and reconciles disagreement). This instead takes the
+    WINNING verdict as given and asks a fresh, SEQUENTIAL call to review
+    whether its own stated rationale actually holds up against the source
+    data -- "assume it's wrong, find out how." Never rewrites the verdict,
+    only reports -- same "checker never fixes" discipline as this
+    project's own champion/challenger promotion flow (promote_config.py
+    never lets Optuna's own search results self-promote; settle_trades.py
+    grades every signal regardless of whether it was ever acted on).
+
+    Only worth calling for verdict["decision"] == "Buy" (the only ones a
+    human might actually act on) -- callers gate this themselves (see
+    ingest.py/dip_buy_analyzer.py), this function doesn't check
+    verdict["decision"] internally so it stays a pure, reusable "audit
+    whatever verdict you give me" primitive.
+
+    Single-provider (Gemini if available, else Groq) -- NOT dual, unlike
+    evaluate_ticker(). This is a bounded-cost sanity pass on top of an
+    already-dual-provider-reconciled verdict, not the primary judgment
+    itself; doubling to 4 total calls per audited candidate isn't worth it
+    for a checking pass.
+
+    Returns {"audit_result": "PASS"|"FAIL", "audit_notes": str} or None
+    (never raises) if both providers are unavailable/fail -- same "a
+    flaky LLM call must never break a scan" philosophy as every other
+    function here."""
+    prompt = _build_audit_prompt(ticker, context, verdict)
+    if _gemini_available():
+        result = _call_gemini(prompt, parse_fn=_parse_audit_response)
+        if result is not None:
+            return result
+    if _groq_available():
+        return _call_groq(prompt, parse_fn=_parse_audit_response)
+    return None
 
 
 def evaluate_holding(ticker: str, context: dict) -> dict | None:

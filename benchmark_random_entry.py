@@ -92,6 +92,19 @@ has no short-position support anywhere). Deliberately lean v1, same
 adx_trend_entry got -- this IS the critical validation gate for this
 strategy too.
 
+--strategy insider_buying tests the INSIDER-BUYING signal (buy a ticker
+when real, open-market Form-4 insider purchases have clustered within a
+recent window -- config.insider_lookback_days, dollar/distinct-buyer
+gated -- swingtrade.simulate_insider_buying_signals / simulate_random_insider_buying_entries),
+a fundamentally different data source from every other strategy (fundamentals/
+ownership activity, not price/volume). Real, hard constraint worth knowing
+before trusting any result here: run_backtest.fetch_insider_purchases()'s
+own yfinance source only carries ~12-22 months of real history (NOT this
+project's usual 5-year window), so any validation on this strategy is
+necessarily weaker evidence than every other strategy's own, by
+construction -- this IS still the critical validation gate for it, just
+over a shorter real window than usual.
+
 Applies the same ticker-holdout split as optimize.py (--holdout-frac,
 --holdout-seed) so the comparison also holds up (or doesn't) on tickers
 never used to pick the config being tested. Uses cluster-adjusted stats
@@ -120,10 +133,13 @@ import pandas as pd
 import storage
 import swingtrade
 from optimize import DEFAULT_HOLDOUT_SEEDS, average_holdout_summary
-from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history
+from run_backtest import (
+    LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history, fetch_insider_purchases,
+)
 from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
-EARNINGS_AWARE_STRATEGIES = ("squeeze_breakout", "ma_crossover", "pairs")  # the only simulate_*_signals()/
+EARNINGS_AWARE_STRATEGIES = ("squeeze_breakout", "ma_crossover", "pairs", "insider_buying")  # the only
+                                                                   # simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
                                                                    # accept earnings_dates -- see
                                                                    # swingtrade/backtest.py
@@ -138,6 +154,10 @@ PAIR_AWARE_STRATEGIES = ("pairs",)  # the only REAL simulate_*_signals() (not th
                                                                    # SECTOR_AWARE_STRATEGIES above) that
                                                                    # accepts peer_prices -- see
                                                                    # improvements.txt item 82
+INSIDER_AWARE_STRATEGIES = ("insider_buying",)  # the only REAL simulate_*_signals() (not the
+                                                                   # random baseline -- same reasoning as
+                                                                   # PAIR_AWARE_STRATEGIES above) that
+                                                                   # accepts insider_purchases
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -184,6 +204,7 @@ def main():
         choices=[
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
             "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover", "pairs",
+            "insider_buying",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -374,6 +395,17 @@ def main():
                 if not etf_df.empty:
                     sector_data[sector] = etf_df
 
+    insider_data: dict[str, pd.DataFrame] = {}
+    if args.strategy in INSIDER_AWARE_STRATEGIES:
+        print(f"\nFetching insider purchase history for {len(ticker_data)} ticker(s)...")
+        for i, ticker in enumerate(ticker_data):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_SEC)
+            insider_data[ticker] = fetch_insider_purchases(ticker, config)
+        found = sum(1 for d in insider_data.values() if len(d) > 0)
+        total_events = sum(len(d) for d in insider_data.values())
+        print(f"Got {total_events} real purchase event(s) across {found}/{len(ticker_data)} ticker(s).")
+
     sector_price_panels: dict[str, pd.DataFrame] = {}
     if args.strategy in PAIR_AWARE_STRATEGIES:
         # No new network fetch -- every ticker's OHLCV is already in
@@ -420,6 +452,9 @@ def main():
     elif args.strategy == "pairs":
         real_fn, random_fn = swingtrade.simulate_pairs_signals, swingtrade.simulate_random_pairs_entries
         real_label = "Pairs-timed"
+    elif args.strategy == "insider_buying":
+        real_fn, random_fn = swingtrade.simulate_insider_buying_signals, swingtrade.simulate_random_insider_buying_entries
+        real_label = "Insider_Buying-timed"
     else:
         real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
         real_label = "MA_Crossover-timed"
@@ -443,11 +478,15 @@ def main():
         if panel is None or ticker not in panel.columns:
             return {"peer_prices": None}
         return {"peer_prices": panel.drop(columns=[ticker])}
+    insider_kwargs = lambda ticker: (  # noqa: E731 -- see INSIDER_AWARE_STRATEGIES
+        {"insider_purchases": insider_data.get(ticker)} if args.strategy in INSIDER_AWARE_STRATEGIES else {}
+    )
     for i, (ticker, ohlcv) in enumerate(ticker_data.items()):
         sector = sector_lookup.get(ticker, "Unknown")
         real = real_fn(
             ticker, ohlcv, market_data, start, end, config,
             **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker), **peer_kwargs(ticker),
+            **insider_kwargs(ticker),
         )
         real_trades.extend(real)
         real_counts[ticker] = len(real)

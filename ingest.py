@@ -294,6 +294,13 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
             print(f"  {ticker} [{variant}]: {verdict['decision']} (confidence {verdict['confidence']:.0f}/100, "
                   f"news_sentiment={verdict['news_sentiment']}{agreement_note}) -- {verdict['rationale']}")
 
+            # Adversarial second-pass review -- only worth the extra LLM call for
+            # "Buy" (the only decision a human might actually act on), see
+            # audit_verdict()'s own docstring for why this isn't run on every verdict.
+            audit = llm_agent.audit_verdict(ticker, context, verdict) if verdict["decision"] == "Buy" else None
+            if audit is not None:
+                print(f"    Audit: {audit['audit_result']} -- {audit['audit_notes']}")
+
             if verdict["decision"] in ("Buy", "Hold"):
                 variant_config = swingtrade.TradingConfig(
                     **{**config.to_dict(), "strategy": llm_agent.variant_strategy_name(variant)}
@@ -317,6 +324,8 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
                     "Secondary_Provider": verdict["secondary_provider"],
                     "Secondary_Decision": verdict["secondary_decision"],
                     "Secondary_Confidence": verdict["secondary_confidence"],
+                    "Audit_Result": audit["audit_result"] if audit else None,
+                    "Audit_Notes": audit["audit_notes"] if audit else None,
                 })
 
     for variant, llm_rows in llm_rows_by_variant.items():

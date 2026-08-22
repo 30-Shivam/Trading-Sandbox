@@ -16,6 +16,7 @@ from .signals import (
     log_trade_signal,
     log_trade_signals,
     mark_settled,
+    record_user_decision,
     unconfirm_fill,
 )
 from .system_config import (
@@ -40,6 +41,7 @@ __all__ = [
     "confirm_fill",
     "unconfirm_fill",
     "get_signals_pending_confirmation",
+    "record_user_decision",
     "log_trade_outcome",
     "get_active_config",
     "get_active_config_doc",

@@ -1453,6 +1453,16 @@ def main():
                         )
                         st.write(verdict["rationale"])
 
+                        # Adversarial second-pass review -- only worth the extra LLM
+                        # call for "Buy" (the only decision a human might actually act
+                        # on), see llm_agent.audit_verdict()'s own docstring.
+                        audit = llm_agent.audit_verdict(ticker, context, verdict) if verdict["decision"] == "Buy" else None
+                        if audit is not None:
+                            if audit["audit_result"] == "PASS":
+                                st.caption(f"Audit: PASS -- {audit['audit_notes']}")
+                            else:
+                                st.caption(f"Audit: FAIL -- {audit['audit_notes']}")
+
                         if verdict["decision"] in ("Buy", "Hold"):
                             atr = context["atr"]
                             buy_price = round(context["last_close"], 2)
@@ -1473,6 +1483,8 @@ def main():
                                 "Secondary_Provider": verdict["secondary_provider"],
                                 "Secondary_Decision": verdict["secondary_decision"],
                                 "Secondary_Confidence": verdict["secondary_confidence"],
+                                "Audit_Result": audit["audit_result"] if audit else None,
+                                "Audit_Notes": audit["audit_notes"] if audit else None,
                             })
 
                 if llm_rows and storage_ok:

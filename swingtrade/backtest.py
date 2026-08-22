@@ -69,6 +69,7 @@ from .levels import (
     adx_trend_entry_levels_from_frame,
     breakout_levels_from_frame,
     breakout_retest_levels_from_frame,
+    insider_buying_levels_from_frame,
     levels_from_rsi_frame,
     ma_crossover_levels_from_frame,
     market_uptrend_from_frame,
@@ -76,6 +77,7 @@ from .levels import (
     precompute_adx_trend_entry_frame,
     precompute_breakout_frame,
     precompute_breakout_retest_frame,
+    precompute_insider_buying_frame,
     precompute_ma_crossover_frame,
     precompute_momentum_burst_frame,
     precompute_pairs_frame,
@@ -1871,6 +1873,205 @@ def simulate_random_pairs_entries(
     return trades
 
 
+def simulate_insider_buying_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+    insider_purchases: pd.DataFrame | None = None,
+) -> list[dict]:
+    """INSIDER-BUYING counterpart to simulate_signals()/simulate_squeeze_breakout_signals()/
+    simulate_pairs_signals()/etc. -- buys a ticker when real, open-market
+    insider purchases have clustered within a recent window
+    (insider_lookback_days), in a confirmed macro uptrend. See
+    swingtrade/config.py's insider_* fields and
+    swingtrade/levels.precompute_insider_buying_frame() for the full
+    mechanism, and run_backtest.fetch_insider_purchases() for the data
+    source and its no-look-ahead reporting-lag handling.
+
+    Same no-look-ahead discipline, same entry-timing realism.
+    config.insider_entry_fill selects the fill model (same "limit" vs.
+    "next_open" toggle every other strategy has). Same ATR-multiple
+    stop/target sizing.
+
+    `insider_purchases` should be run_backtest.fetch_insider_purchases()'s
+    own output for this ticker. Without it, Insider_Buy_Signal is always
+    False (no purchase data, degrades to "never fires," same convention as
+    every other optional-data-dependent strategy)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_insider_buying_frame(ohlcv, insider_purchases, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = insider_buying_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        if not levels["Insider_Buy_Signal"]:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.insider_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Insider_Buying",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_insider_buying_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_insider_buying_signals() -- same
+    idea as the other simulate_random_*_entries() functions, using this
+    strategy's own gates (macro uptrend, liquidity via
+    insider_buying_levels_from_frame) and the SAME
+    config.insider_entry_fill-selected fill mechanic, so it isolates
+    whether insider-purchase-cluster TIMING adds value over a random day
+    using the identical Buy_Price formula (that day's own Close) and
+    entry/exit structure. `n_trades` should be
+    simulate_insider_buying_signals()'s real signal count for this
+    ticker/window, so trade volume is matched. This is the critical
+    validation gate for this strategy -- see benchmark_random_entry.py.
+
+    Deliberately does NOT take `insider_purchases` -- called with
+    insider_purchases=None, so Insider_Buy_Signal is always False, but the
+    candidate pool is every day that passed the shared macro/liquidity
+    gates regardless (same "answers whether TIMING adds value, not whether
+    this filter helps" precedent every other random baseline follows --
+    see simulate_random_pairs_entries()'s identical reasoning)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_insider_buying_frame(ohlcv, None, config)
+
+    candidates = []  # (as_of, buy_price, atr, catalyst_warning) for every day that passed the macro/liquidity gates, insider signal or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = insider_buying_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr, catalyst_warning in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.insider_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_Insider_Buying",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": catalyst_warning,
+            **result,
+        })
+
+    return trades
+
+
 def simulate_adx_trend_entry_signals(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -2317,6 +2518,7 @@ def run_backtest(
     strategy: str = "rsi",
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
+    insider_data: dict[str, pd.DataFrame] | None = None,
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
@@ -2362,11 +2564,22 @@ def run_backtest(
     `peer_prices` by dropping that ticker's own column from its sector's
     panel. `None` (default) means no peer data at all -- Pair_Signal then
     always reads False, same "missing optional data never fabricates a
-    signal" convention as sector_data."""
+    signal" convention as sector_data.
+
+    `insider_data` (optional, ticker -> run_backtest.fetch_insider_purchases()'s
+    own per-ticker output) backs the "insider_buying" strategy -- resolved
+    per ticker directly (no cross-ticker panel needed, unlike pairs). `None`
+    (default) means no purchase data at all -- Insider_Buy_Signal then
+    always reads False, same convention as pair_price_panels/sector_data.
+    NOTE: not yet threaded through run_walk_forward()'s multiprocessing
+    path (ProcessPoolExecutor initargs) -- only this single-call sequential
+    path -- since no Optuna tuning pass for this strategy exists yet; add
+    that threading if/when one does."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     sector_data = sector_data or {}
     pair_price_panels = pair_price_panels or {}
+    insider_data = insider_data or {}
     all_trades = []
     for ticker, ohlcv in ticker_data.items():
         sector = sector_lookup.get(ticker, "Unknown")
@@ -2375,6 +2588,7 @@ def run_backtest(
         peer_prices = (
             pair_panel.drop(columns=[ticker]) if pair_panel is not None and ticker in pair_panel.columns else None
         )
+        insider_purchases = insider_data.get(ticker)
         if strategy == "rsi":
             trades = simulate_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
@@ -2420,11 +2634,17 @@ def run_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector, peer_prices=peer_prices,
             )
+        elif strategy == "insider_buying":
+            trades = simulate_insider_buying_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector, insider_purchases=insider_purchases,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
-                "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', or 'pairs')"
+                "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
+                "or 'insider_buying')"
             )
         all_trades.extend(trades)
     return all_trades

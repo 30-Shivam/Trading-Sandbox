@@ -1685,6 +1685,226 @@ def compute_pairs_levels(
     return pairs_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def classify_insider_transaction(text) -> str:
+    """Classifies one yfinance insider_transactions row's free-text "Text"
+    field -- the "Transaction" column itself returns empty in the
+    currently installed yfinance version (1.5.1), so this is the only
+    available classifier. Returns "purchase" only for a genuine open-market
+    buy ("Purchase at price X per share."); everything else (sales, stock
+    gifts, option exercises with a blank/NaN Text field, or any other
+    free-text shape) classifies as "other" -- deliberately conservative,
+    since a false "purchase" would fabricate a signal from a non-buy
+    event. Public (not module-private) since run_backtest.fetch_insider_purchases()
+    needs it via swingtrade's own public API, and it's independently
+    unit-testable."""
+    if not isinstance(text, str):
+        return "other"
+    return "purchase" if text.strip().lower().startswith("purchase at price") else "other"
+
+
+def precompute_insider_buying_frame(
+    df: pd.DataFrame,
+    insider_purchases: pd.DataFrame | None = None,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> pd.DataFrame:
+    """Vectorized precompute of the INSIDER-BUYING strategy's columns --
+    built on top of precompute_breakout_frame() (reused wholesale for
+    SMA_TREND/ATR/AvgVolume/etc., the same macro-uptrend/liquidity gates
+    every strategy shares).
+
+    `insider_purchases`, if given, should be
+    run_backtest.fetch_insider_purchases()'s own output: a DataFrame with
+    columns ["effective_date", "value", "insider"], one row per genuine
+    open-market insider Purchase, already reporting-lag-adjusted (see that
+    function's own no-look-ahead reasoning -- "effective_date" is when the
+    purchase is treated as PUBLICLY known, not the raw transaction date).
+
+    For each trading day, sums the `value` of every purchase whose
+    effective_date falls within the trailing config.insider_lookback_days
+    CALENDAR days (inclusive of that day), and counts the number of
+    DISTINCT insiders contributing to that sum -- a single insider
+    repeatedly buying small amounts doesn't count as broad conviction the
+    way several different insiders buying does.
+
+    Fully vectorized via a (days x events) boolean window matrix, looping
+    only over DISTINCT insiders (not days or raw events) for the
+    distinct-buyer count -- cheap given insider_purchases is always a
+    small event count per ticker (tens, not thousands, per the real
+    watchlist probe behind this strategy's own scoping)."""
+    df = precompute_breakout_frame(df, config)
+    df["Insider_Purchase_Value"] = 0.0
+    df["Insider_Distinct_Buyers"] = 0
+
+    if insider_purchases is None or insider_purchases.empty:
+        return df
+
+    # insider_purchases["effective_date"] is tz-aware UTC (see
+    # fetch_insider_purchases()); df.index is tz-naive (every OHLCV frame
+    # in this codebase is) -- normalize to naive-UTC to match, rather than
+    # touching df.index itself.
+    event_dates_idx = pd.DatetimeIndex(insider_purchases["effective_date"])
+    if event_dates_idx.tz is not None:
+        event_dates_idx = event_dates_idx.tz_convert("UTC").tz_localize(None)
+
+    day_index = df.index.values
+    event_dates = event_dates_idx.values
+    event_values = insider_purchases["value"].to_numpy(dtype=float)
+    event_insiders = insider_purchases["insider"].to_numpy()
+
+    lookback = np.timedelta64(config.insider_lookback_days, "D")
+    # window: this day is within insider_lookback_days AFTER the event --
+    # i.e. the event is still "recent" as of this day.
+    in_window = (
+        (day_index[:, None] >= event_dates[None, :])
+        & (day_index[:, None] <= (event_dates[None, :] + lookback))
+    )
+
+    df["Insider_Purchase_Value"] = (in_window * event_values[None, :]).sum(axis=1)
+
+    distinct_by_day = np.zeros(len(day_index), dtype=int)
+    for insider_name in pd.unique(event_insiders):
+        mask = event_insiders == insider_name
+        distinct_by_day += in_window[:, mask].any(axis=1)
+    df["Insider_Distinct_Buyers"] = distinct_by_day
+
+    return df
+
+
+def insider_buying_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract the INSIDER-BUYING strategy's dict for one row of a frame
+    already built by precompute_insider_buying_frame() -- the O(1)-per-row
+    counterpart a walk-forward loop calls once per `as_of`. Same
+    macro-uptrend/liquidity gates every strategy shares (via
+    precompute_breakout_frame(), reused wholesale)."""
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, rsi = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"], last_row["RSI"],
+    )
+    insider_value, insider_distinct_buyers = (
+        last_row["Insider_Purchase_Value"], last_row["Insider_Distinct_Buyers"],
+    )
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+
+    last_close, sma_trend, atr, avg_volume = float(last_close), float(sma_trend), float(atr), float(avg_volume)
+    # Informational only, not used for gating (this strategy's trigger is
+    # insider purchase activity, not RSI) -- same treatment squeeze_breakout/
+    # breakout/ma_crossover/pairs already give it.
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    insider_value = float(insider_value) if not pd.isna(insider_value) else 0.0
+    insider_distinct_buyers = int(insider_distinct_buyers) if not pd.isna(insider_distinct_buyers) else 0
+    insider_signal = bool(
+        insider_distinct_buyers >= config.insider_min_distinct_buyers
+        and insider_value >= config.insider_min_purchase_value
+    )
+    # How many EXTRA distinct insiders bought, beyond the minimum required
+    # -- same "distance past the trigger" differentiating-term role
+    # Signal_Strength_Pct plays for squeeze_breakout/pairs, in distinct-buyer
+    # units here, NOT a % (see pairs_zscore_strength_cap's identical "reused
+    # field name, different units" precedent). Raw dollar value isn't used
+    # for this -- real purchase sizes ($1M-$10M+) would blow past any sane
+    # cap almost immediately and stop differentiating anything; several
+    # different insiders buying independently is also the better-regarded
+    # signal in the insider-trading literature over one large purchase.
+    signal_strength_pct = (
+        round(float(insider_distinct_buyers - config.insider_min_distinct_buyers), 2)
+        if insider_signal else 0.0
+    )
+
+    # Buy_Price = today's own Close -- same "already happening, buy near
+    # market" convention squeeze_breakout/pairs use, not a discount-limit
+    # like RSI's structural-support wait. Distance_to_Buy_Pct is therefore
+    # always 0 by construction, same schema-compatible treatment those
+    # strategies already established.
+    buy_price = round(last_close, 2)
+    distance_to_buy_pct = 0.0
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "Insider_Purchase_Value": round(insider_value, 2),
+        "Insider_Distinct_Buyers": insider_distinct_buyers,
+        "Insider_Buy_Signal": insider_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": distance_to_buy_pct,
+        "Signal_Strength_Pct": signal_strength_pct,
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_insider_buying_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+    insider_purchases: pd.DataFrame | None = None,
+) -> dict:
+    """Compute INSIDER-BUYING levels for one ticker's OHLCV history -- see
+    precompute_insider_buying_frame()'s own docstring for the full
+    mechanism. Thin wrapper over precompute_insider_buying_frame()/
+    insider_buying_levels_from_frame() -- kept as a single-call convenience
+    for the live dashboard, matching every other strategy's same rationale
+    (see compute_squeeze_breakout_levels()).
+
+    `insider_purchases` should be run_backtest.fetch_insider_purchases()'s
+    own output for this ticker. Without it, Insider_Buy_Signal always
+    reads False (no purchase data)."""
+    frame = precompute_insider_buying_frame(df, insider_purchases, config)
+    as_of = frame.index[-1]
+    return insider_buying_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def compute_squeeze_breakout_levels(
     ticker: str,
     df: pd.DataFrame,

@@ -84,6 +84,56 @@ def fetch_earnings_dates(ticker: str) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(dates).tz_convert("UTC")
 
 
+def fetch_insider_purchases(ticker: str, config: swingtrade.TradingConfig = swingtrade.DEFAULT_CONFIG) -> pd.DataFrame:
+    """Real, open-market insider Form-4 purchases -- see
+    swingtrade/config.py's insider_* fields and
+    swingtrade/levels.precompute_insider_buying_frame() for how this feeds
+    the "insider_buying" strategy. yfinance's own insider_transactions
+    caps at ~150 rows/ticker (roughly 12-22 months of real history, NOT
+    this project's usual 5-year backtest window -- a real, structural data
+    limitation, not something fixable here) and its "Transaction" column
+    returns empty in the currently installed version (1.5.1), so
+    classification comes from parsing the free-text "Text" field via
+    swingtrade.classify_insider_transaction().
+
+    IMPORTANT no-look-ahead handling: yfinance's only date field ("Start
+    Date") is ambiguous between the actual transaction date and the SEC
+    filing date, and Form 4 filings can legitimately lag the trade by a
+    few business days -- unlike fetch_earnings_dates()'s date (a fixed,
+    already-public fact once scheduled), this one needs a conservative,
+    EXPLICIT assumption rather than a silent one. `effective_date` = the
+    raw "Start Date" plus `config.insider_reporting_lag_days` calendar
+    days -- the date this purchase is treated as PUBLICLY known, not when
+    it actually happened. Rows missing a real $ Value (mostly option
+    exercises, not confirmed open-market buys) are dropped.
+
+    Degrades to an empty DataFrame (same shape, zero rows) rather than
+    crashing when a ticker has no insider data at all -- same convention
+    fetch_earnings_dates() already follows."""
+    columns = ["effective_date", "value", "insider"]
+    try:
+        raw = yf.Ticker(ticker).insider_transactions
+    except Exception:
+        raw = None
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=columns)
+
+    tier = raw["Text"].apply(swingtrade.classify_insider_transaction)
+    purchases = raw[(tier == "purchase") & raw["Value"].notna()].copy()
+    if purchases.empty:
+        return pd.DataFrame(columns=columns)
+
+    lag = pd.Timedelta(days=config.insider_reporting_lag_days)
+    effective_date = pd.to_datetime(purchases["Start Date"]) + lag
+    effective_date = effective_date.dt.tz_localize("UTC") if effective_date.dt.tz is None else effective_date.dt.tz_convert("UTC")
+
+    return pd.DataFrame({
+        "effective_date": effective_date.values,
+        "value": purchases["Value"].astype(float).values,
+        "insider": purchases["Insider"].values,
+    })
+
+
 def print_fold_table(fold_results: list) -> None:
     headers = ["Fold", "In-Sample", "Out-of-Sample", "IS #", "IS Win%", "OOS #", "OOS Win%", "OOS AvgPnL%", "OOS Sharpe"]
     widths = [6, 24, 24, 6, 9, 6, 9, 13, 11]
