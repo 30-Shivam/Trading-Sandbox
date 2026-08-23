@@ -840,7 +840,18 @@ def call_openrouter(prompt: str, parse_fn=_parse_response, max_output_tokens: in
     (never raises) on any failure -- including OPENROUTER_MODEL having been
     retired/delisted from the free roster, which OpenRouter's free tier
     does periodically (see OPENROUTER_MODEL's own comment). `parse_fn`/
-    `max_output_tokens` pluggable, see call_gemini()'s docstring."""
+    `max_output_tokens` pluggable, see call_gemini()'s docstring.
+
+    `extra_body={"reasoning": {"effort": "none"}}` -- OPENROUTER_MODEL is a
+    "thinking" model by default (same failure mode GEMINI_MODEL hit
+    earlier, see its own comment): without this, a real live-verified call
+    returned finish_reason="length" with content=None, having spent its
+    entire max_output_tokens budget on the `reasoning` field instead of
+    the actual JSON answer (confirmed via the raw response object -- the
+    correct answer was fully present in `reasoning`, just never emitted to
+    `content` before the token budget ran out). Verified live: with this
+    parameter, the same prompt returns finish_reason="stop", valid JSON
+    content, reasoning_tokens=0."""
     try:
         import openai
     except ImportError:
@@ -852,6 +863,7 @@ def call_openrouter(prompt: str, parse_fn=_parse_response, max_output_tokens: in
             messages=[{"role": "user", "content": prompt}],
             max_tokens=max_output_tokens,
             response_format={"type": "json_object"},
+            extra_body={"reasoning": {"effort": "none"}},
         )
         text = (response.choices[0].message.content or "").strip()
         if not text:
