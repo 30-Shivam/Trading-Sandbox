@@ -625,7 +625,7 @@ class TradingConfig:
                                            # see momentum_burst_entry_fill's
                                            # own comment for the full
                                            # rationale
-    ma_crossover_strength_cap_pct: float = 2.0  # add_ma_crossover_trade_score's
+    ma_crossover_strength_cap_pct: float = 0.5  # add_ma_crossover_trade_score's
                                            # Signal_Strength_Pct (the
                                            # crossover's own gap, short SMA
                                            # minus long SMA as a % of price)
@@ -635,7 +635,34 @@ class TradingConfig:
                                            # this strategy (Buy_Price IS
                                            # Last_Close, same convention
                                            # momentum_burst/squeeze_breakout/
-                                           # adx_trend_entry already use)
+                                           # adx_trend_entry already use).
+                                           # Was 2.0 -- found 2026-08-23 to be
+                                           # structurally unreachable: real
+                                           # data (584 crossovers, 70 tickers,
+                                           # 5 years) shows this gap NEVER
+                                           # exceeds ~1.24% at the crossover
+                                           # moment (median 0.14%, p90 0.52%,
+                                           # p99 1.08%) since a crossover is
+                                           # measured right when the gap just
+                                           # turned positive, by construction
+                                           # near zero -- the old 2.0% cap
+                                           # made the Buy/Strong Buy tier
+                                           # unreachable for every real
+                                           # ma_crossover signal ever seen,
+                                           # so allocate_capital() could never
+                                           # size a real position no matter
+                                           # how long it ran. Recalibrated to
+                                           # just under the real p90 (0.52%)
+                                           # so a genuinely above-average
+                                           # crossover (top ~10%) is Buy-
+                                           # eligible. This field is never an
+                                           # Optuna search dimension (always
+                                           # just carried through from the
+                                           # config default/candidate), so
+                                           # this default matters for every
+                                           # future re-tune too, not just the
+                                           # live promoted config. See
+                                           # improvements.txt.
     ma_crossover_earnings_gate: bool = False  # sibling to
                                            # squeeze_breakout_earnings_gate --
                                            # see that field's own comment for
