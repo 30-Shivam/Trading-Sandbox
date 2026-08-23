@@ -44,10 +44,27 @@ fired 38 highly correlated signals in one broad tech-sector
 pullback+recovery, 31 of them research-tier -- unweighted, that single
 event could push a methodology past the trust floor on the strength of
 its least capital-relevant signals. See TIER_WEIGHTS/_effective_count().
+
+Cluster-weighted (2026-08-23): tier-weighting alone didn't fully close the
+gap above -- rsi_mean_reversion's 39 settled signals STILL all fall on
+that SAME single calendar day, so tier-weighting alone still read ~35
+effective trades (past the 20-trade floor) from what's really one
+correlated event, not 20+ independent trials. Now also multiplies in a
+same-day/same-sector cluster weight (reusing
+swingtrade.compute_cluster_weights(), already used the same way on
+backtest trades by optimize.py/reoptimize_best_ideas.py) -- see
+_cluster_weights()/methodology_report()'s own docstring for the combined
+math. `effective_n_settled` now means tier x cluster combined;
+`tier_only_effective_n_settled` keeps the old tier-only number visible so
+the size of this correction isn't hidden.
 """
+
+from pathlib import Path
 
 import pandas as pd
 
+import swingtrade
+import watchlist
 from storage.mongo import get_db
 
 MIN_TRADES_FOR_ANY_IC = 3   # fewer than this and a rank correlation is not
@@ -227,19 +244,25 @@ def fetch_score_pnl_pairs(strategy: str, score_field: str = "trade_score") -> li
     part of their own unique index (see storage/signals.py,
     storage/outcomes.py), so this is a simple two-query-and-merge in
     Python, not a fragile cross-collection guess. Returns
-    [{"signal_date":, "score":, "pnl_pct":, "tier":, "weight":}, ...] for
-    every settled trade under this strategy where BOTH the originating
-    signal's score and its pnl_pct are present -- silently skips a settled
-    outcome whose source signal is missing the score field (shouldn't
-    happen for any current methodology, all of which always write
-    trade_score, but this is a read path and should degrade rather than
-    crash if it ever does).
+    [{"signal_date":, "score":, "pnl_pct":, "tier":, "weight":, "ticker":},
+    ...] for every settled trade under this strategy where BOTH the
+    originating signal's score and its pnl_pct are present -- silently
+    skips a settled outcome whose source signal is missing the score field
+    (shouldn't happen for any current methodology, all of which always
+    write trade_score, but this is a read path and should degrade rather
+    than crash if it ever does).
 
     `tier`/`weight` (2026-08-21): the originating signal's own "actionable"
     | "research" | "research_loosened" tier (see storage/signals.py) and
     its TIER_WEIGHTS lookup -- missing tier defaults to "actionable"/1.0,
     matching storage/signals.py's own convention for pre-existing
     documents written before the tier field existed.
+
+    `ticker` (2026-08-23): needed by methodology_report()'s cluster-weight
+    correction (see _cluster_weights()) to look up each pair's sector --
+    purely additive; `weight` here still means TIER_WEIGHTS alone (the
+    combined tier x cluster weight is computed one layer up, in
+    methodology_report(), not here).
 
     `score_field` lets a future methodology's "score" be read from a
     different Trade_Signals field if trade_score isn't the right one for
@@ -267,9 +290,41 @@ def fetch_score_pnl_pairs(strategy: str, score_field: str = "trade_score") -> li
         tier = tier or "actionable"
         pairs.append({
             "signal_date": outcome["signal_date"], "score": float(score), "pnl_pct": float(outcome["pnl_pct"]),
-            "tier": tier, "weight": TIER_WEIGHTS.get(tier, DEFAULT_TIER_WEIGHT),
+            "tier": tier, "weight": TIER_WEIGHTS.get(tier, DEFAULT_TIER_WEIGHT), "ticker": outcome["ticker"],
         })
     return pairs
+
+
+_SECTOR_LOOKUP_CACHE: dict[str, str] | None = None
+
+
+def _get_sector_lookup() -> dict[str, str]:
+    """Lazily loads and process-lifetime-caches watchlist.txt's
+    {ticker: sector} mapping (see watchlist.read_ticker_sectors(), already
+    used the same way by best_ideas.py/optimize.py/reoptimize_best_ideas.py)
+    -- avoids re-parsing a 400+-entry file on every methodology_report()
+    call (ingest.py calls this once per methodology per run, ~7-8 times)."""
+    global _SECTOR_LOOKUP_CACHE
+    if _SECTOR_LOOKUP_CACHE is None:
+        _SECTOR_LOOKUP_CACHE = watchlist.read_ticker_sectors(Path("watchlist.txt"))
+    return _SECTOR_LOOKUP_CACHE
+
+
+def _cluster_weights(pairs: list[dict], sector_lookup: dict[str, str]) -> list[float]:
+    """Per-pair weight correcting for same-day, same-sector correlation --
+    thin wrapper around swingtrade.compute_cluster_weights() (already used
+    by optimize.py/reoptimize_best_ideas.py for the identical correction on
+    backtest trades; see that function's own docstring), adapted to this
+    module's record shape (signal_date + ticker, rather than an
+    already-resolved entry_date/sector pair). `sector_lookup` is passed
+    in explicitly (not read internally) so this stays a pure,
+    directly-testable function -- see _get_sector_lookup() for the real,
+    cached lookup methodology_report() actually uses. A pair whose ticker
+    has no sector entry gets "Unknown", which compute_cluster_weights()
+    treats as weight 1.0 (no correlation assumed) -- same convention its
+    own docstring already establishes."""
+    trades = [{"entry_date": p["signal_date"], "sector": sector_lookup.get(p["ticker"], "Unknown")} for p in pairs]
+    return swingtrade.compute_cluster_weights(trades)
 
 
 def methodology_report(strategy: str, score_field: str = "trade_score", window_days: int = IC_WINDOW_DAYS) -> dict:
@@ -285,26 +340,47 @@ def methodology_report(strategy: str, score_field: str = "trade_score", window_d
     exists to catch, per the user's own explicit reasoning for wanting it.
 
     Returns {"strategy":, "n_settled":, "effective_n_settled": float,
-    "overall_ic": float|None, "ic_series": [...], "ir": float|None,
-    "trust_floor_met": bool} -- `n_settled` is the raw count (unchanged
-    meaning: "how many signals have resolved"); `trust_floor_met` is now
-    gated on `effective_n_settled` (the tier-weighted Kish effective
-    sample size, see _effective_count()) >= TRUST_FLOOR_TRADES instead of
-    the raw count, per explicit user request -- real Strong Buy/Buy
-    ("actionable") signals should count more toward the trust floor than
-    Watch-only ("research") ones. See ensemble_weight() for how
-    trust_floor_met/ir together gate a methodology's blend weight."""
+    "tier_only_effective_n_settled": float, "overall_ic": float|None,
+    "ic_series": [...], "ir": float|None, "trust_floor_met": bool} --
+    `n_settled` is the raw count (unchanged meaning: "how many signals
+    have resolved"); `trust_floor_met` is gated on `effective_n_settled`
+    >= TRUST_FLOOR_TRADES.
+
+    `effective_n_settled` (2026-08-23: now TIER x CLUSTER weighted, not
+    tier alone) -- pure tier-weighting (per explicit user request, real
+    Strong Buy/Buy "actionable" signals should count more than Watch-only
+    "research" ones) left one real gap: a pile of same-day, same-sector
+    CORRELATED signals still counted as that many independent data points.
+    Concrete case that motivated this: rsi_mean_reversion's first 39
+    settled signals all fired the SAME calendar day (one broad tech
+    pullback) -- tier-weighting alone still read this as ~35 effective
+    trades, comfortably past the floor, when it's really closer to one
+    event. Now combines TIER_WEIGHTS with _cluster_weights() (same-day/
+    same-sector correction, reusing swingtrade.compute_cluster_weights()
+    -- see that function's own docstring) by multiplying the two per pair,
+    the same "combine independent weight sources by multiplying them"
+    pattern optimize.py already uses for cluster x recency weights.
+    `tier_only_effective_n_settled` keeps the OLD (tier-only) number
+    visible for comparison, so the size of the correlation correction
+    isn't hidden. See ensemble_weight() for how trust_floor_met/ir
+    together gate a methodology's blend weight."""
     pairs = fetch_score_pnl_pairs(strategy, score_field=score_field)
     n_settled = len(pairs)
-    weights = [p["weight"] for p in pairs]
-    effective_n_settled = round(_effective_count(weights), 1) if pairs else 0.0
+    tier_weights = [p["weight"] for p in pairs]
+    tier_only_effective_n_settled = round(_effective_count(tier_weights), 1) if pairs else 0.0
+    cluster_weights = _cluster_weights(pairs, _get_sector_lookup()) if pairs else []
+    combined_weights = [t * c for t, c in zip(tier_weights, cluster_weights)]
+    combined_pairs = [{**p, "weight": w} for p, w in zip(pairs, combined_weights)]
+    effective_n_settled = round(_effective_count(combined_weights), 1) if pairs else 0.0
     overall_ic = (
-        rank_ic([p["score"] for p in pairs], [p["pnl_pct"] for p in pairs], weights=weights) if pairs else None
+        rank_ic([p["score"] for p in pairs], [p["pnl_pct"] for p in pairs], weights=combined_weights)
+        if pairs else None
     )
-    ic_series = windowed_ic_series(pairs, window_days=window_days)
+    ic_series = windowed_ic_series(combined_pairs, window_days=window_days)
     ir = information_ratio([w["ic"] for w in ic_series])
     return {
         "strategy": strategy, "n_settled": n_settled, "effective_n_settled": effective_n_settled,
+        "tier_only_effective_n_settled": tier_only_effective_n_settled,
         "overall_ic": overall_ic, "ic_series": ic_series, "ir": ir,
         "trust_floor_met": effective_n_settled >= TRUST_FLOOR_TRADES,
     }

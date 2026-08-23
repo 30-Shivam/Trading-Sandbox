@@ -196,3 +196,58 @@ def test_windowed_ic_series_weighted_full_weight_matches_unweighted():
     assert math.isclose(windows[0]["ic"], 1.0)
     assert windows[0]["n"] == 5
     assert math.isclose(windows[0]["effective_n"], 5.0)
+
+
+# --- Cluster-weighting (2026-08-23): same-day/same-sector correlated
+# signals shouldn't count as that many independent data points toward the
+# trust floor -- see _cluster_weights(), methodology_report()'s own
+# docstring for the motivating rsi_mean_reversion case (39 settled signals,
+# all one calendar day).
+
+def test_cluster_weights_all_same_day_same_sector_splits_evenly():
+    pairs = [
+        {"signal_date": "2026-08-20", "ticker": "AAA"},
+        {"signal_date": "2026-08-20", "ticker": "BBB"},
+        {"signal_date": "2026-08-20", "ticker": "CCC"},
+        {"signal_date": "2026-08-20", "ticker": "DDD"},
+    ]
+    sector_lookup = {"AAA": "Technology", "BBB": "Technology", "CCC": "Technology", "DDD": "Technology"}
+    weights = ic._cluster_weights(pairs, sector_lookup)
+    assert weights == [0.25, 0.25, 0.25, 0.25]
+
+
+def test_cluster_weights_unknown_sector_gets_full_weight():
+    # No sector_lookup entry -> "Unknown" -> compute_cluster_weights()
+    # treats it as no correlation assumed, weight 1.0 regardless of how
+    # many other pairs share that same signal_date.
+    pairs = [
+        {"signal_date": "2026-08-20", "ticker": "AAA"},
+        {"signal_date": "2026-08-20", "ticker": "ZZZ"},
+    ]
+    sector_lookup = {"AAA": "Technology"}  # ZZZ deliberately missing
+    weights = ic._cluster_weights(pairs, sector_lookup)
+    assert weights == [1.0, 1.0]
+
+
+def test_cluster_weights_different_days_or_sectors_stay_independent():
+    pairs = [
+        {"signal_date": "2026-08-20", "ticker": "AAA"},  # Technology, day 1
+        {"signal_date": "2026-08-21", "ticker": "BBB"},  # Technology, day 2
+        {"signal_date": "2026-08-20", "ticker": "CCC"},  # Financials, day 1
+    ]
+    sector_lookup = {"AAA": "Technology", "BBB": "Technology", "CCC": "Financials"}
+    weights = ic._cluster_weights(pairs, sector_lookup)
+    assert weights == [1.0, 1.0, 1.0]
+
+
+def test_cluster_weights_mixed_cluster_sizes():
+    # Two pairs share (2026-08-20, Technology) -> split 0.5 each; the third
+    # is alone in (2026-08-20, Financials) -> full weight 1.0.
+    pairs = [
+        {"signal_date": "2026-08-20", "ticker": "AAA"},
+        {"signal_date": "2026-08-20", "ticker": "BBB"},
+        {"signal_date": "2026-08-20", "ticker": "CCC"},
+    ]
+    sector_lookup = {"AAA": "Technology", "BBB": "Technology", "CCC": "Financials"}
+    weights = ic._cluster_weights(pairs, sector_lookup)
+    assert weights == [0.5, 0.5, 1.0]

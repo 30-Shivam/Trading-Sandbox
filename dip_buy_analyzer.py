@@ -1311,7 +1311,13 @@ def main():
                     st.caption("0 settled trades yet.")
                 else:
                     effective_n = report.get("effective_n_settled", report["n_settled"])
-                    st.metric("Effective (tier-weighted)", f"{effective_n:.1f}")
+                    st.metric("Effective (tier + cluster)", f"{effective_n:.1f}")
+                    tier_only_n = report.get("tier_only_effective_n_settled")
+                    if tier_only_n is not None and abs(tier_only_n - effective_n) >= 0.5:
+                        st.caption(
+                            f"Tier-only would be {tier_only_n:.1f} -- same-day/same-sector clustering "
+                            "accounts for the rest of the gap from raw."
+                        )
                     st.metric("Overall IC", f"{report['overall_ic']:.2f}" if report["overall_ic"] is not None else "n/a")
                     st.metric("IR", f"{report['ir']:.2f}" if report["ir"] is not None else "n/a")
                     if not report["trust_floor_met"]:
