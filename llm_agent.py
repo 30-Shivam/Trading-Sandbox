@@ -25,25 +25,49 @@ Deliberately never wired into swingtrade/backtest.py, optimize.py, or
 benchmark_random_entry.py -- calling historical walk-forward replay on an
 LLM strategy would silently produce lookahead-contaminated nonsense.
 
-Two free-tier providers, PRIMARY + FALLBACK, picked by comparing actual
-published limits (see github.com/open-free-llm-api/awesome-freellm-apis)
-rather than defaulting to whichever was already wired up:
-  - PRIMARY: Google Gemini (gemini-2.5-flash, same model ai_context.py
-    already uses, via `google-genai`) -- 1,500 requests/day, 1M-token
-    context, no credit card, and the integration this codebase already
-    has proven working (ai_context.py). Genuinely the better option on
-    every axis that matters here, not just the incumbent by default.
-  - FALLBACK: Groq (llama-3.3-70b-versatile, via the `openai` SDK pointed
-    at Groq's OpenAI-compatible endpoint) -- 250 requests/day, 262K-token
-    context, no credit card. Only tried if Gemini is unavailable or its
-    call fails/returns an unusable response -- at this tab's real volume
-    (<= MAX_LLM_CANDIDATES calls/day, see dip_buy_analyzer.py), either
-    provider's daily limit is far more than enough; the fallback exists
-    for resilience (one provider having a bad day), not because Gemini's
-    limits are a real constraint.
-  - Explicitly did NOT add OpenRouter: its free tier requires a paid
-    top-up for sustained use, unlike every other option here -- not a
-    genuinely free fallback, so not worth the added complexity.
+Three free-tier providers -- PRIMARY + a two-deep SECONDARY fallback pool
+-- picked by comparing actual published limits (see
+github.com/open-free-llm-api/awesome-freellm-apis) rather than defaulting
+to whichever was already wired up:
+  - PRIMARY: Google Gemini (gemini-3.5-flash, via `google-genai`) -- a
+    real, confirmed 20 requests/day/model (found 2026-08-22 via a live
+    429 RESOURCE_EXHAUSTED response -- an earlier 1,500/day assumption in
+    this docstring was WRONG). A subagent audit the same day found this
+    project's EXISTING daily automation alone (ingest.py's LLM Agent
+    candidates x prompt variants, plus audits, plus Best Ideas'
+    evaluate_ticker()/evaluate_meta_synthesis()) already reaches 50-80
+    real Gemini calls/day on a normal trading day -- comfortably past
+    this real cap, independent of anything this docstring assumed.
+  - SECONDARY: a two-provider fallback POOL, tried via call_secondary()
+    only when Gemini itself is unavailable or fails -- Groq first
+    (openai/gpt-oss-120b, via the `openai` SDK pointed at Groq's
+    OpenAI-compatible endpoint), then OpenRouter only if Groq itself is
+    unavailable/fails (via the same `openai` SDK pattern pointed at
+    OpenRouter's own OpenAI-compatible endpoint, using one of its
+    genuinely free ":free"-suffixed models -- see OPENROUTER_MODEL).
+    Added 2026-08-22 specifically to address the real capacity finding
+    above -- deliberately a FALLBACK POOL for the secondary slot, not a
+    third simultaneous call on every request, since tripling baseline
+    call volume would make the actual (capacity) problem worse, not
+    better.
+  - CORRECTION, same day: this docstring originally claimed OpenRouter's
+    free tier "requires a paid top-up for sustained use" and rejected it
+    in favor of a dedicated Mistral key -- the user found and shared
+    OpenRouter's real published terms, which contradict that: free
+    ":free"-suffixed models need NO credit card or top-up at all. Verified
+    directly via OpenRouter's own public /api/v1/models endpoint (no auth
+    needed) rather than trusting either claim on faith. The real
+    constraint is narrower than "needs payment": a shared account-wide cap
+    of 20 requests/minute and 50 requests/day across ALL free models
+    combined if you've never added credit (rising to 1000/day if you ever
+    add as little as $10, one-time, credits don't expire) -- and the free
+    ":free" model roster itself rotates/gets retired often (confirmed:
+    Meta's Llama 3.3 70B free variant was delisted since this was first
+    written), the same "verify against the live catalog, don't trust a
+    hardcoded model forever" lesson Groq's own retirement already taught
+    this module once. OpenRouter replaced the dedicated-Mistral-key plan
+    as the second-deep fallback for exactly this reason: same or better
+    terms, one fewer API key for the user to go create.
 
 Both providers share the exact same JSON-shape validation (_parse_response)
 and the exact same prompt -- only the API call differs. Degrades to
@@ -125,6 +149,30 @@ GROQ_MODEL = "openai/gpt-oss-120b"  # llama-3.3-70b-versatile was retired for
                                     # available, matching Groq's own role here
                                     # as the "genuine judgment call" fallback.
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+OPENROUTER_MODEL = "dots-studio/dots-3-note-preview:free"  # added 2026-08-22
+                                    # as a second-deep fallback behind Groq
+                                    # (see call_secondary()) -- a real
+                                    # capacity audit found existing daily
+                                    # automation alone already exceeds
+                                    # Gemini's real 20/day limit, so the
+                                    # secondary slot needed its own
+                                    # resilience, not a third simultaneous
+                                    # call on every request. Chosen by
+                                    # querying OpenRouter's own public
+                                    # /api/v1/models endpoint directly
+                                    # (no auth needed) for a genuinely free
+                                    # (pricing.prompt/completion == "0"),
+                                    # ":free"-suffixed, response_format-
+                                    # capable, large-context model --
+                                    # OpenRouter's free-model roster
+                                    # rotates/retires often (confirmed:
+                                    # Llama 3.3 70B's free variant was
+                                    # delisted since this was first
+                                    # researched), so re-verify against
+                                    # that same endpoint if this one ever
+                                    # starts silently 404ing, same lesson
+                                    # GROQ_MODEL's own retirement taught.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MAX_HEADLINES = 5
 MAX_MACRO_HEADLINES = 5
 MAX_OUTPUT_TOKENS = 400
@@ -161,13 +209,24 @@ def _groq_available() -> bool:
     return True
 
 
+def _openrouter_available() -> bool:
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        return False
+    try:
+        import openai  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def is_available() -> bool:
     """True if a live call to evaluate_ticker() stands a chance of working
-    -- at least ONE of Gemini (primary) or Groq (fallback) is configured
-    and its package installed. Callers should gate the LLM Agent tab on
-    this rather than discovering unavailability via a failed call (mirrors
+    -- at least ONE of Gemini (primary), Groq, or OpenRouter (the two-deep
+    secondary fallback pool, see call_secondary()) is configured and its
+    package installed. Callers should gate the LLM Agent tab on this
+    rather than discovering unavailability via a failed call (mirrors
     ai_context.is_available())."""
-    return _gemini_available() or _groq_available()
+    return _gemini_available() or _groq_available() or _openrouter_available()
 
 
 def _parse_response(text: str) -> dict | None:
@@ -773,8 +832,70 @@ def call_groq(prompt: str, parse_fn=_parse_response, max_output_tokens: int = MA
         return None
 
 
+def call_openrouter(prompt: str, parse_fn=_parse_response, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> dict | None:
+    """Second-deep SECONDARY fallback -- only ever tried by call_secondary()
+    when Groq itself is unavailable or fails. Uses the standard `openai`
+    SDK pointed at OpenRouter's own OpenAI-compatible endpoint (see
+    OPENROUTER_BASE_URL), same drop-in pattern as call_groq(). Returns None
+    (never raises) on any failure -- including OPENROUTER_MODEL having been
+    retired/delisted from the free roster, which OpenRouter's free tier
+    does periodically (see OPENROUTER_MODEL's own comment). `parse_fn`/
+    `max_output_tokens` pluggable, see call_gemini()'s docstring."""
+    try:
+        import openai
+    except ImportError:
+        return None
+    try:
+        client = openai.OpenAI(api_key=os.environ.get("OPENROUTER_API_KEY"), base_url=OPENROUTER_BASE_URL)
+        response = client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_output_tokens,
+            response_format={"type": "json_object"},
+        )
+        text = (response.choices[0].message.content or "").strip()
+        if not text:
+            return None
+        return parse_fn(text)
+    except Exception:
+        return None
+
+
+def call_secondary(
+    prompt: str, parse_fn=_parse_response, max_output_tokens: int = MAX_OUTPUT_TOKENS,
+) -> tuple[dict | None, str | None]:
+    """The SECONDARY slot's fallback pool -- tries Groq first, OpenRouter
+    only if Groq is unavailable or its call fails/returns an unusable
+    response. Added 2026-08-22 after a real capacity audit found this
+    project's existing daily automation alone already exceeds Gemini's
+    real 20/day limit -- this makes the secondary slot resilient to ONE
+    provider having a bad day without tripling baseline call volume
+    (which would make the actual capacity problem worse, not better;
+    Gemini's own primary role and fallback-through-here behavior are
+    unchanged).
+
+    Returns (result, provider_name) -- provider_name is "groq" or
+    "openrouter", whichever actually answered, so callers/_resolve_dual()
+    can honestly report which one it was instead of assuming "groq".
+    Returns (None, None) if both are unavailable/fail, same "never
+    raises" contract as every provider call in this module."""
+    if _groq_available():
+        result = call_groq(prompt, parse_fn=parse_fn, max_output_tokens=max_output_tokens)
+        if result is not None:
+            return result, "groq"
+    if _openrouter_available():
+        result = call_openrouter(prompt, parse_fn=parse_fn, max_output_tokens=max_output_tokens)
+        if result is not None:
+            return result, "openrouter"
+    return None, None
+
+
 def _resolve_dual(
-    gemini_result: dict | None, groq_result: dict | None, decision_key: str, conservative_order: dict,
+    gemini_result: dict | None,
+    secondary_result: dict | None,
+    secondary_provider_name: str | None,
+    decision_key: str,
+    conservative_order: dict,
 ) -> dict | None:
     """Combine both providers' results into one final result, extended with
     `provider_agreement`/`secondary_provider`/`secondary_decision`/
@@ -782,6 +903,12 @@ def _resolve_dual(
     since the combination logic is identical, only `decision_key`
     ("decision" vs. "action") and `conservative_order` (which value counts
     as "more cautious" for that schema) differ.
+
+    `secondary_provider_name` is the REAL name ("groq" or "openrouter") of
+    whichever provider actually produced `secondary_result` -- see
+    call_secondary(), added 2026-08-22 when the secondary slot became a
+    two-provider fallback pool instead of always being Groq. Ignored if
+    `secondary_result` is None (nothing to attribute a name to).
 
     - Only one provider has a result (the other unconfigured or failed):
       that result unchanged, `provider_agreement=None`,
@@ -802,34 +929,35 @@ def _resolve_dual(
     `news_sentiment`) is preserved on the returned dict -- these four new
     keys are purely additive, so nothing that only reads the original
     schema breaks."""
-    if gemini_result is None and groq_result is None:
+    if gemini_result is None and secondary_result is None:
         return None
     if gemini_result is None:
-        return {**groq_result, "provider_agreement": None, "secondary_provider": None,
+        return {**secondary_result, "provider_agreement": None, "secondary_provider": None,
                 "secondary_decision": None, "secondary_confidence": None}
-    if groq_result is None:
+    if secondary_result is None:
         return {**gemini_result, "provider_agreement": None, "secondary_provider": None,
                 "secondary_decision": None, "secondary_confidence": None}
 
     gemini_decision = gemini_result[decision_key]
-    groq_decision = groq_result[decision_key]
+    secondary_decision = secondary_result[decision_key]
 
-    if gemini_decision == groq_decision:
-        combined_confidence = round((gemini_result["confidence"] + groq_result["confidence"]) / 2, 1)
+    if gemini_decision == secondary_decision:
+        combined_confidence = round((gemini_result["confidence"] + secondary_result["confidence"]) / 2, 1)
         return {
             **gemini_result, "confidence": combined_confidence, "provider_agreement": True,
-            "secondary_provider": "groq", "secondary_decision": groq_decision,
-            "secondary_confidence": groq_result["confidence"],
+            "secondary_provider": secondary_provider_name, "secondary_decision": secondary_decision,
+            "secondary_confidence": secondary_result["confidence"],
         }
 
-    if conservative_order[gemini_decision] <= conservative_order[groq_decision]:
-        primary, secondary, secondary_label = gemini_result, groq_result, "groq"
+    if conservative_order[gemini_decision] <= conservative_order[secondary_decision]:
+        primary, secondary, secondary_label = gemini_result, secondary_result, secondary_provider_name
     else:
-        primary, secondary, secondary_label = groq_result, gemini_result, "gemini"
+        primary, secondary, secondary_label = secondary_result, gemini_result, "gemini"
 
+    secondary_display_name = {"groq": "Groq", "openrouter": "OpenRouter"}.get(secondary_provider_name, "Secondary")
     combined_rationale = (
         f"Providers disagreed -- defaulted to the more conservative call. "
-        f"Gemini: {gemini_result['rationale']} | Groq: {groq_result['rationale']}"
+        f"Gemini: {gemini_result['rationale']} | {secondary_display_name}: {secondary_result['rationale']}"
     )
     return {
         **primary, "rationale": combined_rationale, "provider_agreement": False,
@@ -888,8 +1016,10 @@ def evaluate_ticker(ticker: str, context: dict, variant: str = "balanced") -> di
     build_fn = PROMPT_VARIANTS.get(variant, _build_prompt)
     prompt, _ = build_fn(ticker, context)
     gemini_result = call_gemini(prompt) if _gemini_available() else None
-    groq_result = call_groq(prompt) if _groq_available() else None
-    return _resolve_dual(gemini_result, groq_result, "decision", CONSERVATIVE_ORDER_DECISION)
+    secondary_result, secondary_provider_name = call_secondary(prompt)
+    return _resolve_dual(
+        gemini_result, secondary_result, secondary_provider_name, "decision", CONSERVATIVE_ORDER_DECISION,
+    )
 
 
 def audit_verdict(ticker: str, context: dict, verdict: dict) -> dict | None:
@@ -911,14 +1041,15 @@ def audit_verdict(ticker: str, context: dict, verdict: dict) -> dict | None:
     verdict["decision"] internally so it stays a pure, reusable "audit
     whatever verdict you give me" primitive.
 
-    Single-provider (Gemini if available, else Groq) -- NOT dual, unlike
+    Single-provider (Gemini if available, else the call_secondary()
+    fallback pool -- Groq, then OpenRouter) -- NOT dual, unlike
     evaluate_ticker(). This is a bounded-cost sanity pass on top of an
     already-dual-provider-reconciled verdict, not the primary judgment
-    itself; doubling to 4 total calls per audited candidate isn't worth it
-    for a checking pass.
+    itself; doubling every call site's volume isn't worth it for a
+    checking pass.
 
     Returns {"audit_result": "PASS"|"FAIL", "audit_notes": str} or None
-    (never raises) if both providers are unavailable/fail -- same "a
+    (never raises) if every provider is unavailable/fails -- same "a
     flaky LLM call must never break a scan" philosophy as every other
     function here."""
     prompt = _build_audit_prompt(ticker, context, verdict)
@@ -926,9 +1057,8 @@ def audit_verdict(ticker: str, context: dict, verdict: dict) -> dict | None:
         result = call_gemini(prompt, parse_fn=_parse_audit_response)
         if result is not None:
             return result
-    if _groq_available():
-        return call_groq(prompt, parse_fn=_parse_audit_response)
-    return None
+    result, _ = call_secondary(prompt, parse_fn=_parse_audit_response)
+    return result
 
 
 def evaluate_holding(ticker: str, context: dict) -> dict | None:
@@ -965,8 +1095,10 @@ def evaluate_holding(ticker: str, context: dict) -> dict | None:
     or None. See _resolve_dual()'s own docstring for the four new keys."""
     prompt = _build_holding_prompt(ticker, context)
     gemini_result = call_gemini(prompt, parse_fn=_parse_holding_response) if _gemini_available() else None
-    groq_result = call_groq(prompt, parse_fn=_parse_holding_response) if _groq_available() else None
-    return _resolve_dual(gemini_result, groq_result, "action", CONSERVATIVE_ORDER_HOLD_ACTION)
+    secondary_result, secondary_provider_name = call_secondary(prompt, parse_fn=_parse_holding_response)
+    return _resolve_dual(
+        gemini_result, secondary_result, secondary_provider_name, "action", CONSERVATIVE_ORDER_HOLD_ACTION,
+    )
 
 
 def evaluate_meta_synthesis(ticker: str, context: dict) -> dict | None:
@@ -1008,5 +1140,7 @@ def evaluate_meta_synthesis(ticker: str, context: dict) -> dict | None:
     -- or None."""
     prompt = _build_meta_synthesis_prompt(ticker, context)
     gemini_result = call_gemini(prompt) if _gemini_available() else None
-    groq_result = call_groq(prompt) if _groq_available() else None
-    return _resolve_dual(gemini_result, groq_result, "decision", CONSERVATIVE_ORDER_DECISION)
+    secondary_result, secondary_provider_name = call_secondary(prompt)
+    return _resolve_dual(
+        gemini_result, secondary_result, secondary_provider_name, "decision", CONSERVATIVE_ORDER_DECISION,
+    )

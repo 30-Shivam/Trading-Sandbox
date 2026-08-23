@@ -215,16 +215,20 @@ PROPOSAL_MAX_OUTPUT_TOKENS = 1200  # this schema (nested rule object + rationale
 
 def propose_rule(recent_cycles: list[dict]) -> dict | None:
     """Asks an LLM to propose today's rule, informed by
-    Strategy_Research_Journal's own recent history. Gemini first, Groq as
-    fallback (both already degrade to None internally on any failure/
-    unavailability -- no need to pre-check availability here). Returns
-    None if both are unavailable/fail, or the proposal was malformed --
-    callers must handle a None proposal, never assume one exists."""
+    Strategy_Research_Journal's own recent history. Gemini first, then
+    llm_agent.call_secondary()'s fallback pool (Groq, then OpenRouter -- both
+    already degrade to None internally on any failure/unavailability, no
+    need to pre-check availability here). Returns None if every provider
+    is unavailable/fails, or the proposal was malformed -- callers must
+    handle a None proposal, never assume one exists."""
     prompt = _build_proposal_prompt(recent_cycles)
     result = llm_agent.call_gemini(prompt, parse_fn=_parse_proposal_response, max_output_tokens=PROPOSAL_MAX_OUTPUT_TOKENS)
     if result is not None:
         return result
-    return llm_agent.call_groq(prompt, parse_fn=_parse_proposal_response, max_output_tokens=PROPOSAL_MAX_OUTPUT_TOKENS)
+    result, _ = llm_agent.call_secondary(
+        prompt, parse_fn=_parse_proposal_response, max_output_tokens=PROPOSAL_MAX_OUTPUT_TOKENS,
+    )
+    return result
 
 
 def _fetch_and_backtest(tickers: list[str], rule: dict, config, log=print) -> dict:

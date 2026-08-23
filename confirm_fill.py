@@ -53,7 +53,7 @@ def _resettle_if_already_settled(ticker: str, signal_date: str, strategy: str) -
     db = storage.get_db()
     signal = db["Trade_Signals"].find_one({"ticker": ticker, "signal_date": signal_date, "strategy": strategy})
     if signal and signal.get("settled"):
-        outcome = settle_one(signal)
+        outcome, _ = settle_one(signal)  # a manual re-settle, not the scheduled batch job -- no Discord digest
         print(f"  (was already settled -- re-settled: {outcome})")
 
 
