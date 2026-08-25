@@ -27,6 +27,15 @@ storage.record_user_decision()'s own docstring). Does NOT call
 confirm_fill() or touch settlement -- a pass never happened, there's
 nothing to re-settle.
 
+This CLI's own confirm/decision logic (storage.confirm_fill() +
+storage.record_user_decision() + resettle_if_already_settled(), all below)
+is also called directly from dip_buy_analyzer.py's sidebar "Confirm real
+fills" section (2026-08-25) -- the CLI itself went unused in practice (find
+a specific ticker/date/strategy, type a separate command doesn't match how
+holdings actually get updated, via the dashboard sidebar), so that's a
+second, dashboard-native entry point into the exact same underlying
+functions, still fully explicit/human-picked, never auto-inferred.
+
 Usage:
     python confirm_fill.py                                   # list pending (unconfirmed) signals
     python confirm_fill.py --ticker INTC --date 2026-07-24
@@ -42,14 +51,21 @@ import storage
 from settle_trades import settle_one
 
 
-def _resettle_if_already_settled(ticker: str, signal_date: str, strategy: str) -> None:
+def resettle_if_already_settled(ticker: str, signal_date: str, strategy: str) -> None:
     """confirm_fill()/unconfirm_fill() only touch the Trade_Signals document.
     If that signal already settled BEFORE you confirmed it, its
     Trade_Outcomes doc is now stale (wrong confirmed_filled, wrong
     entry_price) and won't naturally get re-walked -- get_unsettled_signals
     only returns signals with settled != True. Re-settle it right now so
     the outcome reflects the confirmation immediately instead of silently
-    staying wrong forever."""
+    staying wrong forever.
+
+    Public (not `_`-prefixed) -- also called from dip_buy_analyzer.py's
+    sidebar "Confirm real fills" section (2026-08-25), the retrofit that
+    folds this CLI's confirm/decision logic into the same dashboard motion
+    a user already performs when updating Current Holdings, since in
+    practice this CLI itself went unused (see decision-tracking-status in
+    the project's Obsidian vault)."""
     db = storage.get_db()
     signal = db["Trade_Signals"].find_one({"ticker": ticker, "signal_date": signal_date, "strategy": strategy})
     if signal and signal.get("settled"):
@@ -86,7 +102,7 @@ def main():
         if args.undo:
             storage.unconfirm_fill(args.ticker, args.date, args.strategy)
             print(f"Unconfirmed {args.ticker} ({args.date}, strategy={args.strategy}).")
-            _resettle_if_already_settled(args.ticker, args.date, args.strategy)
+            resettle_if_already_settled(args.ticker, args.date, args.strategy)
         elif args.pass_reason:
             storage.record_user_decision(args.ticker, args.date, args.strategy, "passed", reason=args.pass_reason)
             print(f"Recorded PASS on {args.ticker} ({args.date}, strategy={args.strategy}): {args.pass_reason}")
@@ -95,7 +111,7 @@ def main():
             storage.record_user_decision(args.ticker, args.date, args.strategy, "acted_on")
             price_note = f" at ${args.price:.2f}" if args.price else " (using the logged buy_price)"
             print(f"Confirmed {args.ticker} ({args.date}, strategy={args.strategy}) as filled{price_note}.")
-            _resettle_if_already_settled(args.ticker, args.date, args.strategy)
+            resettle_if_already_settled(args.ticker, args.date, args.strategy)
         return
 
     pending = storage.get_signals_pending_confirmation()

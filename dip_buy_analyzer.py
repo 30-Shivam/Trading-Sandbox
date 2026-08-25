@@ -176,6 +176,7 @@ import market_data
 import regime_switcher
 import storage
 import swingtrade
+from confirm_fill import resettle_if_already_settled
 from watchlist import parse_ticker_text, read_ticker_sectors, read_tickers
 
 # ----------------------------- Configuration -----------------------------
@@ -382,6 +383,35 @@ def parse_holdings_text(raw: str) -> dict[str, dict]:
                 avg_cost = None
         holdings[ticker.upper()] = {"amount": amount, "avg_cost": avg_cost}
     return holdings
+
+
+def confirmable_holdings(saved_holdings: dict, pending_signals: list[dict]) -> dict[str, list[dict]]:
+    """Which currently-saved holdings (ticker -> {"amount", "avg_cost"})
+    have at least one pending (unconfirmed) actionable signal for that same
+    ticker -- these are candidates for the sidebar's "Confirm real fills"
+    section (2026-08-25). A holding needs a known avg_cost to be
+    reviewable at all (same gating Position Review already uses).
+
+    This exists because confirm_fill.py's CLI -- find a specific
+    ticker/date/strategy, type a separate command -- went unused in
+    practice; the user's real workflow is just updating Current Holdings
+    in this sidebar. Folding the confirm/decision step into that same
+    motion (still fully explicit, human-picked -- never auto-inferred)
+    keeps storage/holdings.py's own deliberate "not inferred from
+    Trade_Signals" boundary intact while removing the friction of a
+    separate CLI step.
+
+    Returns {ticker: [pending signal dicts for that ticker]}, most-recent-
+    first (inherited from storage.get_signals_pending_confirmation()'s own
+    sort)."""
+    pending_by_ticker: dict[str, list[dict]] = {}
+    for sig in pending_signals:
+        pending_by_ticker.setdefault(sig["ticker"], []).append(sig)
+    return {
+        t: pending_by_ticker[t]
+        for t, info in saved_holdings.items()
+        if info.get("avg_cost") and t in pending_by_ticker
+    }
 
 
 def style_results(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
@@ -850,6 +880,42 @@ def main():
                 st.success(f"Saved {len(holdings_detail)} holding(s).")
             except Exception as exc:
                 st.warning(f"Could not save holdings: {exc}")
+
+        try:
+            pending_signals = storage.get_signals_pending_confirmation()
+        except Exception:
+            pending_signals = []
+        confirmable = confirmable_holdings(saved_holdings, pending_signals)
+        if confirmable:
+            with st.expander(f"Confirm real fills ({len(confirmable)} holding(s) match a pending signal)"):
+                st.caption(
+                    "A holding above with a known AVG_COST matches at least one logged signal "
+                    "that hasn't been confirmed as a real fill yet -- link it here so reporting "
+                    "can separate what actually happened to trades you made from every "
+                    "mechanical signal's hypothetical outcome. Purely optional and explicit -- "
+                    "nothing here is auto-confirmed."
+                )
+                for ticker, sigs in confirmable.items():
+                    labels = [
+                        f"{s['signal_date']}  {s.get('strategy', 'rsi')}  buy={s['buy_price']:.2f}"
+                        for s in sigs
+                    ]
+                    choice = st.selectbox(f"{ticker}: which signal?", labels, key=f"confirm_fill_sig_{ticker}")
+                    chosen = sigs[labels.index(choice)]
+                    fill_price = st.number_input(
+                        f"{ticker}: actual fill price",
+                        min_value=0.0,
+                        value=float(saved_holdings[ticker]["avg_cost"]),
+                        key=f"confirm_fill_price_{ticker}",
+                        help="Defaults to this holding's AVG_COST -- change if your real fill differed.",
+                    )
+                    if st.button(f"Confirm {ticker} filled", key=f"confirm_fill_btn_{ticker}"):
+                        strategy = chosen.get("strategy", "rsi")
+                        storage.confirm_fill(ticker, chosen["signal_date"], strategy, fill_price=fill_price)
+                        storage.record_user_decision(ticker, chosen["signal_date"], strategy, "acted_on")
+                        resettle_if_already_settled(ticker, chosen["signal_date"], strategy)
+                        st.success(f"Confirmed {ticker} ({chosen['signal_date']}, {strategy}) as filled.")
+                        st.rerun()
 
         apply_allocation = st.checkbox(
             "Apply capital allocation (cash + sector + portfolio caps)",

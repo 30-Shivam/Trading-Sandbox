@@ -15,6 +15,7 @@ TOP_LEVEL_MODULES = [
     "benchmark_random_entry",
     "run_backtest",
     "settle_trades",
+    "review_positions",
     "confirm_fill",
     "evaluate_config",
     "llm_agent",
