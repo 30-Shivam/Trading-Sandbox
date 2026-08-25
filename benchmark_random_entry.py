@@ -105,6 +105,19 @@ necessarily weaker evidence than every other strategy's own, by
 construction -- this IS still the critical validation gate for it, just
 over a shorter real window than usual.
 
+--strategy momentum_rank tests cross-sectional MOMENTUM RANK (buy a ticker
+whose trailing-return percentile rank -- config.momentum_lookback_days,
+against the WHOLE watchlist, not just its own sector -- clears
+config.momentum_top_percentile_min, in a confirmed macro uptrend --
+swingtrade.simulate_momentum_signals / simulate_random_momentum_entries),
+the first strategy in this project whose signal for one ticker depends on
+every OTHER ticker's own return the same day (Jegadeesh & Titman
+cross-sectional momentum) -- every prior strategy scores a ticker from its
+own price history alone. Continuous STATE like week52_high/squeeze_breakout/
+adx_trend_entry, not a discrete event. Deliberately lean v1, same "no
+optional filters yet" treatment every other strategy's first pass got --
+this IS the critical validation gate for it.
+
 Applies the same ticker-holdout split as optimize.py (--holdout-frac,
 --holdout-seed) so the comparison also holds up (or doesn't) on tickers
 never used to pick the config being tested. Uses cluster-adjusted stats
@@ -138,7 +151,7 @@ from run_backtest import (
 )
 from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
-EARNINGS_AWARE_STRATEGIES = ("squeeze_breakout", "ma_crossover", "pairs", "insider_buying")  # the only
+EARNINGS_AWARE_STRATEGIES = ("squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank")  # the only
                                                                    # simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
                                                                    # accept earnings_dates -- see
@@ -158,6 +171,11 @@ INSIDER_AWARE_STRATEGIES = ("insider_buying",)  # the only REAL simulate_*_signa
                                                                    # random baseline -- same reasoning as
                                                                    # PAIR_AWARE_STRATEGIES above) that
                                                                    # accepts insider_purchases
+MOMENTUM_AWARE_STRATEGIES = ("momentum_rank",)  # the only REAL simulate_*_signals() (not the
+                                                                   # random baseline -- same "answers
+                                                                   # whether TIMING adds value"
+                                                                   # precedent as PAIR_AWARE_STRATEGIES
+                                                                   # above) that accepts rank_column
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -204,7 +222,7 @@ def main():
         choices=[
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
             "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover", "pairs",
-            "insider_buying",
+            "insider_buying", "momentum_rank",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -226,6 +244,13 @@ def main():
         help="Override config.squeeze_breakout_entry_fill (--strategy squeeze_breakout only) -- "
              "same 'limit' vs. 'next_open' choice as --momentum-burst-entry-fill, see that flag's "
              "help. Default: whatever the tested config already has ('limit').",
+    )
+    parser.add_argument(
+        "--momentum-entry-fill", choices=["limit", "next_open"], default=None,
+        help="Override config.momentum_entry_fill (--strategy momentum_rank only) -- same "
+             "'limit' vs. 'next_open' choice as --momentum-burst-entry-fill, checked from day one "
+             "per the item-37 lesson rather than added after promotion. Default: whatever the "
+             "tested config already has ('limit').",
     )
     parser.add_argument(
         "--adx-trend-entry-entry-fill", choices=["limit", "next_open"], default=None,
@@ -294,6 +319,9 @@ def main():
     if args.squeeze_breakout_entry_fill is not None:
         config = swingtrade.TradingConfig(**{**config.to_dict(), "squeeze_breakout_entry_fill": args.squeeze_breakout_entry_fill})
         config_label += f" (squeeze_breakout_entry_fill overridden to {args.squeeze_breakout_entry_fill})"
+    if args.momentum_entry_fill is not None:
+        config = swingtrade.TradingConfig(**{**config.to_dict(), "momentum_entry_fill": args.momentum_entry_fill})
+        config_label += f" (momentum_entry_fill overridden to {args.momentum_entry_fill})"
     if args.adx_trend_entry_entry_fill is not None:
         config = swingtrade.TradingConfig(**{**config.to_dict(), "adx_trend_entry_entry_fill": args.adx_trend_entry_entry_fill})
         config_label += f" (adx_trend_entry_entry_fill overridden to {args.adx_trend_entry_entry_fill})"
@@ -343,6 +371,12 @@ def main():
         print(f"  adx_trend_entry_threshold={config.adx_trend_entry_threshold}, "
               f"adx_trend_entry_ma_window={config.adx_trend_entry_ma_window}, "
               f"adx_trend_entry_entry_fill={config.adx_trend_entry_entry_fill}, "
+              f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
+              f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
+    elif args.strategy == "momentum_rank":
+        print(f"  momentum_lookback_days={config.momentum_lookback_days}, "
+              f"momentum_top_percentile_min={config.momentum_top_percentile_min}, "
+              f"momentum_entry_fill={config.momentum_entry_fill}, "
               f"atr_take_profit_multiplier={config.atr_take_profit_multiplier}, "
               f"stop_loss_atr_multiplier={config.stop_loss_atr_multiplier}")
     else:
@@ -419,6 +453,22 @@ def main():
                 continue
             sector_price_panels[sector] = pd.DataFrame({m: ticker_data[m]["Close"] for m in members})
 
+    momentum_rank_frame: pd.DataFrame | None = None
+    if args.strategy in MOMENTUM_AWARE_STRATEGIES:
+        # No new network fetch -- every ticker's OHLCV is already in
+        # ticker_data. ONE wide Close-price panel across the WHOLE universe
+        # (no sector partitioning, unlike pairs' sector_price_panels above --
+        # ranking is universe-wide by design), rank-computed ONCE via
+        # swingtrade.compute_momentum_rank_frame() and sliced per ticker
+        # below (see momentum_kwargs()). Built from the FULL ticker set,
+        # not just tune-side tickers -- this deliberately matches pairs'
+        # own precedent (its sector panels are never split by tune/holdout
+        # either) and the design decision confirmed for this strategy: no
+        # forward-looking leak results, since ranking only ever uses past
+        # prices, and it matches what a live scan would realistically use.
+        momentum_panel = pd.DataFrame({t: ticker_data[t]["Close"] for t in ticker_data})
+        momentum_rank_frame = swingtrade.compute_momentum_rank_frame(momentum_panel, config.momentum_lookback_days)
+
     if args.holdout_frac > 0:
         print(f"Ticker holdout: frac={args.holdout_frac}, averaging TUNE/HOLDOUT over "
               f"{len(holdout_seeds)} seeds ({holdout_seeds}) -- see improvements.txt item 69.")
@@ -455,6 +505,9 @@ def main():
     elif args.strategy == "insider_buying":
         real_fn, random_fn = swingtrade.simulate_insider_buying_signals, swingtrade.simulate_random_insider_buying_entries
         real_label = "Insider_Buying-timed"
+    elif args.strategy == "momentum_rank":
+        real_fn, random_fn = swingtrade.simulate_momentum_signals, swingtrade.simulate_random_momentum_entries
+        real_label = "Momentum_Rank-timed"
     else:
         real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
         real_label = "MA_Crossover-timed"
@@ -481,12 +534,18 @@ def main():
     insider_kwargs = lambda ticker: (  # noqa: E731 -- see INSIDER_AWARE_STRATEGIES
         {"insider_purchases": insider_data.get(ticker)} if args.strategy in INSIDER_AWARE_STRATEGIES else {}
     )
+    def momentum_kwargs(ticker):
+        if args.strategy not in MOMENTUM_AWARE_STRATEGIES:
+            return {}
+        if momentum_rank_frame is None or ticker not in momentum_rank_frame.columns:
+            return {"rank_column": None}
+        return {"rank_column": momentum_rank_frame[ticker]}
     for i, (ticker, ohlcv) in enumerate(ticker_data.items()):
         sector = sector_lookup.get(ticker, "Unknown")
         real = real_fn(
             ticker, ohlcv, market_data, start, end, config,
             **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker), **peer_kwargs(ticker),
-            **insider_kwargs(ticker),
+            **insider_kwargs(ticker), **momentum_kwargs(ticker),
         )
         real_trades.extend(real)
         real_counts[ticker] = len(real)

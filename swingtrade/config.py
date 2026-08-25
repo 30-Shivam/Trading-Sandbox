@@ -733,6 +733,47 @@ class TradingConfig:
                                            # other strategy has -- see
                                            # squeeze_breakout_entry_fill's comment
 
+    # Cross-sectional MOMENTUM RANK strategy (swingtrade/levels.compute_momentum_levels,
+    # swingtrade/backtest.simulate_momentum_signals) -- a genuinely different
+    # mechanism from every strategy tried so far: every prior signal scores
+    # ONE ticker from its own price history alone; this one ranks a ticker's
+    # trailing return against every OTHER ticker in the watchlist on the
+    # SAME day and buys the top decile (Jegadeesh & Titman cross-sectional
+    # momentum). Continuous STATE, not a discrete event (like week52_high,
+    # not like breakout) -- fires every day a ticker's percentile clears the
+    # threshold, using the same stop/target/max-holding-day exit machinery
+    # every strategy shares; no new "exit because you fell out of the top
+    # decile" mechanism was built (this codebase has no rebalance-portfolio
+    # concept anywhere else). RRR pinned >= RRR_FLOOR (1.6) from this very
+    # first default -- applying the item-97/RRR-ceiling lesson proactively
+    # instead of discovering post-hoc the Buy tier is unreachable.
+    momentum_lookback_days: int = 63  # trailing-return formation window
+                                           # (trading days, ~3 months) -- matches
+                                           # this project's own existing
+                                           # sector_relative_strength_lookback_days
+                                           # default, a "current" (not multi-year)
+                                           # momentum read
+    momentum_top_percentile_min: float = 90.0  # a ticker's trailing-return
+                                           # percentile rank (0-100 scale, see
+                                           # best_ideas.compute_sector_rs_scores()'s
+                                           # identical rank(pct=True)*100
+                                           # convention) must clear this to fire --
+                                           # 90 = top decile, matching this
+                                           # project's own "buy the top decile"
+                                           # framing
+    momentum_strength_cap_pct: float = 10.0  # extra percentile points past
+                                           # momentum_top_percentile_min that earn
+                                           # full Signal_Strength_Pct credit --
+                                           # same "reused field name, different
+                                           # units" precedent as
+                                           # pairs_zscore_strength_cap/
+                                           # squeeze_breakout_strength_cap_pct
+    momentum_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle
+                                           # every other strategy has, built in
+                                           # from day one per the item-37 lesson
+                                           # (check fill-model sensitivity
+                                           # proactively, not after promotion)
+
     # Insider-buying (2026-08-21) -- buy when recent, real-dollar insider
     # Form-4 purchases cluster within a lookback window, in a confirmed
     # macro uptrend. See run_backtest.fetch_insider_purchases() for the

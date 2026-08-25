@@ -439,11 +439,26 @@ def build_pair_price_panels(
     return panels
 
 
+def build_momentum_panel(bundle: dict[str, dict]) -> pd.DataFrame:
+    """One wide, universe-wide Close-price panel built from an already-
+    fetched bundle() -- no new network fetch. Backs the "momentum_rank"
+    strategy's cross-sectional ranking (see
+    swingtrade.compute_momentum_rank_frame()), same shape/purpose as
+    build_pair_price_panels() above but deliberately NOT sector-partitioned
+    -- percentile rank is inherently a whole-universe operation, not a
+    pairwise one. Callers still need to turn this into an actual rank frame
+    via swingtrade.compute_momentum_rank_frame(panel, config.momentum_lookback_days)
+    themselves (not done here), since that depends on a specific config's
+    own momentum_lookback_days, which this function has no opinion on."""
+    return pd.DataFrame({ticker: entry["df"]["Close"] for ticker, entry in bundle.items()})
+
+
 def score_bundle_for_strategy(
     bundle: dict[str, dict], market_df: pd.DataFrame | None, config: swingtrade.TradingConfig,
     sector_lookup: dict[str, str] | None = None,
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
+    momentum_rank_frame: pd.DataFrame | None = None,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """Compute levels for every ticker in an already-fetched bundle (see
     fetch_ticker_bundle()), dispatching on `config.strategy`: "rsi"
@@ -478,6 +493,10 @@ def score_bundle_for_strategy(
         pair_panel = pair_price_panels.get(sector_lookup.get(ticker, "Unknown"))
         peer_prices = (
             pair_panel.drop(columns=[ticker]) if pair_panel is not None and ticker in pair_panel.columns else None
+        )
+        rank_column = (
+            momentum_rank_frame[ticker]
+            if momentum_rank_frame is not None and ticker in momentum_rank_frame.columns else None
         )
         try:
             if config.strategy == "breakout":
@@ -520,6 +539,11 @@ def score_bundle_for_strategy(
                 levels = swingtrade.compute_pairs_levels(
                     ticker, df, config, next_earnings_date=next_earnings,
                     top_headline=top_headline, peer_prices=peer_prices,
+                )
+            elif config.strategy == "momentum_rank":
+                levels = swingtrade.compute_momentum_levels(
+                    ticker, df, config, next_earnings_date=next_earnings,
+                    top_headline=top_headline, rank_column=rank_column,
                 )
             else:
                 levels = swingtrade.compute_levels(

@@ -180,11 +180,30 @@ SECONDARY_LOG_STRATEGY_OVERRIDES: dict[str, str] = {
 # "remove all the losing strategies" request -- both lost to their own
 # random-entry baseline on HOLDOUT in the real 5-year benchmark comparison
 # run 2026-08-09/10 (momentum_burst additionally flat/negative on every
-# cut). Empty for now -- nothing currently in the Daily Signals tab until
-# a genuine replacement is found; the tab itself still renders (just shows
-# nothing experimental), and the underlying strategy code/Mongo candidates
-# are untouched, only removed from this dict.
-EXPERIMENTAL_STRATEGY_VERSIONS = {}
+# cut). Empty until Momentum Rank (v65) below -- nothing else currently in
+# the Daily Signals tab; the tab itself still renders regardless (just
+# shows nothing experimental when this dict is empty), and the underlying
+# strategy code/Mongo candidates of anything removed are untouched, only
+# taken out of this dict.
+#
+# Momentum Rank (v65) added 2026-08-24, this project's first genuinely new
+# strategy ARCHITECTURE (cross-sectional trailing-return ranking against the
+# whole watchlist, not one ticker's own price history in isolation --
+# improvements.txt). Cleared the real validation gate this same day: beats
+# its own matched-random baseline on ticker-universe HOLDOUT (candidate
+# sharpe_like 0.34 vs baseline 0.075) AND -- the decisive check added the
+# same day specifically to catch payoff-bracket artifacts -- genuinely
+# widens the REAL-vs-RANDOM gap (0.045) versus the untuned baseline's own
+# gap (-0.005, i.e. DEFAULT_CONFIG alone shows no real timing edge over
+# random). RRR-vs-scoring-ceiling check clears signal_buy_threshold=60, but
+# only by 1.83 points (best-case Trade_Score=61.83) -- a thin buffer,
+# meaning it will fire real Buy signals noticeably less often than its raw
+# backtest trade count alone would suggest. Ships EXPERIMENTAL/tracked-only
+# per this project's own graduated-promotion discipline -- no cash pool,
+# no allocate_capital() call, same as every strategy's first live exposure.
+EXPERIMENTAL_STRATEGY_VERSIONS = {
+    "Momentum Rank": 65,
+}
 
 
 def load_active_config() -> tuple[swingtrade.TradingConfig, str]:

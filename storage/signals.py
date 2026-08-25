@@ -249,6 +249,12 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
         "pair_partner": _native(row.get("Pair_Partner")),
         "pair_correlation": _native(row.get("Pair_Correlation")),
         "pair_spread_zscore": _native(row.get("Pair_Spread_Zscore")),
+        # "momentum_rank" rows only (strategy="momentum_rank") -- this
+        # ticker's own trailing-return percentile against the whole
+        # universe that day, None for every other strategy's rows. Same
+        # "don't discard the strategy's own distinguishing detail"
+        # treatment pair_partner/pair_correlation above already get.
+        "momentum_percentile": _native(row.get("Momentum_Percentile")),
         # best_ideas.py rows only (strategy="best_ideas") -- the
         # meta-synthesis LLM's own written rationale (str|None) and a
         # snapshot of {methodology: {"score":, "weight":}} used to build

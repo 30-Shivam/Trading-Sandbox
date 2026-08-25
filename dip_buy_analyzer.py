@@ -481,6 +481,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_ma_crossover_trade_score(df, config)
     elif config.strategy == "pairs":
         return swingtrade.add_pairs_trade_score(df, config)
+    elif config.strategy == "momentum_rank":
+        return swingtrade.add_momentum_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -616,6 +618,7 @@ def render_experimental_section(
     storage_ok: bool,
     sector_lookup: dict[str, str] | None = None,
     sector_data: dict | None = None,
+    momentum_panel: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Score, log, and display one EXPERIMENTAL strategy's results against
     the SAME already-fetched bundle every other section uses -- no extra
@@ -641,8 +644,17 @@ def render_experimental_section(
     showing zeroed sizing columns for a strategy with no cash pool would
     read as a bug, not a design choice."""
     st.subheader(label)
+    # Computed fresh from THIS call's own config.momentum_lookback_days, not
+    # precomputed once elsewhere -- see optimize.py's build_objective() for
+    # why a fixed-lookback rank frame would silently make that field a
+    # no-op (caught and fixed there 2026-08-24, applying the same care here).
+    momentum_rank_frame = (
+        swingtrade.compute_momentum_rank_frame(momentum_panel, config.momentum_lookback_days)
+        if config.strategy == "momentum_rank" and momentum_panel is not None else None
+    )
     results, score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+        momentum_rank_frame=momentum_rank_frame,
     )
     if not results:
         st.caption("No tickers were successfully analyzed.")
@@ -673,6 +685,8 @@ def render_experimental_section(
         trigger_columns = ["Day_Gain_Pct", "Recent_Min_Squeeze_Zscore"]
     elif config.strategy == "adx_trend_entry":
         trigger_columns = ["ADX", "Short_MA"]
+    elif config.strategy == "momentum_rank":
+        trigger_columns = ["Momentum_Percentile"]
     else:
         trigger_columns = []
     display_columns = [
@@ -1125,6 +1139,10 @@ def main():
         # shared across every secondary strategy the same way sector_data is
         # (only "pairs" actually consumes it; harmless/unused otherwise).
         pair_price_panels = market_data.build_pair_price_panels(bundle, sector_lookup)
+        # Same idea for "momentum_rank" (experimental-only, see below) --
+        # raw prices only, universe-wide; the actual rank frame is derived
+        # per-config inside render_experimental_section() itself.
+        momentum_panel = market_data.build_momentum_panel(bundle)
 
         secondary_results_by_label: dict[str, pd.DataFrame] = {}
         for label in SECONDARY_STRATEGY_VERSIONS:
@@ -1357,6 +1375,7 @@ def main():
                 bundle, market_df, fetch_skipped,
                 storage_ok,
                 sector_lookup=sector_lookup, sector_data=sector_data,
+                momentum_panel=momentum_panel,
             )
 
     with tab2:

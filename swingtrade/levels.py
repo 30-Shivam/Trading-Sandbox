@@ -1687,6 +1687,198 @@ def compute_pairs_levels(
     return pairs_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def compute_momentum_rank_frame(panel: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
+    """Cross-sectional percentile rank of every ticker's own trailing return,
+    computed ONCE for the whole universe -- the key structural difference
+    from pairs' precompute_pairs_frame(), which recomputes its cross-ticker
+    correlation math separately inside every single ticker's own call.
+    Percentile rank is inherently a whole-universe operation (a ticker's
+    rank today depends on every OTHER ticker's return that same day), so
+    doing it once here and having every ticker's own precompute_momentum_frame()
+    just look up its own already-computed column is both cheaper and more
+    correct than recomputing it per ticker.
+
+    `panel` should be a wide DataFrame of Close prices, one column per
+    ticker in the ranking universe (see market_data.build_momentum_panel()
+    for the live-path caller, or the equivalent inline construction in
+    optimize.py/benchmark_random_entry.py for backtest callers) -- no
+    sector partitioning, unlike pairs' own per-sector panels, since ranking
+    is universe-wide by design.
+
+    Returns a DataFrame the same shape as `panel` (dates x tickers), each
+    cell = that ticker's trailing-return percentile (0-100 scale, matching
+    best_ideas.compute_sector_rs_scores()'s identical rank(pct=True)*100
+    convention) on that day. A ticker with fewer than `lookback_days` of
+    prior history reads NaN until its trailing return itself becomes
+    computable, same "missing data doesn't fabricate a signal" convention
+    as every other optional field in this codebase."""
+    trailing_return = panel.pct_change(periods=lookback_days)
+    return trailing_return.rank(axis=1, pct=True) * 100
+
+
+def precompute_momentum_frame(
+    df: pd.DataFrame,
+    rank_column: pd.Series | None = None,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> pd.DataFrame:
+    """Vectorized precompute of the cross-sectional MOMENTUM RANK strategy's
+    columns -- built on top of precompute_breakout_frame() (reused
+    wholesale for SMA_TREND/ATR/AvgVolume/etc., the same macro-uptrend/
+    liquidity gates every strategy shares).
+
+    `rank_column`, if given, should be THIS ticker's own column already
+    sliced from a shared universe-wide rank frame built once via
+    compute_momentum_rank_frame() over every ticker's Close prices --
+    unlike pairs' `peer_prices` (a DataFrame of every OTHER ticker, with
+    correlation computed per-ticker inside precompute_pairs_frame()), the
+    rank computation itself is inherently a whole-universe operation done
+    ONCE by the caller; this function only reads this ticker's own
+    already-computed percentile, reindexed to df's own date range. Missing
+    (None) degrades to "never fires" rather than excluding the ticker
+    outright, same convention as pairs' missing peer_prices."""
+    df = precompute_breakout_frame(df, config)
+    df["Momentum_Percentile"] = rank_column.reindex(df.index) if rank_column is not None else np.nan
+    return df
+
+
+def momentum_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract the cross-sectional MOMENTUM RANK strategy's dict for one row
+    of a frame already built by precompute_momentum_frame() -- the
+    O(1)-per-row counterpart a walk-forward loop calls once per `as_of`.
+    Same macro-uptrend/liquidity gates every strategy shares (via
+    precompute_breakout_frame(), reused wholesale)."""
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, rsi = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"], last_row["RSI"],
+    )
+    momentum_percentile = last_row["Momentum_Percentile"]
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+
+    last_close, sma_trend, atr, avg_volume = float(last_close), float(sma_trend), float(atr), float(avg_volume)
+    # Informational only, not used for gating (this strategy's trigger is
+    # the universe-wide percentile rank, not RSI) -- same treatment every
+    # other non-RSI strategy (squeeze_breakout, breakout, ma_crossover,
+    # pairs) gives it, per the real storage/signals.py bug pairs' own
+    # rollout caught (row["RSI"] bracket access assumed every strategy
+    # carries this key -- see pairs_levels_from_frame()'s identical comment).
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    # Missing percentile (no rank_column supplied, or too little history
+    # for this ticker's own trailing return yet) degrades to "never fires"
+    # rather than excluding the ticker outright -- same "optional data
+    # missing doesn't crash, just no signal" convention every other
+    # strategy uses.
+    if pd.isna(momentum_percentile):
+        momentum_signal = False
+        momentum_percentile_out = None
+        signal_strength_pct = 0.0
+    else:
+        momentum_percentile = float(momentum_percentile)
+        momentum_signal = bool(momentum_percentile >= config.momentum_top_percentile_min)
+        momentum_percentile_out = round(momentum_percentile, 2)
+        # How far past the trigger the percentile cleared -- same
+        # "distance past the trigger" differentiating-term role
+        # Signal_Strength_Pct plays for squeeze_breakout/pairs, just in
+        # percentile points here.
+        signal_strength_pct = (
+            round(momentum_percentile - config.momentum_top_percentile_min, 2) if momentum_signal else 0.0
+        )
+
+    # Buy_Price = today's own Close -- same "confirm and enter near market"
+    # convention squeeze_breakout/ma_crossover/pairs use, not a discount-
+    # limit like RSI's structural-support wait. Distance_to_Buy_Pct is
+    # therefore always 0 by construction, same schema-compatible treatment
+    # those strategies already established.
+    buy_price = round(last_close, 2)
+    distance_to_buy_pct = 0.0
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "Momentum_Percentile": momentum_percentile_out,
+        "Momentum_Signal": momentum_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": distance_to_buy_pct,
+        "Signal_Strength_Pct": signal_strength_pct,
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_momentum_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+    rank_column: pd.Series | None = None,
+) -> dict:
+    """Compute cross-sectional MOMENTUM RANK levels for one ticker's OHLCV
+    history -- see precompute_momentum_frame()'s own docstring for the full
+    mechanism. Thin wrapper over precompute_momentum_frame()/
+    momentum_levels_from_frame() -- kept as a single-call convenience for
+    the live dashboard, matching every other strategy's same rationale (see
+    compute_pairs_levels()).
+
+    `rank_column` should be this ticker's own column already sliced from a
+    shared universe-wide rank frame (see compute_momentum_rank_frame()) --
+    caller's job to build from the already-fetched watchlist bundle, same
+    as market_data.py's own pair_price_panels resolution. Without it,
+    Momentum_Signal always reads False (no percentile data)."""
+    frame = precompute_momentum_frame(df, rank_column, config)
+    as_of = frame.index[-1]
+    return momentum_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def classify_insider_transaction(text) -> str:
     """Classifies one yfinance insider_transactions row's free-text "Text"
     field -- the "Transaction" column itself returns empty in the

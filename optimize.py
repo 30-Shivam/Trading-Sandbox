@@ -157,6 +157,7 @@ from pathlib import Path
 import optuna
 import pandas as pd
 
+import config_loader
 import storage
 import swingtrade
 from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history
@@ -399,6 +400,30 @@ INSIDER_LOOKBACK_DAYS_RANGE = (7, 30)
 INSIDER_MIN_PURCHASE_VALUE_RANGE = (10_000.0, 250_000.0)
 INSIDER_MIN_DISTINCT_BUYERS_RANGE = (1, 3)
 INSIDER_REPORTING_LAG_DAYS_RANGE = (1, 5)
+
+# Cross-sectional MOMENTUM RANK strategy -- lean v1's first Optuna search,
+# same compact-dimension launch as week52_high's own (2 strategy-specific
+# dims + shared tp/sl = 4D total) -- this project's own history shows a
+# tight, low-dimensional space is meaningfully less prone to the
+# boundary-pinned/holdout-reversing overfitting pattern that repeatedly hit
+# higher-dimensional (6-9D) breakout-style searches. Bounds centered on the
+# lean-v1 defaults that already cleared the random-entry benchmark cleanly
+# (REAL beat RANDOM on ALL/TUNE/HOLDOUT at untuned defaults), widened
+# enough either direction for Optuna to find something better without
+# drifting into degenerate territory (e.g. a lookback so short it's really
+# measuring noise, or a percentile floor so low it's not "momentum" at all).
+MOMENTUM_LOOKBACK_DAYS_RANGE = (21, 126)
+# Widened 97.5 -> 99.0 (2026-08-24, per explicit user request) after the
+# first 30-trial search's best trials repeatedly clustered at/near the old
+# 97.5 ceiling (winner landed at 95.72, but several other top trials hit
+# 96.6-97.3) -- the same "the search wants to go further than the range
+# allows" pattern this project has hit before (e.g. breakout's own
+# STOP_LOSS_ATR_RANGE widening). Not pushed all the way to 99.9+: at a
+# 407-ticker universe, a percentile that tight starts approaching a
+# 1-2-ticker-per-day sample, risking the opposite failure mode (Optuna
+# rewarded for finding the smallest sample with the luckiest-looking spike
+# -- see strategy-validation-pipeline point 10).
+MOMENTUM_TOP_PERCENTILE_MIN_RANGE = (75.0, 99.0)
 
 # slippage_pct / commission_pct_per_trade are deliberately NEVER in this search
 # space: they model execution friction, not strategy behavior. Letting Optuna
@@ -723,6 +748,190 @@ def summarize_weighted(fold_results: list, end: pd.Timestamp, half_life_days: fl
     return swingtrade.summarize_trades_weighted(flat_trades, combined_weights)
 
 
+def real_vs_random_ratio_check(
+    strategy: str, config: swingtrade.TradingConfig, ticker_data: dict, market_data: pd.DataFrame,
+    start: pd.Timestamp, end: pd.Timestamp, sector_lookup: dict[str, str],
+    earnings_data: dict | None = None, sector_data: dict | None = None,
+    pair_price_panels: dict | None = None, momentum_panel: pd.DataFrame | None = None,
+    seed: int = 1,
+) -> dict:
+    """Single-window (not fold-based) REAL-vs-RANDOM comparison for one
+    config -- the same methodology benchmark_random_entry.py uses on its
+    own, folded directly into every optimize.py search's own report
+    (2026-08-24) so this check is automatic rather than something that has
+    to be separately remembered and run by hand afterward.
+
+    Exists specifically to catch a real, recurring confound in this
+    project's own history: since atr_take_profit_multiplier/
+    stop_loss_atr_multiplier are almost always free search dimensions, a
+    tuned candidate's higher backtested sharpe_like can come from Optuna
+    finding a payoff-bracket (RRR) SHAPE that mechanically inflates ANY
+    entry timing's return -- real or random -- rather than from genuinely
+    better TIMING. Comparing REAL's raw sharpe_like before/after tuning
+    can't tell these apart; comparing REAL's GAP over RANDOM under the
+    identical bracket can, since RANDOM gets the exact same payoff shape
+    applied to a matched-count set of otherwise-random entries. This exact
+    confound was found, ad hoc, for week52_high's own original tune and
+    again for momentum_rank's first tune (2026-08-23/24) -- this function
+    makes checking for it a standing, unmissable part of every future
+    search's own output.
+
+    Uses swingtrade.run_backtest()/run_random_backtest() directly (a flat
+    single-window pass over the FULL ticker_data, not the fold-based walk-
+    forward the search itself uses) -- matches benchmark_random_entry.py's
+    own methodology exactly, deliberately NOT fold-based, since this
+    compares two already-fixed configs rather than tuning anything itself.
+
+    Returns {"real": <cluster-weighted summary>, "random": <same>, "gap":
+    real sharpe_like - random sharpe_like, or None if either is None}."""
+    momentum_rank_frame = (
+        swingtrade.compute_momentum_rank_frame(momentum_panel, config.momentum_lookback_days)
+        if momentum_panel is not None else None
+    )
+    real_trades = swingtrade.run_backtest(
+        ticker_data, market_data, start, end, config, earnings_data=earnings_data,
+        sector_lookup=sector_lookup, strategy=strategy, sector_data=sector_data,
+        pair_price_panels=pair_price_panels, momentum_rank_frame=momentum_rank_frame,
+    )
+    real_counts: dict[str, int] = {}
+    for t in real_trades:
+        real_counts[t["ticker"]] = real_counts.get(t["ticker"], 0) + 1
+
+    random_trades = swingtrade.run_random_backtest(
+        ticker_data, market_data, start, end, real_counts, random.Random(seed), config,
+        earnings_data=earnings_data, sector_lookup=sector_lookup, strategy=strategy,
+    )
+
+    def _summarize(trades):
+        resolved = [t for t in trades if t["status"] != "OPEN"]
+        weights = swingtrade.compute_cluster_weights(resolved)
+        return swingtrade.summarize_trades_weighted(resolved, weights)
+
+    real_summary = _summarize(real_trades)
+    random_summary = _summarize(random_trades)
+    real_sharpe = real_summary.get("sharpe_like")
+    random_sharpe = random_summary.get("sharpe_like")
+    gap = (real_sharpe - random_sharpe) if real_sharpe is not None and random_sharpe is not None else None
+    return {"real": real_summary, "random": random_summary, "gap": gap}
+
+
+def rrr_scoring_ceiling_check(strategy: str, config: swingtrade.TradingConfig) -> dict:
+    """Pure-arithmetic check for the specific failure mode confirmed in
+    improvements.txt item 42: RRR = atr_take_profit_multiplier /
+    stop_loss_atr_multiplier is a config-level CONSTANT, not a per-row value
+    -- every add_*_trade_score() ultimately computes `rrr = round((sell_price
+    - buy_price) / risk, 2)`, which reduces to exactly this ratio on every
+    row for a fixed config (see swingtrade/levels.py). If a search picks a
+    tp/sl pair whose ratio doesn't clear rrr_score_cap, the RRR term can
+    NEVER reach its own maximum contribution, no matter how good the day's
+    actual data is. This is exactly what left breakout (v19, RRR=0.393),
+    breakout_retest (v27, RRR=0.293), and week52_high (v28, RRR=0.408)
+    structurally unable to ever log a real Buy signal for weeks after
+    promotion -- this function reproduces their real best-case scores
+    (39.9/38.2/40.1, all below signal_buy_threshold=60) exactly.
+
+    Computes the BEST-CASE Trade_Score achievable under this config -- every
+    OTHER scoring dimension (Distance_to_Buy_Pct, RSI, Signal_Strength_Pct)
+    assumed to independently hit ITS OWN configured cap in the same row --
+    and checks whether even that best case clears signal_buy_threshold.
+
+    IMPORTANT, KNOWN GAP -- this does NOT catch ma_crossover's own later
+    (v97/commit f35dc09) incident: that one wasn't an RRR problem (RRR=2.0
+    gave a mathematically-reachable 66.7 best case) -- it was
+    ma_crossover_strength_cap_pct (2.0%) calibrated far above what real
+    Signal_Strength_Pct data ever produces (max observed 1.24% across 584
+    real crossovers), so the "every other dimension can reach its own cap"
+    assumption here was true on paper but false against real data. Catching
+    THAT class needs a separate, per-strategy, DATA-driven check (comparing
+    each *_cap_pct field against real historical percentiles of its own
+    column) -- out of scope here, which only covers the RRR term.
+
+    Mirrors add_*_trade_score()'s own arithmetic directly rather than
+    calling those functions, since the RRR term's shape is identical across
+    every one of them -- only strategy="rsi" (add_trade_score itself) uses
+    the older 3-term, non-rescaled formula; every other strategy's
+    add_*_trade_score() rescales a 2-term (RRR + one other) blend to sum to
+    100.
+
+    Returns {"rrr", "best_case_score", "signal_buy_threshold",
+    "signal_strong_buy_threshold", "clears_buy_threshold",
+    "clears_strong_buy_threshold"}."""
+    rrr = (
+        round(config.atr_take_profit_multiplier / config.stop_loss_atr_multiplier, 2)
+        if config.stop_loss_atr_multiplier else 0.0
+    )
+    rrr_at_best = (
+        (min(rrr, config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+        if config.rrr_score_cap else 0.0
+    )
+
+    if strategy == "rsi":
+        # add_trade_score(): rrr_score + rsi_score + distance_score, no
+        # rescale -- every other term independently maxes out at its own
+        # weight in the best case (RSI at rsi_score_floor, Distance_to_Buy_Pct
+        # at 0, streak_penalty at 0).
+        best_case_score = rrr_at_best + config.rsi_score_weight + config.distance_score_weight
+    else:
+        # Every other add_*_trade_score(): rrr_score + [Distance_to_Buy_Pct
+        # or Signal_Strength_Pct]_score, rescaled to 100 -- a config whose
+        # weights already sum to 100 is unaffected, but this stays correct
+        # even if a search or hand-edit changes that split.
+        total_weight = config.rrr_score_weight + config.distance_score_weight
+        rescale = (100.0 / total_weight) if total_weight > 0 else 0.0
+        best_case_score = (rrr_at_best + config.distance_score_weight) * rescale
+
+    return {
+        "rrr": rrr,
+        "best_case_score": round(best_case_score, 2),
+        "signal_buy_threshold": config.signal_buy_threshold,
+        "signal_strong_buy_threshold": config.signal_strong_buy_threshold,
+        "clears_buy_threshold": best_case_score >= config.signal_buy_threshold,
+        "clears_strong_buy_threshold": best_case_score > config.signal_strong_buy_threshold,
+    }
+
+
+def find_live_config_for_strategy(strategy: str) -> tuple:
+    """Find whatever System_Config is actually live (real-capital or
+    tracked-only) for this exact strategy today, if any -- the single
+    primary "active" slot (storage.get_active_config_doc()) or one of the
+    per-strategy secondary/experimental versions (config_loader.
+    SECONDARY_STRATEGY_VERSIONS / EXPERIMENTAL_STRATEGY_VERSIONS).
+
+    Exists because every search's own holdout check has, until now, only
+    ever compared its winning candidate against swingtrade.DEFAULT_CONFIG --
+    a much weaker, less decision-relevant question than "does this beat
+    what's actually running." ma_crossover's own v55 search is a real
+    example of how misleading that gap can be: v55's own stored
+    holdout_metrics show it LOSING to DEFAULT_CONFIG on holdout (sharpe_like
+    0.112 -> -0.113), even though a separate, later real-vs-random check
+    confirmed v55 was a genuine, validated improvement over v51 -- the
+    config it was actually replacing, which is the comparison that mattered.
+
+    Returns (config, label) for the first live slot found whose own
+    params["strategy"] matches this strategy, or (None, None) if nothing is
+    live for it yet (e.g. momentum_rank, still experimental-only)."""
+    try:
+        active_doc = storage.get_active_config_doc()
+    except Exception:
+        active_doc = None
+    if active_doc and active_doc.get("params", {}).get("strategy") == strategy:
+        return swingtrade.TradingConfig.from_dict(active_doc["params"]), f"active v{active_doc['version']}"
+
+    for source_name, versions in (
+        ("secondary", config_loader.SECONDARY_STRATEGY_VERSIONS),
+        ("experimental", config_loader.EXPERIMENTAL_STRATEGY_VERSIONS),
+    ):
+        for label, version in versions.items():
+            try:
+                doc = storage.get_config_by_version(version)
+            except Exception:
+                doc = None
+            if doc and doc.get("params", {}).get("strategy") == strategy:
+                return swingtrade.TradingConfig.from_dict(doc["params"]), f"{label} v{version} ({source_name})"
+
+    return None, None
+
+
 def build_objective(
     ticker_data: dict, market_data: pd.DataFrame, folds: list, end: pd.Timestamp, half_life_days: float,
     sector_lookup: dict[str, str], strategy: str = "rsi", max_workers: int | None = None,
@@ -734,6 +943,7 @@ def build_objective(
     min_win_rate: float | None = None,
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
+    momentum_panel: pd.DataFrame | None = None,
 ):
     """`multi_objective=False` (default) is byte-for-byte the original
     single-scalar-objective behavior -- unchanged, so every existing script/
@@ -791,7 +1001,23 @@ def build_objective(
     partner-selection/spread-zscore mechanism (improvements.txt item 83) --
     threaded straight through to run_walk_forward() the same way
     sector_data is. None (default) means every trial's Pair_Signal always
-    reads False."""
+    reads False.
+
+    `momentum_panel` (optional, a wide DataFrame -- dates x tickers -- of
+    every ticker's own Close price, built ONCE from the full ticker
+    universe in main()) backs the "momentum_rank" strategy. Deliberately
+    passed UN-ranked, unlike pair_price_panels: momentum_lookback_days is
+    itself one of this strategy's search dimensions, and it feeds directly
+    into the cross-sectional RANK computation (swingtrade.compute_momentum_rank_frame()),
+    not just a per-ticker gate threshold -- so the actual rank frame is
+    recomputed fresh, inside objective(), from each trial's own sampled
+    momentum_lookback_days, then threaded through run_walk_forward() the
+    same way pair_price_panels is (both the sequential path and the
+    parallel ProcessPoolExecutor initargs, since this strategy's entire
+    signal depends on it). Precomputing the ranking once with a fixed
+    lookback before the search started would silently make that whole
+    search dimension a no-op. None (default) means every trial's
+    Momentum_Signal always reads False."""
     def objective(trial: optuna.Trial):
         # Shared by every strategy branch below -- hoisted out of the
         # per-strategy dicts (used to be 7 duplicated independent-sampling
@@ -954,6 +1180,17 @@ def build_objective(
                 "atr_take_profit_multiplier": atr_take_profit_multiplier,
                 "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
+        elif strategy == "momentum_rank":
+            params = {
+                "momentum_lookback_days": trial.suggest_int(
+                    "momentum_lookback_days", *MOMENTUM_LOOKBACK_DAYS_RANGE
+                ),
+                "momentum_top_percentile_min": trial.suggest_float(
+                    "momentum_top_percentile_min", *MOMENTUM_TOP_PERCENTILE_MIN_RANGE
+                ),
+                "atr_take_profit_multiplier": atr_take_profit_multiplier,
+                "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
+            }
         else:
             params = {
                 "insider_lookback_days": trial.suggest_int(
@@ -975,10 +1212,22 @@ def build_objective(
             **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": strategy, **params,
         })
 
+        # Recomputed fresh per trial from this trial's OWN sampled
+        # momentum_lookback_days -- see momentum_panel's own docstring for
+        # why a single, pre-search rank frame would silently defeat this
+        # search dimension. Cheap: compute_momentum_rank_frame() is a
+        # single vectorized pct_change+rank over the whole (already
+        # in-memory) panel, done once per trial, not once per ticker/fold.
+        trial_momentum_rank_frame = (
+            swingtrade.compute_momentum_rank_frame(momentum_panel, candidate.momentum_lookback_days)
+            if momentum_panel is not None else None
+        )
+
         fold_results = swingtrade.run_walk_forward(
             ticker_data, market_data, folds, candidate, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=strategy, max_workers=max_workers,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
+            momentum_rank_frame=trial_momentum_rank_frame,
         )
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
@@ -1063,7 +1312,7 @@ def main():
         # would silently see insider_purchases=None, Insider_Buy_Signal
         # always False, and every trial would hit UNDER_SAMPLED_PENALTY
         # with zero real signals. Add that threading before enabling this.
-        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout", "ma_crossover", "pairs"],
+        choices=["rsi", "breakout", "pullback", "breakout_retest", "week52_high", "momentum_burst", "squeeze_breakout", "ma_crossover", "pairs", "momentum_rank"],
         default="rsi",
         help="Which signal to search parameters for. Default: rsi.",
     )
@@ -1230,6 +1479,32 @@ def main():
                 continue
             pair_price_panels[sector] = pd.DataFrame({m: ticker_data[m]["Close"] for m in members})
 
+    # Cross-sectional momentum-rank universe-wide RAW Close-price panel --
+    # no new network fetch, every ticker's OHLCV is already in ticker_data.
+    # Deliberately kept UN-ranked here (unlike pair_price_panels, which
+    # needs no per-trial recomputation): momentum_lookback_days is itself
+    # one of the search dimensions below, and it feeds directly into the
+    # RANK computation, not just a per-ticker gate threshold the way
+    # pairs_lookback_days does inside precompute_pairs_frame(). Pre-ranking
+    # once with a fixed lookback before the search starts would silently
+    # make that whole search dimension a no-op -- every trial would score
+    # the identical percentile data regardless of what lookback Optuna
+    # proposed. See momentum_rank_frame_for() below: the actual rank frame
+    # is (re)computed fresh from this same panel, once per config that
+    # actually gets scored (baseline, each trial, and the final candidate),
+    # never once for the whole search. Built from the FULL ticker set (not
+    # just tune_ticker_data), matching pair_price_panels' own precedent and
+    # the confirmed design decision for this strategy: no forward-looking
+    # leak results, since ranking only ever uses past prices.
+    momentum_panel: pd.DataFrame | None = None
+    if args.strategy == "momentum_rank":
+        momentum_panel = pd.DataFrame({t: ticker_data[t]["Close"] for t in ticker_data})
+
+    def momentum_rank_frame_for(cfg: swingtrade.TradingConfig) -> pd.DataFrame | None:
+        if momentum_panel is None:
+            return None
+        return swingtrade.compute_momentum_rank_frame(momentum_panel, cfg.momentum_lookback_days)
+
     earnings_data = {}
     if args.with_catalyst and args.strategy == "squeeze_breakout":
         print(f"\nFetching historical earnings dates for {len(ticker_data)} ticker(s)...")
@@ -1267,6 +1542,7 @@ def main():
         tune_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
         sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
         sector_data=sector_data, pair_price_panels=pair_price_panels,
+        momentum_rank_frame=momentum_rank_frame_for(baseline_config),
     )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
@@ -1305,6 +1581,7 @@ def main():
             min_effective_trade_count=min_effective_trade_count,
             min_win_rate=min_win_rate,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
+            momentum_panel=momentum_panel,
         ),
         n_trials=args.trials, show_progress_bar=False,
     )
@@ -1414,12 +1691,37 @@ def main():
         args.strategy, best.params, args.pin_atr_take_profit_multiplier, args.pin_stop_loss_atr_multiplier,
     )
 
+    # RRR-vs-scoring-ceiling check (2026-08-24, validation-pipeline point 9)
+    # -- automatic now, not a manual step someone has to remember. See
+    # rrr_scoring_ceiling_check()'s own docstring for the exact bug this
+    # catches (breakout v19, breakout_retest v27, week52_high v28 were all
+    # promoted with a Buy tier structurally unreachable by any row under
+    # that config -- pure arithmetic, no simulation needed) and its own
+    # KNOWN GAP note (this does NOT catch ma_crossover's later, different
+    # v97 incident -- a data-calibration problem in a non-RRR cap, not this).
+    print()
+    print("=== RRR-vs-scoring-ceiling check (can this config's Buy tier ever fire?) ===")
+    baseline_ceiling = rrr_scoring_ceiling_check(args.strategy, baseline_config)
+    candidate_ceiling = rrr_scoring_ceiling_check(args.strategy, candidate_config)
+    print(f"  BASELINE  (DEFAULT_CONFIG): RRR={baseline_ceiling['rrr']}, best-case Trade_Score="
+          f"{baseline_ceiling['best_case_score']} vs signal_buy_threshold={baseline_ceiling['signal_buy_threshold']} "
+          f"-- {'OK, reachable' if baseline_ceiling['clears_buy_threshold'] else '[WARN] UNREACHABLE'}")
+    print(f"  CANDIDATE (winning trial):  RRR={candidate_ceiling['rrr']}, best-case Trade_Score="
+          f"{candidate_ceiling['best_case_score']} vs signal_buy_threshold={candidate_ceiling['signal_buy_threshold']} "
+          f"-- {'OK, reachable' if candidate_ceiling['clears_buy_threshold'] else '[WARN] UNREACHABLE'}")
+    if not candidate_ceiling["clears_buy_threshold"]:
+        print("  [WARN] This candidate's Buy tier is STRUCTURALLY UNREACHABLE -- even a row with a "
+              "perfect score on every other dimension can never clear signal_buy_threshold under this "
+              "tp/sl pair. Do not promote without raising rrr_score_cap, lowering signal_buy_threshold, "
+              "or picking a tp/sl pair whose ratio actually clears rrr_score_cap.")
+
     holdout_metrics = {}
     if holdout_ticker_data:
         holdout_baseline_results = swingtrade.run_walk_forward(
             holdout_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
+            momentum_rank_frame=momentum_rank_frame_for(baseline_config),
         )
         holdout_baseline_metrics = summarize_weighted(holdout_baseline_results, end, args.recency_half_life_days)
 
@@ -1427,6 +1729,7 @@ def main():
             holdout_ticker_data, market_data, folds, candidate_config, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
+            momentum_rank_frame=momentum_rank_frame_for(candidate_config),
         )
         holdout_candidate_metrics = summarize_weighted(holdout_candidate_results, end, args.recency_half_life_days)
 
@@ -1443,6 +1746,37 @@ def main():
             print("  [WARN] Holdout effective_trade_count is thin -- treat this validation as a weak "
                   "signal, not proof either way. Consider a lower --holdout-frac or more tickers.")
 
+        # Live-config comparison (2026-08-24) -- DEFAULT_CONFIG is a weak,
+        # arbitrary reference point; "does this beat whatever's actually
+        # running" is the decision that matters. See
+        # find_live_config_for_strategy()'s docstring for why the
+        # DEFAULT_CONFIG-only comparison above can be actively misleading
+        # (ma_crossover's own v55 case).
+        live_config, live_label = find_live_config_for_strategy(args.strategy)
+        live_comparison = None
+        if live_config is not None:
+            holdout_live_results = swingtrade.run_walk_forward(
+                holdout_ticker_data, market_data, folds, live_config, earnings_data=earnings_data,
+                sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
+                sector_data=sector_data, pair_price_panels=pair_price_panels,
+                momentum_rank_frame=momentum_rank_frame_for(live_config),
+            )
+            holdout_live_metrics = summarize_weighted(holdout_live_results, end, args.recency_half_life_days)
+            print(f"  LIVE ({live_label}) on holdout: {holdout_live_metrics}")
+            live_sharpe = holdout_live_metrics.get("sharpe_like")
+            candidate_sharpe = holdout_candidate_metrics.get("sharpe_like")
+            if live_sharpe is not None and candidate_sharpe is not None:
+                if candidate_sharpe > live_sharpe:
+                    print(f"  Candidate ({candidate_sharpe}) beats what's actually live ({live_label}, "
+                          f"{live_sharpe}) on holdout -- the decision-relevant comparison, not just vs DEFAULT_CONFIG.")
+                else:
+                    print(f"  [WARN] Candidate ({candidate_sharpe}) does NOT beat what's actually live "
+                          f"({live_label}, {live_sharpe}) on holdout, even if it beat DEFAULT_CONFIG above. "
+                          "Beating an arbitrary default is not a promotion case on its own.")
+            live_comparison = {"label": live_label, "metrics": holdout_live_metrics}
+        else:
+            print(f"  (no live config found for strategy={args.strategy} -- skipping live-config comparison)")
+
         holdout_metrics = {
             "holdout_tickers": sorted(holdout_tickers),
             "tune_tickers": sorted(tune_tickers),
@@ -1450,10 +1784,52 @@ def main():
             "holdout_seed": args.holdout_seed,
             "baseline": holdout_baseline_metrics,
             "candidate": holdout_candidate_metrics,
+            "live_comparison": live_comparison,
         }
         if args.multi_objective:
             holdout_metrics["baseline_max_drawdown"] = holdout_baseline_dd
             holdout_metrics["candidate_max_drawdown"] = holdout_candidate_dd
+
+    # Real-vs-random ratio check (2026-08-24) -- automatic, standing part of
+    # every search's own report now, not something that has to be
+    # separately remembered and run by hand afterward. See
+    # real_vs_random_ratio_check()'s own docstring for the exact confound
+    # this catches (a tuned candidate's higher sharpe_like coming from a
+    # payoff-bracket SHAPE that inflates any entry timing, not from
+    # genuinely better timing) -- found ad hoc for week52_high's own
+    # original tune and again for momentum_rank's first tune before this
+    # existed as a standing check.
+    print()
+    print("=== Real-vs-random ratio check (single window, same methodology as "
+          "benchmark_random_entry.py) ===")
+    print("Isolates whether tuning found genuinely better TIMING or just a payoff-bracket "
+          "shape that inflates ANY entry's return, real or random -- watch the GAP (REAL "
+          "sharpe_like minus RANDOM sharpe_like), not the raw REAL number alone.")
+    baseline_rvr = real_vs_random_ratio_check(
+        args.strategy, baseline_config, ticker_data, market_data, start, end, sector_lookup,
+        earnings_data=earnings_data, sector_data=sector_data, pair_price_panels=pair_price_panels,
+        momentum_panel=momentum_panel,
+    )
+    candidate_rvr = real_vs_random_ratio_check(
+        args.strategy, candidate_config, ticker_data, market_data, start, end, sector_lookup,
+        earnings_data=earnings_data, sector_data=sector_data, pair_price_panels=pair_price_panels,
+        momentum_panel=momentum_panel,
+    )
+    print(f"  BASELINE  ({args.strategy}, DEFAULT_CONFIG): REAL sharpe_like={baseline_rvr['real'].get('sharpe_like')} "
+          f"vs RANDOM sharpe_like={baseline_rvr['random'].get('sharpe_like')}  (gap={baseline_rvr['gap']})")
+    print(f"  CANDIDATE ({args.strategy}, winning trial):  REAL sharpe_like={candidate_rvr['real'].get('sharpe_like')} "
+          f"vs RANDOM sharpe_like={candidate_rvr['random'].get('sharpe_like')}  (gap={candidate_rvr['gap']})")
+    if baseline_rvr["gap"] is not None and candidate_rvr["gap"] is not None:
+        if candidate_rvr["gap"] <= baseline_rvr["gap"]:
+            print(f"  [WARN] Candidate's real-vs-random GAP ({candidate_rvr['gap']:.4f}) did NOT improve on "
+                  f"baseline's ({baseline_rvr['gap']:.4f}) -- this candidate's higher raw sharpe_like may be "
+                  "substantially a payoff-bracket (RRR) shape effect, not genuinely better timing. Do not "
+                  "treat this candidate as a clear improvement over the untuned defaults on that basis alone.")
+        else:
+            print(f"  Candidate's real-vs-random GAP ({candidate_rvr['gap']:.4f}) improved on baseline's "
+                  f"({baseline_rvr['gap']:.4f}) -- a real, if modest, sign the tuning found genuine timing "
+                  "value, not just a reshaped payoff bracket.")
+    real_vs_random_check = {"baseline": baseline_rvr, "candidate": candidate_rvr}
 
     best_sharpe = best.values[0] if args.multi_objective else best.value
     notes = (
@@ -1471,6 +1847,27 @@ def main():
             f"{holdout_metrics['baseline'].get('sharpe_like')}, candidate sharpe_like="
             f"{holdout_metrics['candidate'].get('sharpe_like')}."
         )
+        if holdout_metrics.get("live_comparison"):
+            lc = holdout_metrics["live_comparison"]
+            notes += (
+                f" vs LIVE ({lc['label']}) sharpe_like={lc['metrics'].get('sharpe_like')}"
+                f"{' [did NOT beat live]' if (lc['metrics'].get('sharpe_like') or 0) >= (holdout_metrics['candidate'].get('sharpe_like') or 0) else ''}."
+            )
+    notes += (
+        f" Real-vs-random gap: baseline={baseline_rvr['gap']}, candidate={candidate_rvr['gap']}"
+        f"{' (WARNING: candidate gap did not improve on baseline -- likely a payoff-bracket effect, not genuine timing improvement)' if baseline_rvr['gap'] is not None and candidate_rvr['gap'] is not None and candidate_rvr['gap'] <= baseline_rvr['gap'] else ''}."
+    )
+    notes += (
+        f" RRR ceiling: baseline best-case Trade_Score={baseline_ceiling['best_case_score']} "
+        f"({'reachable' if baseline_ceiling['clears_buy_threshold'] else 'UNREACHABLE'}), "
+        f"candidate best-case Trade_Score={candidate_ceiling['best_case_score']} "
+        f"({'reachable' if candidate_ceiling['clears_buy_threshold'] else 'UNREACHABLE'})."
+    )
+    holdout_metrics = {
+        **holdout_metrics,
+        "real_vs_random_check": real_vs_random_check,
+        "rrr_ceiling_check": {"baseline": baseline_ceiling, "candidate": candidate_ceiling},
+    }
     version = storage.write_candidate(
         candidate_config.to_dict(), notes=notes, metrics=best_metrics, holdout_metrics=holdout_metrics
     )

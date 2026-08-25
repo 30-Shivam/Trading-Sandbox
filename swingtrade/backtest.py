@@ -75,6 +75,7 @@ from .levels import (
     ma_crossover_levels_from_frame,
     market_uptrend_from_frame,
     momentum_burst_levels_from_frame,
+    momentum_levels_from_frame,
     precompute_adx_trend_entry_frame,
     precompute_breakout_frame,
     precompute_breakout_retest_frame,
@@ -82,6 +83,7 @@ from .levels import (
     precompute_llm_strategy_frame,
     precompute_ma_crossover_frame,
     precompute_momentum_burst_frame,
+    precompute_momentum_frame,
     precompute_pairs_frame,
     precompute_pullback_frame,
     precompute_rsi_frame,
@@ -157,7 +159,14 @@ def _find_entry_fill(buy_price: float, bars_after_signal: pd.DataFrame, max_wait
     intraday touch (Low <= buy_price) fills at the limit exactly. Stops
     searching after `max_wait_days` -- a resting order nobody would leave
     open forever. Returns (fill_date, fill_price) or None if never filled
-    within the window (not a real trade -- correctly excluded, not forced)."""
+    within the window (not a real trade -- correctly excluded, not forced).
+
+    Also re-exported publicly as swingtrade.find_entry_fill (2026-08-24) --
+    settle_trades.py's live nightly settlement job uses this exact function
+    to check whether an unconfirmed signal's resting limit was ever actually
+    touched before grading it, instead of (the prior bug) assuming every
+    signal filled at its literal buy_price on day one regardless of real
+    price action. See settle_trades.py's own settle_one() docstring."""
     for wait_days, (bar_date, bar) in enumerate(bars_after_signal.iterrows(), start=1):
         if wait_days > max_wait_days:
             break
@@ -1876,6 +1885,209 @@ def simulate_random_pairs_entries(
     return trades
 
 
+def simulate_momentum_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+    rank_column: pd.Series | None = None,
+) -> list[dict]:
+    """Cross-sectional MOMENTUM RANK counterpart to simulate_signals()/
+    simulate_breakout_signals()/.../simulate_pairs_signals() -- buys a
+    ticker whose trailing-return percentile rank (across the WHOLE
+    watchlist, not just its own sector) clears config.momentum_top_percentile_min,
+    in a confirmed macro uptrend. See swingtrade/config.py's momentum_*
+    fields and swingtrade/levels.compute_momentum_rank_frame()/
+    precompute_momentum_frame() for the full mechanism.
+
+    Same no-look-ahead discipline, same entry-timing realism.
+    config.momentum_entry_fill selects the fill model (same "limit" vs.
+    "next_open" toggle every other strategy has). Same ATR-multiple
+    stop/target sizing.
+
+    `rank_column` should be THIS ticker's own column already sliced from a
+    shared universe-wide rank frame (see
+    swingtrade.levels.compute_momentum_rank_frame()) -- caller's job to
+    build ONCE for the whole universe and slice per ticker (unlike pairs'
+    peer_prices, which are pre-filtered per-sector by the caller but the
+    correlation math itself still runs per ticker; here the caller has
+    already done ALL the cross-ticker work). Without it, Momentum_Signal is
+    always False (no percentile data, degrades to "never fires," same
+    convention as every other optional-data-dependent strategy)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_momentum_frame(ohlcv, rank_column, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = momentum_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        if not levels["Momentum_Signal"]:
+            continue
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.momentum_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Momentum_Rank",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_momentum_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_momentum_signals() -- same idea
+    as the other simulate_random_*_entries() functions, using this
+    strategy's own gates (macro uptrend, liquidity via
+    momentum_levels_from_frame) and the SAME config.momentum_entry_fill-
+    selected fill mechanic, so it isolates whether cross-sectional
+    momentum-rank TIMING adds value over a random day using the identical
+    Buy_Price formula (that day's own Close) and entry/exit structure.
+    `n_trades` should be simulate_momentum_signals()'s real signal count
+    for this ticker/window, so trade volume is matched. This is the
+    critical validation gate for this strategy -- see
+    benchmark_random_entry.py.
+
+    Deliberately does NOT take `rank_column` -- called with rank_column=None,
+    so Momentum_Signal is always False, but the candidate pool is every day
+    that passed the shared macro/liquidity gates regardless (same "answers
+    whether TIMING adds value, not whether this filter helps" precedent
+    every other random baseline follows -- see
+    simulate_random_pairs_entries()'s identical reasoning)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_momentum_frame(ohlcv, None, config)
+
+    candidates = []  # (as_of, buy_price, atr, catalyst_warning) for every day that passed the macro/liquidity gates, momentum signal or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = momentum_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr, catalyst_warning in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.momentum_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_Momentum_Rank",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": catalyst_warning,
+            **result,
+        })
+
+    return trades
+
+
 def simulate_insider_buying_signals(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -2711,6 +2923,7 @@ def run_backtest(
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     insider_data: dict[str, pd.DataFrame] | None = None,
+    momentum_rank_frame: pd.DataFrame | None = None,
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
@@ -2766,7 +2979,23 @@ def run_backtest(
     NOTE: not yet threaded through run_walk_forward()'s multiprocessing
     path (ProcessPoolExecutor initargs) -- only this single-call sequential
     path -- since no Optuna tuning pass for this strategy exists yet; add
-    that threading if/when one does."""
+    that threading if/when one does.
+
+    `momentum_rank_frame` (optional, a wide DataFrame -- dates x tickers --
+    of every ticker's own trailing-return percentile, see
+    swingtrade.levels.compute_momentum_rank_frame()) backs the
+    "momentum_rank" strategy. Unlike `pair_price_panels` (sector-
+    partitioned, resolved per ticker by dropping that ticker's own column),
+    this is ONE universe-wide frame -- resolved per ticker by slicing out
+    that ticker's own column (a plain Series), since the cross-ticker
+    ranking work is already done by the caller. `None` (default) means no
+    percentile data at all -- Momentum_Signal then always reads False, same
+    "missing optional data never fabricates a signal" convention as
+    sector_data/pair_price_panels. THREADED THROUGH run_walk_forward()'s
+    multiprocessing path (ProcessPoolExecutor initargs) from day one -- see
+    the insider_data note immediately above for why forgetting this for a
+    strategy whose ENTIRE signal depends on the cross-ticker data would be
+    a silent, not-a-crash failure in every parallel Optuna trial."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     sector_data = sector_data or {}
@@ -2781,6 +3010,11 @@ def run_backtest(
             pair_panel.drop(columns=[ticker]) if pair_panel is not None and ticker in pair_panel.columns else None
         )
         insider_purchases = insider_data.get(ticker)
+        rank_column = (
+            momentum_rank_frame[ticker]
+            if momentum_rank_frame is not None and ticker in momentum_rank_frame.columns
+            else None
+        )
         if strategy == "rsi":
             trades = simulate_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
@@ -2831,12 +3065,133 @@ def run_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector, insider_purchases=insider_purchases,
             )
+        elif strategy == "momentum_rank":
+            trades = simulate_momentum_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector, rank_column=rank_column,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
                 "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
-                "or 'insider_buying')"
+                "'insider_buying', or 'momentum_rank')"
+            )
+        all_trades.extend(trades)
+    return all_trades
+
+
+def run_random_backtest(
+    ticker_data: dict[str, pd.DataFrame],
+    market_data: pd.DataFrame,
+    window_start,
+    window_end,
+    real_trade_counts: dict[str, int],
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_data: dict[str, pd.DatetimeIndex] | None = None,
+    sector_lookup: dict[str, str] | None = None,
+    strategy: str = "rsi",
+) -> list[dict]:
+    """Matched-count RANDOM-entry counterpart to run_backtest() -- the ONE
+    shared dispatch table for every simulate_random_*_entries() function,
+    reused by both benchmark_random_entry.py's own real-vs-random
+    comparison and optimize.py's automatic real-vs-random ratio reporting
+    (2026-08-24), so this mapping is never duplicated a third time. This
+    codebase's own history has already been bitten twice by exactly this
+    class of bug (ingest.py's and dip_buy_analyzer.py's independently
+    hand-maintained _score_for_strategy() copies drifting out of sync when
+    a new strategy was added) -- a shared, single source of truth here is
+    a deliberate fix, not an accident of convenience.
+
+    For each ticker, fires exactly `real_trade_counts[ticker]` randomly-
+    chosen entries (matching that ticker's own real signal count under the
+    SAME config, so trade volume is never a confound) through the same
+    macro-uptrend/liquidity gates and entry-fill/stop-target mechanics as
+    the real strategy -- only WHICH DAY differs. `real_trade_counts` should
+    come from a prior run_backtest() call's own trade list (grouped by
+    ticker), same "count matched, single fixed seed reused per caller"
+    convention benchmark_random_entry.py's own loop already establishes.
+
+    Deliberately does NOT accept `sector_data`/`pair_price_panels`/
+    `momentum_rank_frame`/`insider_data` -- every simulate_random_*_entries()
+    function is deliberately called with peer_prices=None/rank_column=None/
+    insider_purchases=None/sector_ohlcv=None itself (confirmed directly
+    against benchmark_random_entry.py's own dispatch loop, which never
+    passes these to a random_fn call either): the random baseline answers
+    whether ENTRY TIMING adds value over the same underlying gates, not
+    whether a cross-ticker/sector/fundamental filter helps -- see e.g.
+    simulate_random_pairs_entries()'s own docstring for this exact
+    reasoning. `earnings_data` IS still honored, for the same 5 strategies
+    run_backtest() honors it for (squeeze_breakout/ma_crossover/pairs/
+    insider_buying/momentum_rank) -- Catalyst_Warning is a property of the
+    calendar date a trade lands on, not of which signal chose that date,
+    so it applies identically to a random entry."""
+    earnings_data = earnings_data or {}
+    sector_lookup = sector_lookup or {}
+    all_trades = []
+    for ticker, ohlcv in ticker_data.items():
+        sector = sector_lookup.get(ticker, "Unknown")
+        n_trades = real_trade_counts.get(ticker, 0)
+        if strategy == "rsi":
+            trades = simulate_random_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config, sector=sector,
+            )
+        elif strategy == "breakout":
+            trades = simulate_random_breakout_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config, sector=sector,
+            )
+        elif strategy == "pullback":
+            trades = simulate_random_pullback_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config, sector=sector,
+            )
+        elif strategy == "breakout_retest":
+            trades = simulate_random_breakout_retest_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config, sector=sector,
+            )
+        elif strategy == "week52_high":
+            trades = simulate_random_week52_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config, sector=sector,
+            )
+        elif strategy == "momentum_burst":
+            trades = simulate_random_momentum_burst_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config, sector=sector,
+            )
+        elif strategy == "squeeze_breakout":
+            trades = simulate_random_squeeze_breakout_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
+            )
+        elif strategy == "adx_trend_entry":
+            trades = simulate_random_adx_trend_entry_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config, sector=sector,
+            )
+        elif strategy == "ma_crossover":
+            trades = simulate_random_ma_crossover_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
+            )
+        elif strategy == "pairs":
+            trades = simulate_random_pairs_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
+            )
+        elif strategy == "insider_buying":
+            trades = simulate_random_insider_buying_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
+            )
+        elif strategy == "momentum_rank":
+            trades = simulate_random_momentum_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
+            )
+        else:
+            raise ValueError(
+                f"unknown strategy: {strategy!r} "
+                "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
+                "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
+                "'insider_buying', or 'momentum_rank')"
             )
         all_trades.extend(trades)
     return all_trades
@@ -3199,6 +3554,7 @@ def _run_fold_sequential(
     config: TradingConfig, earnings_data: dict, sector_lookup: dict, strategy: str,
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
+    momentum_rank_frame: pd.DataFrame | None = None,
 ) -> FoldResult:
     """The actual per-fold work, shared by both the sequential and
     parallel paths of run_walk_forward() -- one fold's in-sample and
@@ -3207,10 +3563,12 @@ def _run_fold_sequential(
     in_trades = run_backtest(
         ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config,
         earnings_data, sector_lookup, strategy, sector_data, pair_price_panels,
+        momentum_rank_frame=momentum_rank_frame,
     )
     out_trades = run_backtest(
         ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config,
         earnings_data, sector_lookup, strategy, sector_data, pair_price_panels,
+        momentum_rank_frame=momentum_rank_frame,
     )
     return FoldResult(
         fold=fold,
@@ -3242,31 +3600,46 @@ _worker_sector_data: dict[str, pd.DataFrame] | None = None
 # (improvements.txt item 83). None means no peer data was supplied at all,
 # every worker's Pair_Signal then always reads False.
 _worker_pair_price_panels: dict[str, pd.DataFrame] | None = None
+# Cross-sectional momentum-rank strategy's universe-wide percentile frame
+# (dates x tickers, see swingtrade.levels.compute_momentum_rank_frame()) --
+# same "loaded once per worker, not once per fold" treatment as
+# pair_price_panels above. THIS ONE IS NOT OPTIONAL TO THREAD THROUGH THE
+# PARALLEL PATH THE WAY insider_data currently is: unlike an add-on filter,
+# a ticker's ENTIRE momentum_rank signal depends on this frame, so a worker
+# that never received it would silently produce zero signals in every
+# trial (the exact failure mode flagged in optimize.py's own "insider_buying
+# deliberately not included yet" comment) -- None means no percentile data
+# was supplied at all, every worker's Momentum_Signal then always reads
+# False.
+_worker_momentum_rank_frame: pd.DataFrame | None = None
 
 
 def _init_worker(
     ticker_data: dict[str, pd.DataFrame], market_data: pd.DataFrame,
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
+    momentum_rank_frame: pd.DataFrame | None = None,
 ) -> None:
     global _worker_ticker_data, _worker_market_data, _worker_sector_data, _worker_pair_price_panels
+    global _worker_momentum_rank_frame
     _worker_ticker_data = ticker_data
     _worker_market_data = market_data
     _worker_sector_data = sector_data
     _worker_pair_price_panels = pair_price_panels
+    _worker_momentum_rank_frame = momentum_rank_frame
 
 
 def _run_fold_worker(
     fold: Fold, config: TradingConfig, earnings_data: dict, sector_lookup: dict, strategy: str,
 ) -> FoldResult:
     """Same work as _run_fold_sequential(), but reads ticker_data/market_data/
-    sector_data/pair_price_panels from this worker process's own module-level
-    copy (set once by _init_worker()) instead of taking them as arguments --
-    only `fold` and `config` (small, cheap to pickle) actually cross the
-    process boundary per task."""
+    sector_data/pair_price_panels/momentum_rank_frame from this worker
+    process's own module-level copy (set once by _init_worker()) instead of
+    taking them as arguments -- only `fold` and `config` (small, cheap to
+    pickle) actually cross the process boundary per task."""
     return _run_fold_sequential(
         fold, _worker_ticker_data, _worker_market_data, config, earnings_data, sector_lookup, strategy,
-        _worker_sector_data, _worker_pair_price_panels,
+        _worker_sector_data, _worker_pair_price_panels, _worker_momentum_rank_frame,
     )
 
 
@@ -3282,6 +3655,7 @@ def run_walk_forward(
     max_workers: int | None = None,
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
+    momentum_rank_frame: pd.DataFrame | None = None,
 ) -> list[FoldResult]:
     """Run the backtest across every fold, in-sample and out-of-sample
     separately. Optuna (Phase 5) evaluates a candidate config by scoring it
@@ -3324,12 +3698,24 @@ def run_walk_forward(
     partner-selection/spread-zscore mechanism (improvements.txt item 83) --
     threaded through identically to sector_data above, both paths. None
     (default) means no peer data at all, identical to every caller from
-    before this parameter existed."""
+    before this parameter existed.
+
+    `momentum_rank_frame` (optional, a wide DataFrame -- dates x tickers --
+    of every ticker's own trailing-return percentile, see
+    swingtrade.levels.compute_momentum_rank_frame()) backs the
+    "momentum_rank" strategy -- threaded through BOTH paths (sequential
+    directly, parallel via the pool initializer's `initargs`, same
+    treatment as pair_price_panels) since, unlike insider_data, this
+    strategy's entire signal depends on it -- forgetting the parallel
+    thread would mean every Optuna trial run with `parallel=True` silently
+    sees no percentile data and produces zero signals. None (default) means
+    no percentile data at all, identical to every caller from before this
+    parameter existed."""
     if not parallel or len(folds) <= 1:
         return [
             _run_fold_sequential(
                 fold, ticker_data, market_data, config, earnings_data, sector_lookup, strategy, sector_data,
-                pair_price_panels,
+                pair_price_panels, momentum_rank_frame,
             )
             for fold in folds
         ]
@@ -3339,7 +3725,7 @@ def run_walk_forward(
 
     with ProcessPoolExecutor(
         max_workers=max_workers, initializer=_init_worker,
-        initargs=(ticker_data, market_data, sector_data, pair_price_panels),
+        initargs=(ticker_data, market_data, sector_data, pair_price_panels, momentum_rank_frame),
     ) as executor:
         futures = [
             executor.submit(_run_fold_worker, fold, config, earnings_data, sector_lookup, strategy)
