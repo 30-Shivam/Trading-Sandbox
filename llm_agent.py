@@ -179,6 +179,7 @@ MAX_OUTPUT_TOKENS = 400
 VALID_DECISIONS = ("Buy", "Hold", "Avoid")
 VALID_SENTIMENTS = ("Bullish", "Bearish", "Neutral")
 VALID_HOLD_ACTIONS = ("Hold For More", "Take Profit")
+VALID_STOP_ACTIONS = ("Cut Loss", "Hold Through")
 
 # Lower value = more conservative -- the call _resolve_dual() picks when
 # the two providers disagree. Extends evaluate_holding()'s own existing
@@ -187,6 +188,10 @@ VALID_HOLD_ACTIONS = ("Hold For More", "Take Profit")
 # uncertainty.
 CONSERVATIVE_ORDER_DECISION = {"Avoid": 0, "Hold": 1, "Buy": 2}
 CONSERVATIVE_ORDER_HOLD_ACTION = {"Take Profit": 0, "Hold For More": 1}
+# "Cut Loss" (mechanical-safe) wins a disagreement, same pattern as the two
+# orders above -- see evaluate_stop_breach()'s own docstring for why this
+# one is intentionally an even stricter default than CONSERVATIVE_ORDER_HOLD_ACTION.
+CONSERVATIVE_ORDER_STOP_ACTION = {"Cut Loss": 0, "Hold Through": 1}
 
 
 def _gemini_available() -> bool:
@@ -287,6 +292,50 @@ def _parse_holding_response(text: str) -> dict | None:
 
     action = data.get("action")
     if action not in VALID_HOLD_ACTIONS:
+        return None
+
+    confidence = data.get("confidence")
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= confidence <= 100):
+        return None
+
+    rationale = data.get("rationale")
+    if not isinstance(rationale, str) or not rationale.strip():
+        return None
+
+    news_sentiment = data.get("news_sentiment")
+    if news_sentiment not in VALID_SENTIMENTS:
+        return None
+
+    return {
+        "action": action,
+        "confidence": confidence,
+        "rationale": rationale.strip(),
+        "news_sentiment": news_sentiment,
+    }
+
+
+def _parse_stop_breach_response(text: str) -> dict | None:
+    """Parse and validate a model's JSON response for evaluate_stop_breach()
+    -- same validation shape as _parse_holding_response(), just
+    VALID_STOP_ACTIONS instead of VALID_HOLD_ACTIONS. Kept as its own
+    function for the same reason _parse_holding_response() is its own
+    function rather than a parameter: the schemas are semantically
+    distinct (a hold-past-target judgment vs. a hold-through-a-loss
+    judgment), not interchangeable. Returns None (never raises) on any
+    malformed shape."""
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    action = data.get("action")
+    if action not in VALID_STOP_ACTIONS:
         return None
 
     confidence = data.get("confidence")
@@ -716,6 +765,70 @@ def _build_holding_prompt(ticker: str, context: dict) -> str:
     return prompt
 
 
+def _build_stop_breach_prompt(ticker: str, context: dict) -> str:
+    """Build the prompt for evaluate_stop_breach() -- the LOSS-side
+    counterpart to _build_holding_prompt()'s "hold past target" question.
+    This position has BREACHED its mechanical ATR stop-loss (see
+    review_holding()); the question is whether the evidence supports
+    holding through for a genuine recovery, or cutting the loss now as
+    the mechanical system's default says. Expected `context` keys:
+    `avg_cost`, `last_close`, `stop_loss` (the level that was breached),
+    `unrealized_pnl_pct`, `headlines` (list[str]), and optionally
+    `macro`/`qualitative` -- same shapes as _build_holding_prompt()'s
+    context, reused directly.
+
+    Deliberately a STRICTER default-to-caution bar than
+    _build_holding_prompt()'s already-cautious "default to Take Profit"
+    framing: a missed extra gain on a winner is only opportunity cost, but
+    holding through a genuine breakdown risks real, compounding capital
+    loss -- the entire reason a mechanical stop-loss exists is to prevent
+    exactly this "hope it recovers" reasoning. The prompt text below says
+    so explicitly, not left for the model to infer on its own."""
+    headlines = context.get("headlines") or []
+    trimmed_headlines = headlines[:MAX_HEADLINES]
+    headline_block = "\n".join(f"- {h}" for h in trimmed_headlines) if trimmed_headlines else "(none available)"
+
+    macro = context.get("macro")
+    macro_block = ""
+    if macro:
+        macro_headlines = (macro.get("headlines") or [])[:MAX_MACRO_HEADLINES]
+        macro_headline_block = (
+            "\n".join(f"- {h}" for h in macro_headlines) if macro_headlines else "(none available)"
+        )
+        macro_block = (
+            f"\n\nBroader market backdrop today (shared across every position reviewed, distinct "
+            f"from {ticker}'s own news above): VIX={macro.get('vix')} "
+            f"(change {macro.get('vix_change_pct')}%), S&P-level macro headlines:\n{macro_headline_block}"
+        )
+
+    qualitative_block = _build_qualitative_block(ticker, context.get("qualitative"))
+
+    prompt = (
+        f"A trading position in {ticker} was opened at avg_cost={context.get('avg_cost')} and has "
+        f"just BREACHED its predetermined mechanical stop-loss: Last_Close={context.get('last_close')} "
+        f"is at or below Stop_Loss={context.get('stop_loss')} "
+        f"(unrealized P&L: {context.get('unrealized_pnl_pct')}%). The mechanical system's default "
+        f"action is to sell now and cut the loss. Its {len(trimmed_headlines)} most recent news "
+        f"headlines:\n{headline_block}"
+        f"{macro_block}{qualitative_block}\n\n"
+        "Given all of this, does the evidence support holding THROUGH this breach for a genuine "
+        "recovery -- a specific, identifiable reason this drop is temporary or an overreaction (a "
+        "broad market-wide selloff unrelated to this company, a clearly overdone reaction to minor "
+        "news) -- or does it make more sense to cut the loss now (no specific reason to expect "
+        "recovery, or the breach reflects real company-specific deterioration)? Be STRICTER here "
+        "than you would for a profitable position: a missed gain only costs opportunity, but holding "
+        "through a real breakdown risks further, compounding capital loss -- that asymmetry is "
+        "exactly why this stop-loss exists. Respond ONLY with a JSON object matching exactly this "
+        'shape: {"action": "Hold Through" | "Cut Loss", "confidence": <integer 0-100>, '
+        '"news_sentiment": "Bullish" | "Bearish" | "Neutral", "rationale": "<2-3 plain-language '
+        'sentences explaining the call>"}. This is a genuine second opinion on an ALREADY-LOSING '
+        'position that hit its risk limit, not a fresh buy/sell screen -- default to "Cut Loss" '
+        "unless the evidence for a genuine, specific recovery reason is real, not just generic "
+        'optimism that "it might bounce back."'
+    )
+    return prompt
+
+
 def _build_meta_synthesis_prompt(ticker: str, context: dict) -> str:
     """Prompt for evaluate_meta_synthesis() -- a DIFFERENT question from
     every other prompt-builder in this file: given MULTIPLE methodologies'
@@ -1110,6 +1223,44 @@ def evaluate_holding(ticker: str, context: dict) -> dict | None:
     secondary_result, secondary_provider_name = call_secondary(prompt, parse_fn=_parse_holding_response)
     return _resolve_dual(
         gemini_result, secondary_result, secondary_provider_name, "action", CONSERVATIVE_ORDER_HOLD_ACTION,
+    )
+
+
+def evaluate_stop_breach(ticker: str, context: dict) -> dict | None:
+    """Ask an LLM whether an ALREADY-LOSING position (one that just
+    breached its mechanical ATR stop-loss -- see swingtrade.review_holding())
+    is worth holding THROUGH for a genuine recovery, or should be sold now
+    as the mechanical system's default recommendation says. `context`
+    expected keys: `avg_cost`, `last_close`, `stop_loss`,
+    `unrealized_pnl_pct`, `headlines` (list[str]), and optionally
+    `macro`/`qualitative` (same shapes as evaluate_ticker()'s context).
+
+    The LOSS-side counterpart to evaluate_holding() -- deliberately its
+    own function/schema, not a shared parameter, for the same reason
+    evaluate_holding() itself is separate from evaluate_ticker() (see that
+    function's own docstring): "should I hold a winner past target" and
+    "should I hold a loser through its stop" are different questions with
+    different default framings, and this one is intentionally STRICTER --
+    see _build_stop_breach_prompt()'s own docstring for why.
+
+    Same dual-provider behavior as every other evaluate_*() function here,
+    combined via _resolve_dual() using CONSERVATIVE_ORDER_STOP_ACTION
+    ("Cut Loss" wins a disagreement), same "never raises, None on total
+    failure" contract. NEVER affects position sizing or any
+    capital-allocation path -- purely informational, shown alongside
+    (never replacing) the mechanical SELL (stop breached) recommendation
+    it was called for.
+
+    Returns {"action": "Hold Through"|"Cut Loss", "confidence": 0-100,
+    "news_sentiment": "Bullish"|"Bearish"|"Neutral", "rationale": str,
+    "provider_agreement": bool | None, "secondary_provider": str | None,
+    "secondary_decision": str | None, "secondary_confidence": float | None}
+    or None."""
+    prompt = _build_stop_breach_prompt(ticker, context)
+    gemini_result = call_gemini(prompt, parse_fn=_parse_stop_breach_response) if _gemini_available() else None
+    secondary_result, secondary_provider_name = call_secondary(prompt, parse_fn=_parse_stop_breach_response)
+    return _resolve_dual(
+        gemini_result, secondary_result, secondary_provider_name, "action", CONSERVATIVE_ORDER_STOP_ACTION,
     )
 
 

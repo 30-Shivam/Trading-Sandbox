@@ -16,6 +16,7 @@ import llm_agent
 
 DECISION_KEY, DECISION_ORDER = "decision", llm_agent.CONSERVATIVE_ORDER_DECISION
 HOLD_KEY, HOLD_ORDER = "action", llm_agent.CONSERVATIVE_ORDER_HOLD_ACTION
+STOP_KEY, STOP_ORDER = "action", llm_agent.CONSERVATIVE_ORDER_STOP_ACTION
 
 
 def _mk(decision_key, decision, confidence, rationale="r", sentiment="Neutral"):
@@ -105,6 +106,24 @@ def test_holding_agreement_averages_confidence():
     result = llm_agent._resolve_dual(g, q, "groq", HOLD_KEY, HOLD_ORDER)
     assert result["action"] == "Take Profit"
     assert result["confidence"] == 80.0
+    assert result["provider_agreement"] is True
+
+
+def test_stop_breach_disagreement_cut_loss_wins():
+    g = _mk(STOP_KEY, "Hold Through", 70.0, rationale="gemini: broad selloff, not company-specific")
+    q = _mk(STOP_KEY, "Cut Loss", 65.0, rationale="groq: real deterioration")
+    result = llm_agent._resolve_dual(g, q, "groq", STOP_KEY, STOP_ORDER)
+    assert result["action"] == "Cut Loss"
+    assert result["confidence"] == 65.0
+    assert result["secondary_decision"] == "Hold Through"
+
+
+def test_stop_breach_agreement_averages_confidence():
+    g = _mk(STOP_KEY, "Cut Loss", 80.0)
+    q = _mk(STOP_KEY, "Cut Loss", 60.0)
+    result = llm_agent._resolve_dual(g, q, "groq", STOP_KEY, STOP_ORDER)
+    assert result["action"] == "Cut Loss"
+    assert result["confidence"] == 70.0
     assert result["provider_agreement"] is True
 
 

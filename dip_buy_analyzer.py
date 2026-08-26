@@ -414,6 +414,33 @@ def confirmable_holdings(saved_holdings: dict, pending_signals: list[dict]) -> d
     }
 
 
+def _render_hold_verdict_expander(ticker: str, mechanical_label: str, verdict: dict | None) -> None:
+    """Shared Streamlit rendering for llm_agent.evaluate_holding()'s
+    (target-hit, "hold past target?") and evaluate_stop_breach()'s
+    (stop-breached, "hold through for recovery?") second opinions -- the
+    two schemas' `action` vocabularies differ ("Hold For More"/"Take
+    Profit" vs. "Hold Through"/"Cut Loss") but the display shape is
+    identical (both share `confidence`/`news_sentiment`/`rationale`/
+    `provider_agreement`/`secondary_provider`/`secondary_decision`), so
+    this is written once rather than duplicated per schema."""
+    with st.expander(f"{ticker} -- mechanical: {mechanical_label} | LLM: {verdict['action'] if verdict else 'unavailable'}"):
+        if verdict is None:
+            st.caption("LLM evaluation failed or returned an unusable response for this ticker.")
+            return
+        agreement_note = (
+            f" ({verdict['secondary_provider']} agreed)"
+            if verdict["provider_agreement"] is True
+            else f" (providers disagreed -- {verdict['secondary_provider']} said "
+                 f"{verdict['secondary_decision']}, defaulted to the more conservative call)"
+            if verdict["provider_agreement"] is False else ""
+        )
+        st.write(
+            f"**{verdict['action']}** (confidence: {verdict['confidence']:.0f}/100) "
+            f"-- news sentiment: **{verdict['news_sentiment']}**{agreement_note}"
+        )
+        st.write(verdict["rationale"])
+
+
 def style_results(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     formats = {
         "Trade_Score": "{:.1f}",
@@ -1099,21 +1126,27 @@ def main():
                 with st.expander(f"Could not review ({len(review_skipped)})"):
                     st.dataframe(pd.DataFrame(review_skipped, columns=["Ticker", "Reason"]), hide_index=True)
 
-            # LLM second opinion specifically for positions that just hit their
-            # mechanical target -- "should I hold past target for more profit?"
-            # (see llm_agent.evaluate_holding()). Purely informational, never
-            # overrides the mechanical Recommendation above or affects sizing.
-            # Only called for "SELL (target hit)" rows, same "second opinion on
-            # something mechanically flagged" philosophy as the LLM Agent tab
-            # (not a blind evaluation of every holding).
+            # LLM second opinions for positions the mechanical rule just
+            # flagged SELL -- "is it worth holding a bit longer instead?"
+            # for BOTH directions, each with its own deliberately different
+            # default framing (see llm_agent.evaluate_holding()/
+            # evaluate_stop_breach()'s own docstrings for why these are two
+            # separate schemas, not one). Purely informational, never
+            # overrides the mechanical Recommendation above or affects
+            # sizing -- same "second opinion on something mechanically
+            # flagged" philosophy as the LLM Agent tab (not a blind
+            # evaluation of every holding).
             if not review_df.empty and llm_agent.is_available():
                 hit_target = review_df[review_df["Recommendation"] == "SELL (target hit)"]
+                stop_breached = review_df[review_df["Recommendation"] == "SELL (stop breached)"]
+                if not hit_target.empty or not stop_breached.empty:
+                    macro_snapshot = cached_macro_snapshot()
+
                 if not hit_target.empty:
                     st.caption(
                         "LLM second opinion below for position(s) that hit their target -- "
                         "informational only, never overrides the mechanical recommendation above."
                     )
-                    macro_snapshot = cached_macro_snapshot()
                     for _, row in hit_target.iterrows():
                         ticker = row["Ticker"]
                         holding_context = {
@@ -1127,26 +1160,30 @@ def main():
                         }
                         with st.spinner(f"Getting LLM second opinion on {ticker}..."):
                             hold_verdict = llm_agent.evaluate_holding(ticker, holding_context)
-                        with st.expander(
-                            f"{ticker} -- mechanical: SELL (target hit) | "
-                            f"LLM: {hold_verdict['action'] if hold_verdict else 'unavailable'}"
-                        ):
-                            if hold_verdict is None:
-                                st.caption("LLM evaluation failed or returned an unusable response for this ticker.")
-                            else:
-                                agreement_note = (
-                                    f" ({hold_verdict['secondary_provider']} agreed)"
-                                    if hold_verdict["provider_agreement"] is True
-                                    else f" (providers disagreed -- {hold_verdict['secondary_provider']} said "
-                                         f"{hold_verdict['secondary_decision']}, defaulted to the more "
-                                         "conservative call)"
-                                    if hold_verdict["provider_agreement"] is False else ""
-                                )
-                                st.write(
-                                    f"**{hold_verdict['action']}** (confidence: {hold_verdict['confidence']:.0f}/100) "
-                                    f"-- news sentiment: **{hold_verdict['news_sentiment']}**{agreement_note}"
-                                )
-                                st.write(hold_verdict["rationale"])
+                        _render_hold_verdict_expander(ticker, "SELL (target hit)", hold_verdict)
+
+                if not stop_breached.empty:
+                    st.caption(
+                        "LLM second opinion below for position(s) that breached their stop -- "
+                        "deliberately a STRICTER default than the target-hit opinion above (a missed "
+                        "gain only costs opportunity; holding through a real breakdown risks further, "
+                        "compounding capital loss). Informational only, never overrides the mechanical "
+                        "recommendation above."
+                    )
+                    for _, row in stop_breached.iterrows():
+                        ticker = row["Ticker"]
+                        stop_context = {
+                            "avg_cost": float(row["Avg_Cost"]),
+                            "last_close": float(row["Last_Close"]),
+                            "stop_loss": float(row["Stop_Loss"]),
+                            "unrealized_pnl_pct": float(row["Unrealized_PnL_Pct"]),
+                            "headlines": market_data.get_multi_headlines(ticker),
+                            "macro": macro_snapshot,
+                            "qualitative": market_data.get_qualitative_snapshot(ticker),
+                        }
+                        with st.spinner(f"Getting LLM second opinion on {ticker}..."):
+                            stop_verdict = llm_agent.evaluate_stop_breach(ticker, stop_context)
+                        _render_hold_verdict_expander(ticker, "SELL (stop breached)", stop_verdict)
 
         st.subheader("Scan Results")
         # See _display_columns_for_strategy() -- "rsi"/"pairs" each need

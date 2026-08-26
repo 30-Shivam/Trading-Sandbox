@@ -1,14 +1,16 @@
-"""review_positions._detect_flips() / _build_flip_notification() -- pure
-functions, dict fixtures, no live Mongo/network/Discord calls. Mirrors
+"""review_positions._detect_flips() / _build_flip_notification() /
+_llm_hold_opinion() -- pure functions and dispatch logic, dict fixtures,
+no live Mongo/network/Discord calls, LLM calls monkeypatched. Mirrors
 tests/test_settle_trades_notifications.py's own convention.
 """
 import review_positions
 
 
-def _row(ticker, recommendation, avg_cost=100.0, last_close=95.0, pnl_pct=-5.0):
+def _row(ticker, recommendation, avg_cost=100.0, last_close=95.0, pnl_pct=-5.0, sell_price=None, stop_loss=None):
     return {
         "Ticker": ticker, "Recommendation": recommendation,
         "Avg_Cost": avg_cost, "Last_Close": last_close, "Unrealized_PnL_Pct": pnl_pct,
+        "Sell_Price": sell_price, "Stop_Loss": stop_loss,
     }
 
 
@@ -85,3 +87,61 @@ def test_multiple_flips_sorted_worst_pnl_first():
     assert lines[0] == "**Position Review: 3 holding(s) flipped to SELL**"
     tickers_in_order = [line.split(":")[0] for line in lines[1:]]
     assert tickers_in_order == ["BBB", "CCC", "AAA"]
+
+
+def test_llm_opinion_line_included_when_present():
+    flips = [_row("NVDA", "SELL (stop breached)", pnl_pct=-12.5)]
+    opinions = {"NVDA": {"action": "Cut Loss", "confidence": 82.0, "rationale": "Real deterioration, no bounce evidence."}}
+    message = review_positions._build_flip_notification(flips, opinions)
+    assert "LLM second opinion: **Cut Loss** (confidence 82/100) -- Real deterioration, no bounce evidence." in message
+
+
+def test_missing_llm_opinion_omits_line_without_error():
+    flips = [_row("NVDA", "SELL (stop breached)")]
+    message = review_positions._build_flip_notification(flips, {})
+    assert "LLM second opinion" not in message
+
+
+# ---- _llm_hold_opinion ----
+
+def test_llm_hold_opinion_dispatches_evaluate_holding_for_target_hit(monkeypatch):
+    captured = {}
+
+    def fake_evaluate_holding(ticker, context):
+        captured["ticker"] = ticker
+        captured["context"] = context
+        return {"action": "Take Profit", "confidence": 70.0, "rationale": "r"}
+
+    monkeypatch.setattr(review_positions.llm_agent, "evaluate_holding", fake_evaluate_holding)
+    monkeypatch.setattr(review_positions.market_data, "get_multi_headlines", lambda t: [])
+    monkeypatch.setattr(review_positions.market_data, "get_qualitative_snapshot", lambda t: None)
+
+    row = _row("NVDA", "SELL (target hit)", sell_price=150.0)
+    result = review_positions._llm_hold_opinion(row, macro_snapshot={})
+    assert result["action"] == "Take Profit"
+    assert captured["ticker"] == "NVDA"
+    assert captured["context"]["sell_price"] == 150.0
+
+
+def test_llm_hold_opinion_dispatches_evaluate_stop_breach_for_stop_breach(monkeypatch):
+    captured = {}
+
+    def fake_evaluate_stop_breach(ticker, context):
+        captured["ticker"] = ticker
+        captured["context"] = context
+        return {"action": "Cut Loss", "confidence": 85.0, "rationale": "r"}
+
+    monkeypatch.setattr(review_positions.llm_agent, "evaluate_stop_breach", fake_evaluate_stop_breach)
+    monkeypatch.setattr(review_positions.market_data, "get_multi_headlines", lambda t: [])
+    monkeypatch.setattr(review_positions.market_data, "get_qualitative_snapshot", lambda t: None)
+
+    row = _row("DDOG", "SELL (stop breached)", stop_loss=225.0)
+    result = review_positions._llm_hold_opinion(row, macro_snapshot={})
+    assert result["action"] == "Cut Loss"
+    assert captured["ticker"] == "DDOG"
+    assert captured["context"]["stop_loss"] == 225.0
+
+
+def test_llm_hold_opinion_returns_none_for_hold_row():
+    row = _row("MSFT", "HOLD")
+    assert review_positions._llm_hold_opinion(row, macro_snapshot={}) is None

@@ -29,6 +29,20 @@ flip-back is possible, not just one-directional. Prior state persisted via
 storage/position_review_state.py, deliberately a separate collection from
 Current_Holdings itself (which is wholesale-replaced on every user edit).
 
+Each flip's alert is enriched with an LLM second opinion when
+llm_agent.is_available() -- llm_agent.evaluate_holding() for a target hit
+("worth holding past target for more?") or evaluate_stop_breach() for a
+stop breach ("worth holding through for a genuine recovery, or cut the
+loss?"), the same two functions/schemas dip_buy_analyzer.py's own sidebar
+calls for the identical mechanical flags (2026-08-25 -- previously this
+opinion only existed inside the interactive dashboard, so the actual
+proactive alert carried just the bare mechanical flag with none of the
+"is holding longer worth it" nuance a human would want at the moment the
+alert fires, not only when they happen to open the dashboard). Still
+purely informational -- never overrides the mechanical recommendation or
+this alert firing; an LLM failure/unavailability just omits that one
+line, it never blocks the flip alert itself.
+
 Usage:
     python review_positions.py
 """
@@ -36,6 +50,7 @@ Usage:
 import sys
 
 import config_loader
+import llm_agent
 import market_data
 import notifications
 import storage
@@ -67,14 +82,43 @@ def _detect_flips(results: list[dict], last_recommendations: dict[str, str]) -> 
     return flips, new_state
 
 
-def _build_flip_notification(flips: list[dict]) -> str | None:
+def _llm_hold_opinion(row: dict, macro_snapshot: dict) -> dict | None:
+    """Get the appropriate LLM second opinion for one newly-flipped-to-SELL
+    row -- llm_agent.evaluate_holding() for a target hit or
+    evaluate_stop_breach() for a stop breach, matching exactly which
+    function dip_buy_analyzer.py's own dashboard calls for the same
+    Recommendation. Both have a documented "never raises, None on total
+    failure" contract, so no try/except needed here -- this is purely
+    additive enrichment and must never be able to block the flip alert
+    itself from firing."""
+    ticker = row["Ticker"]
+    context = {
+        "avg_cost": row["Avg_Cost"],
+        "last_close": row["Last_Close"],
+        "unrealized_pnl_pct": row["Unrealized_PnL_Pct"],
+        "headlines": market_data.get_multi_headlines(ticker),
+        "macro": macro_snapshot,
+        "qualitative": market_data.get_qualitative_snapshot(ticker),
+    }
+    if row["Recommendation"] == "SELL (target hit)":
+        return llm_agent.evaluate_holding(ticker, {**context, "sell_price": row["Sell_Price"]})
+    if row["Recommendation"] == "SELL (stop breached)":
+        return llm_agent.evaluate_stop_breach(ticker, {**context, "stop_loss": row["Stop_Loss"]})
+    return None
+
+
+def _build_flip_notification(flips: list[dict], llm_opinions: dict[str, dict] | None = None) -> str | None:
     """Short Discord message for this run's newly-flipped-to-SELL
     positions, sorted by Unrealized_PnL_Pct ascending (worst first -- the
     most urgent one leads). Mirrors settle_trades.py's own
     _build_settlement_notification() in shape/tone. Returns None if
-    `flips` is empty -- caller skips notifying entirely."""
+    `flips` is empty -- caller skips notifying entirely. `llm_opinions`
+    (optional, {ticker: evaluate_holding()/evaluate_stop_breach() result})
+    adds one indented line per ticker that has one -- see
+    _llm_hold_opinion()."""
     if not flips:
         return None
+    llm_opinions = llm_opinions or {}
     flips = sorted(flips, key=lambda f: f["Unrealized_PnL_Pct"])
     lines = [f"**Position Review: {len(flips)} holding(s) flipped to SELL**"]
     for f in flips:
@@ -82,6 +126,12 @@ def _build_flip_notification(flips: list[dict]) -> str | None:
             f"{f['Ticker']}: {f['Recommendation']} (avg_cost {f['Avg_Cost']:.2f}, "
             f"last {f['Last_Close']:.2f}, {f['Unrealized_PnL_Pct']:+.2f}%)"
         )
+        opinion = llm_opinions.get(f["Ticker"])
+        if opinion:
+            lines.append(
+                f"    LLM second opinion: **{opinion['action']}** "
+                f"(confidence {opinion['confidence']:.0f}/100) -- {opinion['rationale']}"
+            )
     return "\n".join(lines)
 
 
@@ -121,7 +171,16 @@ def main() -> int:
     print()
     print(f"{len(flips)} flip(s) to SELL this run.")
 
-    message = _build_flip_notification(flips)
+    llm_opinions = {}
+    if flips and llm_agent.is_available():
+        macro_snapshot = market_data.get_macro_snapshot()
+        for row in flips:
+            opinion = _llm_hold_opinion(row, macro_snapshot)
+            if opinion:
+                llm_opinions[row["Ticker"]] = opinion
+                print(f"    {row['Ticker']} LLM: {opinion['action']} (confidence {opinion['confidence']:.0f})")
+
+    message = _build_flip_notification(flips, llm_opinions)
     if message:
         notifications.notify(message)
 
