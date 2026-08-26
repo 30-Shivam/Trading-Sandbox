@@ -192,16 +192,26 @@ DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available c
                                   # used by the secondary-strategy cash pools (currently
                                   # just Squeeze Breakout, v39)
 SECONDARY_DEFAULT_CASH_OVERRIDES: dict[str, float] = {
-    # squeeze_breakout (v39) lost to random-entry timing on every cut (ALL/TUNE/HOLDOUT) of
-    # a fresh 2026-08-20 multi-seed benchmark -- HOLDOUT sharpe_like 0.0109 vs random's
-    # 0.0298, k_ratio -7.88 vs random's +2.13 (equity curve reliably DECLINING on holdout) --
-    # AND showed a negative real live IC (-0.28 over 27 settled trades). Per explicit user
-    # request, same "zero the default, don't force a full retirement" treatment breakout
-    # (v43) got in item 48 -- still shown/scanned/logged/fed into Best Ideas (useful context
-    # while a viable replacement is sought), just requires deliberately typing in an amount
-    # to actually allocate capital. Per-label (not a DEFAULT_TOTAL_CASH change) so a FUTURE
-    # secondary strategy that clears validation still gets the normal $5,000 default -- see
-    # improvements.txt item 79.
+    # squeeze_breakout (v39) originally got this override 2026-08-20: lost to random-entry
+    # timing on every cut (ALL/TUNE/HOLDOUT) of a fresh multi-seed benchmark, AND showed a
+    # negative real live IC (-0.28 over 27 settled trades). v53 was promoted 2026-08-21 to
+    # replace v39 (stronger on the REAL-vs-RANDOM backtest checks) -- but that's a DIFFERENT
+    # claim from "does this strategy's own Trade_Score correctly rank which of its signals
+    # will do best," which is what live IC measures, and NOT what v53's promotion validated.
+    # 2026-08-25: confirmed live under v53, the IC problem persists and is WORSE, not fixed
+    # -- -0.32 over 40 settled trades (allocate_capital() sorts candidates by Trade_Score
+    # descending, so a negative IC means it preferentially funds the WORSE candidates first
+    # within this strategy's own pool). This override must stay regardless of which version
+    # is currently promoted, until a future retune's OWN live IC is confirmed non-negative --
+    # do not remove it just because a newer version cleared the backtest-only checks.
+    # Same "zero the default, don't force a full retirement" treatment breakout (v43) got in
+    # item 48 -- still shown/scanned/logged/fed into Best Ideas (useful context while a
+    # viable fix is sought; also automatically excluded from the Best Ideas composite blend
+    # itself now that ensemble_weight() zeroes a trust-floor-cleared negative-IC methodology
+    # -- see ic_tracking.ensemble_weight()'s own docstring), just requires deliberately
+    # typing in an amount here to actually allocate real capital. Per-label (not a
+    # DEFAULT_TOTAL_CASH change) so a FUTURE secondary strategy that clears validation still
+    # gets the normal $5,000 default -- see improvements.txt item 79.
     "Squeeze Breakout": 0.0,
 }
 DEFAULT_PRIMARY_CASH = 0         # default $ sidebar value for the PRIMARY (breakout,
@@ -863,10 +873,14 @@ def main():
                 )
                 if label in SECONDARY_DEFAULT_CASH_OVERRIDES:
                     help_text += (
-                        f" Defaults to $0 -- {label} lost to random-entry timing on every "
-                        "cut of a fresh benchmark and showed a negative real live IC "
-                        "(see improvements.txt item 79), so nothing sizes against it "
-                        "unless you deliberately enter an amount."
+                        f" Defaults to $0 -- {label} has shown a negative real live IC "
+                        "(its own Trade_Score does not correctly rank which of its "
+                        "signals will do best -- see improvements.txt item 79 and "
+                        "ic_tracking.ensemble_weight()'s docstring), so nothing sizes "
+                        "against it unless you deliberately enter an amount. This stays "
+                        "in place across a config version bump until THAT version's own "
+                        "live IC is confirmed non-negative -- a better backtest result "
+                        "alone doesn't clear it."
                     )
                 secondary_cash[label] = st.number_input(
                     f"Total Available Cash -- {label} ($)",
