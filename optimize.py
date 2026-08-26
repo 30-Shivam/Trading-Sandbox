@@ -219,6 +219,33 @@ RSI_OVERSOLD_RANGE = (15.0, 70.0)
 # logged a signal since being tuned. See improvements.txt for the full
 # incident.
 RRR_FLOOR = 1.6
+# 2026-08-25: the MIRROR-IMAGE bound RRR_FLOOR never got. RRR = atr_take_
+# profit_multiplier/stop_loss_atr_multiplier feeds swingtrade/scoring.py's
+# Trade_Score formula as min(RRR, rrr_score_cap)/rrr_score_cap -- so a
+# ratio at or above rrr_score_cap gives EXACTLY the same (maximum) RRR
+# score as one right at the cap, and (for "rsi", where rrr_score_weight
+# happens to equal signal_watch_threshold, both 40 by DEFAULT_CONFIG) that
+# alone is enough to clear a tier with ZERO real RSI/Distance signal.
+# Confirmed live: RSI Mean-Reversion's promoted v17 (ratio 9.75 against a
+# cap of 4.0 -- reachable under the OLD unbounded upper end of
+# ATR_TAKE_PROFIT_RANGE below) flooded 295/407 watchlist tickers with a
+# Watch/Buy/Strong Buy flag on 2026-08-25 regardless of real RSI (some as
+# high as 78, badly overbought). Crucially, this ALSO silently loosened
+# every affected trial's own BACKTEST entry gate during the original
+# search (swingtrade/backtest.py's simulate_signals() enters a trade
+# whenever add_trade_score()'s Signal is in ENTRY_SIGNALS, computed under
+# that SAME trial's config) -- so a saturated trial's historical
+# performance already reflects a less selective (more trades, not
+# necessarily better-chosen ones) entry criterion, not just a live-display
+# cosmetic issue. RRR_CEILING keeps the search inside the range the
+# scoring formula was actually designed to differentiate within
+# ([RRR_FLOOR, RRR_CEILING] = [1.6, 4.0]) -- a ratio AT the cap still
+# reaches the formula's own intended best case (see
+# rrr_scoring_ceiling_check()'s "best_case_score"), only EXCEEDING it is
+# newly disallowed, since anything beyond the cap is scoring-wise wasted
+# and reflects an unrealistically distant take-profit target relative to
+# the chosen stop.
+RRR_CEILING = swingtrade.DEFAULT_CONFIG.rrr_score_cap
 ATR_TAKE_PROFIT_RANGE = (1.0, 5.0)  # widened from (1.0, 3.0) so there's
                                      # real search room above stop_loss_atr_multiplier*RRR_FLOOR
                                      # across the whole STOP_LOSS_ATR_RANGE below
@@ -230,6 +257,25 @@ STOP_LOSS_ATR_RANGE = (0.5, 2.5)    # narrowed from (0.25, 5.0) -- at the
                                      # max_holding_days
 EXTENDED_DECLINE_PENALTY_PER_DAY_RANGE = (0.0, 4.0)
 EXTENDED_DECLINE_PENALTY_CAP_RANGE = (0.0, 50.0)
+
+
+def tp_multiplier_bounds(stop_loss_atr_multiplier: float) -> tuple[float, float]:
+    """(low, high) bounds to pass to trial.suggest_float("atr_take_profit_multiplier",
+    ...) for a given sampled stop_loss_atr_multiplier -- pulled out of the
+    objective() closure so the RRR_FLOOR/RRR_CEILING arithmetic is directly
+    testable without running a real Optuna trial. Enforces
+    RRR_FLOOR <= atr_take_profit_multiplier/stop_loss_atr_multiplier <= RRR_CEILING
+    by construction (clamped into ATR_TAKE_PROFIT_RANGE), so every sampled
+    ratio lands inside the range swingtrade/scoring.py's Trade_Score formula
+    actually differentiates within -- see RRR_FLOOR/RRR_CEILING's own
+    comments above for the two real incidents (too low, too high) this
+    prevents. Never inverts (low > high) for any stop_loss_atr_multiplier
+    inside STOP_LOSS_ATR_RANGE, given the current constants -- verified in
+    tests/test_optuna_objective_helpers.py across that whole range, not
+    just spot-checked."""
+    low = max(ATR_TAKE_PROFIT_RANGE[0], stop_loss_atr_multiplier * RRR_FLOOR)
+    high = min(ATR_TAKE_PROFIT_RANGE[1], stop_loss_atr_multiplier * RRR_CEILING)
+    return low, high
 
 # Breakout strategy's own search space. A single-window benchmark_random_entry.py
 # comparison already showed 20 has no value and 55 shows a real (if modest) edge
@@ -835,9 +881,10 @@ def rrr_scoring_ceiling_check(strategy: str, config: swingtrade.TradingConfig) -
     assumed to independently hit ITS OWN configured cap in the same row --
     and checks whether even that best case clears signal_buy_threshold.
 
-    IMPORTANT, KNOWN GAP -- this does NOT catch ma_crossover's own later
-    (v97/commit f35dc09) incident: that one wasn't an RRR problem (RRR=2.0
-    gave a mathematically-reachable 66.7 best case) -- it was
+    IMPORTANT, KNOWN GAP (partially closed 2026-08-25, see rrr_alone_score
+    below) -- this does NOT catch ma_crossover's own later (v97/commit
+    f35dc09) incident: that one wasn't an RRR problem (RRR=2.0 gave a
+    mathematically-reachable 66.7 best case) -- it was
     ma_crossover_strength_cap_pct (2.0%) calibrated far above what real
     Signal_Strength_Pct data ever produces (max observed 1.24% across 584
     real crossovers), so the "every other dimension can reach its own cap"
@@ -846,6 +893,18 @@ def rrr_scoring_ceiling_check(strategy: str, config: swingtrade.TradingConfig) -
     each *_cap_pct field against real historical percentiles of its own
     column) -- out of scope here, which only covers the RRR term.
 
+    2026-08-25: added the MIRROR-IMAGE failure mode this function didn't
+    check for -- RRR saturating so far ABOVE rrr_score_cap that it alone
+    (with every OTHER dimension at its WORST, contributing zero) already
+    clears a tier threshold, making that dimension's real data irrelevant.
+    Confirmed live: RSI Mean-Reversion's promoted v17 (RRR=9.75 against a
+    cap of 4.0, predating this half of the check) gave RRR alone a
+    constant 40/100 points -- exactly signal_watch_threshold -- so 295 of
+    407 watchlist tickers cleared at least Watch on 2026-08-25 regardless
+    of their real RSI (some as high as 78, badly overbought, the opposite
+    of what a mean-reversion buy should look for). See
+    rrr_alone_meets_watch_threshold/rrr_alone_meets_buy_threshold below.
+
     Mirrors add_*_trade_score()'s own arithmetic directly rather than
     calling those functions, since the RRR term's shape is identical across
     every one of them -- only strategy="rsi" (add_trade_score itself) uses
@@ -853,9 +912,11 @@ def rrr_scoring_ceiling_check(strategy: str, config: swingtrade.TradingConfig) -
     add_*_trade_score() rescales a 2-term (RRR + one other) blend to sum to
     100.
 
-    Returns {"rrr", "best_case_score", "signal_buy_threshold",
-    "signal_strong_buy_threshold", "clears_buy_threshold",
-    "clears_strong_buy_threshold"}."""
+    Returns {"rrr", "best_case_score", "rrr_alone_score",
+    "signal_buy_threshold", "signal_strong_buy_threshold",
+    "signal_watch_threshold", "clears_buy_threshold",
+    "clears_strong_buy_threshold", "rrr_alone_meets_watch_threshold",
+    "rrr_alone_meets_buy_threshold"}."""
     rrr = (
         round(config.atr_take_profit_multiplier / config.stop_loss_atr_multiplier, 2)
         if config.stop_loss_atr_multiplier else 0.0
@@ -869,8 +930,10 @@ def rrr_scoring_ceiling_check(strategy: str, config: swingtrade.TradingConfig) -
         # add_trade_score(): rrr_score + rsi_score + distance_score, no
         # rescale -- every other term independently maxes out at its own
         # weight in the best case (RSI at rsi_score_floor, Distance_to_Buy_Pct
-        # at 0, streak_penalty at 0).
+        # at 0, streak_penalty at 0), or at zero in the worst case (RSI at
+        # rsi_score_ceiling, Distance_to_Buy_Pct at/above its cap).
         best_case_score = rrr_at_best + config.rsi_score_weight + config.distance_score_weight
+        rrr_alone_score = rrr_at_best
     else:
         # Every other add_*_trade_score(): rrr_score + [Distance_to_Buy_Pct
         # or Signal_Strength_Pct]_score, rescaled to 100 -- a config whose
@@ -879,14 +942,19 @@ def rrr_scoring_ceiling_check(strategy: str, config: swingtrade.TradingConfig) -
         total_weight = config.rrr_score_weight + config.distance_score_weight
         rescale = (100.0 / total_weight) if total_weight > 0 else 0.0
         best_case_score = (rrr_at_best + config.distance_score_weight) * rescale
+        rrr_alone_score = rrr_at_best * rescale
 
     return {
         "rrr": rrr,
         "best_case_score": round(best_case_score, 2),
+        "rrr_alone_score": round(rrr_alone_score, 2),
         "signal_buy_threshold": config.signal_buy_threshold,
         "signal_strong_buy_threshold": config.signal_strong_buy_threshold,
+        "signal_watch_threshold": config.signal_watch_threshold,
         "clears_buy_threshold": best_case_score >= config.signal_buy_threshold,
         "clears_strong_buy_threshold": best_case_score > config.signal_strong_buy_threshold,
+        "rrr_alone_meets_watch_threshold": rrr_alone_score >= config.signal_watch_threshold,
+        "rrr_alone_meets_buy_threshold": rrr_alone_score >= config.signal_buy_threshold,
     }
 
 
@@ -1021,11 +1089,15 @@ def build_objective(
     def objective(trial: optuna.Trial):
         # Shared by every strategy branch below -- hoisted out of the
         # per-strategy dicts (used to be 7 duplicated independent-sampling
-        # call-site pairs) so RRR_FLOOR is enforced by construction in
-        # exactly one place. See RRR_FLOOR's own comment above for why:
-        # sampling these two independently let Optuna land on configs that
-        # win on backtested $ P&L while being structurally unable to ever
-        # clear swingtrade/scoring.py's signal_buy_threshold live.
+        # call-site pairs) so RRR_FLOOR/RRR_CEILING are enforced by
+        # construction in exactly one place. See RRR_FLOOR's own comment
+        # above for why: sampling these two independently let Optuna land
+        # on configs that win on backtested $ P&L while being structurally
+        # unable to ever clear swingtrade/scoring.py's signal_buy_threshold
+        # live (too LOW a ratio) -- or, the mirror image RRR_CEILING now
+        # also prevents, saturating the RRR score term so it grants a tier
+        # for free regardless of real data (too HIGH a ratio, see
+        # RRR_CEILING's own comment).
         if pin_atr_take_profit_multiplier is not None and pin_stop_loss_atr_multiplier is not None:
             stop_loss_atr_multiplier = pin_stop_loss_atr_multiplier
             atr_take_profit_multiplier = pin_atr_take_profit_multiplier
@@ -1033,9 +1105,7 @@ def build_objective(
         else:
             stop_loss_atr_multiplier = trial.suggest_float("stop_loss_atr_multiplier", *STOP_LOSS_ATR_RANGE)
             atr_take_profit_multiplier = trial.suggest_float(
-                "atr_take_profit_multiplier",
-                max(ATR_TAKE_PROFIT_RANGE[0], stop_loss_atr_multiplier * RRR_FLOOR),
-                ATR_TAKE_PROFIT_RANGE[1],
+                "atr_take_profit_multiplier", *tp_multiplier_bounds(stop_loss_atr_multiplier),
             )
 
         if strategy == "rsi":
@@ -1691,29 +1761,46 @@ def main():
         args.strategy, best.params, args.pin_atr_take_profit_multiplier, args.pin_stop_loss_atr_multiplier,
     )
 
-    # RRR-vs-scoring-ceiling check (2026-08-24, validation-pipeline point 9)
-    # -- automatic now, not a manual step someone has to remember. See
-    # rrr_scoring_ceiling_check()'s own docstring for the exact bug this
-    # catches (breakout v19, breakout_retest v27, week52_high v28 were all
+    # RRR-vs-scoring-ceiling check (2026-08-24, validation-pipeline point 9;
+    # saturation direction added 2026-08-25) -- automatic now, not a manual
+    # step someone has to remember. See rrr_scoring_ceiling_check()'s own
+    # docstring for the two failure modes this catches: RRR too LOW to ever
+    # clear Buy (breakout v19, breakout_retest v27, week52_high v28 were all
     # promoted with a Buy tier structurally unreachable by any row under
-    # that config -- pure arithmetic, no simulation needed) and its own
-    # KNOWN GAP note (this does NOT catch ma_crossover's later, different
-    # v97 incident -- a data-calibration problem in a non-RRR cap, not this).
+    # that config), and RRR so HIGH it saturates and grants a tier for
+    # free regardless of real data (RSI Mean-Reversion v17 -- RRR alone hit
+    # exactly signal_watch_threshold, flooding 295/407 watchlist tickers
+    # with a Watch/Buy/Strong Buy flag on 2026-08-25 regardless of their
+    # real RSI). KNOWN GAP: neither direction catches ma_crossover's later,
+    # different v97 incident -- a data-calibration problem in a non-RRR cap.
     print()
-    print("=== RRR-vs-scoring-ceiling check (can this config's Buy tier ever fire?) ===")
+    print("=== RRR-vs-scoring-ceiling check (can this config's Buy tier ever fire -- or fire too easily?) ===")
     baseline_ceiling = rrr_scoring_ceiling_check(args.strategy, baseline_config)
     candidate_ceiling = rrr_scoring_ceiling_check(args.strategy, candidate_config)
     print(f"  BASELINE  (DEFAULT_CONFIG): RRR={baseline_ceiling['rrr']}, best-case Trade_Score="
           f"{baseline_ceiling['best_case_score']} vs signal_buy_threshold={baseline_ceiling['signal_buy_threshold']} "
-          f"-- {'OK, reachable' if baseline_ceiling['clears_buy_threshold'] else '[WARN] UNREACHABLE'}")
+          f"-- {'OK, reachable' if baseline_ceiling['clears_buy_threshold'] else '[WARN] UNREACHABLE'}"
+          f"; RRR alone={baseline_ceiling['rrr_alone_score']} vs signal_watch_threshold="
+          f"{baseline_ceiling['signal_watch_threshold']} -- "
+          f"{'[WARN] SATURATED' if baseline_ceiling['rrr_alone_meets_watch_threshold'] else 'OK, discriminating'}")
     print(f"  CANDIDATE (winning trial):  RRR={candidate_ceiling['rrr']}, best-case Trade_Score="
           f"{candidate_ceiling['best_case_score']} vs signal_buy_threshold={candidate_ceiling['signal_buy_threshold']} "
-          f"-- {'OK, reachable' if candidate_ceiling['clears_buy_threshold'] else '[WARN] UNREACHABLE'}")
+          f"-- {'OK, reachable' if candidate_ceiling['clears_buy_threshold'] else '[WARN] UNREACHABLE'}"
+          f"; RRR alone={candidate_ceiling['rrr_alone_score']} vs signal_watch_threshold="
+          f"{candidate_ceiling['signal_watch_threshold']} -- "
+          f"{'[WARN] SATURATED' if candidate_ceiling['rrr_alone_meets_watch_threshold'] else 'OK, discriminating'}")
     if not candidate_ceiling["clears_buy_threshold"]:
         print("  [WARN] This candidate's Buy tier is STRUCTURALLY UNREACHABLE -- even a row with a "
               "perfect score on every other dimension can never clear signal_buy_threshold under this "
               "tp/sl pair. Do not promote without raising rrr_score_cap, lowering signal_buy_threshold, "
               "or picking a tp/sl pair whose ratio actually clears rrr_score_cap.")
+    if candidate_ceiling["rrr_alone_meets_watch_threshold"]:
+        print("  [WARN] This candidate's RRR term is SATURATED so far past rrr_score_cap that it alone "
+              "-- with every other dimension at its worst -- already clears signal_watch_threshold"
+              + (" (and even signal_buy_threshold)" if candidate_ceiling["rrr_alone_meets_buy_threshold"] else "")
+              + ". The RSI/Distance/Signal_Strength component becomes irrelevant noise on top of a free "
+                "score floor. Do not promote without lowering the tp/sl ratio toward rrr_score_cap, or "
+                "raising rrr_score_cap/signal_watch_threshold to match.")
 
     holdout_metrics = {}
     if holdout_ticker_data:

@@ -144,7 +144,21 @@ SECONDARY_STRATEGY_VERSIONS = {
     # the same day: v39 had started LOSING to its own matched-random
     # baseline on HOLDOUT (sharpe_like 0.0124 vs 0.0206).
     "Squeeze Breakout": 53,
-    "RSI Mean-Reversion": 17,
+    # Promoted 2026-08-25 (v17 -> v66): v17's RRR (9.75) saturated
+    # rrr_score_cap (4.0), granting the RRR score term's full 40/100
+    # points to every ticker regardless of real RSI -- confirmed live,
+    # 295/407 watchlist tickers flagged on 2026-08-25 alone (some with
+    # RSI as high as 78, badly overbought). Also silently loosened v17's
+    # OWN backtest entry gate during its original tuning (ENTRY_SIGNALS
+    # is computed from the same saturated Trade_Score), so its validation
+    # history was suspect too, not just its live display. v66 was tuned
+    # under a corrected search space (optimize.py's new RRR_CEILING) that
+    # can no longer produce a saturated ratio (v66's RRR=1.7, fully
+    # discriminating) and clearly beats v17 on true ticker-holdout
+    # (sharpe_like 0.412 vs 0.057) -- though its real-vs-random gap check
+    # did not improve on DEFAULT_CONFIG's own, so treat this as "fixes a
+    # real bug and beats what was live," not "found genuine new alpha."
+    "RSI Mean-Reversion": 66,
     "Mean-Reversion Pairs": 58,
 }
 

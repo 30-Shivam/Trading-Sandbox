@@ -202,6 +202,89 @@ def test_rrr_ceiling_does_not_clear_strong_buy_by_default():
     assert result["clears_strong_buy_threshold"] is False
 
 
+# Saturation direction (2026-08-25) -- the mirror-image failure mode the
+# check didn't catch before: RRR so far ABOVE rrr_score_cap that it alone
+# already clears a tier threshold, regardless of real RSI/Distance data.
+
+def test_rrr_ceiling_reproduces_real_v17_rsi_mean_reversion_incident():
+    # RSI Mean-Reversion's live config (v17): RRR=9.75 against
+    # rrr_score_cap=4.0. RRR alone contributes exactly rsi_score_weight(40)
+    # == signal_watch_threshold(40) under DEFAULT_CONFIG's thresholds --
+    # confirmed live 2026-08-25: 295/295 real signals that day had a
+    # saturated RRR (9.38-10.18), and 295/407 watchlist tickers (72%)
+    # cleared at least Watch regardless of their real RSI (up to 78,
+    # badly overbought, for a strategy meant to buy oversold dips).
+    result = optimize.rrr_scoring_ceiling_check("rsi", _config_with_rrr("rsi", 9.75))
+    assert result["rrr_alone_score"] == 40.0
+    assert result["rrr_alone_meets_watch_threshold"] is True
+    assert result["rrr_alone_meets_buy_threshold"] is False  # 40 < signal_buy_threshold=60
+
+
+def test_rrr_ceiling_default_config_is_not_saturated():
+    # DEFAULT_CONFIG's RRR=2.0 sits below rrr_score_cap=4.0 -- RRR alone
+    # contributes 20 points (half of rrr_score_weight), well under
+    # signal_watch_threshold=40, so RSI/Distance still matter.
+    result = optimize.rrr_scoring_ceiling_check("rsi", swingtrade.DEFAULT_CONFIG)
+    assert result["rrr_alone_meets_watch_threshold"] is False
+
+
+def test_rrr_ceiling_saturation_detected_in_rescaled_strategy_too():
+    # Same failure mode, non-"rsi" (rescaled) formula family -- an extreme
+    # RRR should still be caught after the 100/total_weight rescale.
+    result = optimize.rrr_scoring_ceiling_check("breakout", _config_with_rrr("breakout", 20.0))
+    assert result["rrr_alone_meets_watch_threshold"] is True
+
+
+def test_rrr_ceiling_severe_saturation_meets_buy_threshold_too():
+    # An even more extreme ratio can saturate past signal_buy_threshold
+    # itself, not just Watch -- the most severe form of this bug (a
+    # ticker could show Strong Buy/Buy from RRR alone with zero real
+    # oversold/proximity signal).
+    at_cap_config = swingtrade.TradingConfig(**{
+        **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": "rsi",
+        "atr_take_profit_multiplier": 30.0, "stop_loss_atr_multiplier": 1.0,
+        "rrr_score_cap": 4.0, "rrr_score_weight": 70,
+    })
+    result = optimize.rrr_scoring_ceiling_check("rsi", at_cap_config)
+    assert result["rrr_alone_meets_buy_threshold"] is True
+
+
+# tp_multiplier_bounds() -- the search-space-level fix (2026-08-25) so
+# Optuna can no longer PROPOSE a saturated ratio in the first place (the
+# tests above only check the post-hoc validation report). This is the
+# exact mechanism behind RSI Mean-Reversion's real v17 incident: ratio 9.75
+# against rrr_score_cap=4.0, reachable under the old unbounded upper end of
+# ATR_TAKE_PROFIT_RANGE.
+
+def test_tp_bounds_never_exceed_rrr_ceiling():
+    import numpy as np
+    for stop_loss in np.linspace(*optimize.STOP_LOSS_ATR_RANGE, num=50):
+        low, high = optimize.tp_multiplier_bounds(stop_loss)
+        assert high / stop_loss <= optimize.RRR_CEILING + 1e-9
+
+
+def test_tp_bounds_never_invert_across_full_stop_loss_range():
+    import numpy as np
+    for stop_loss in np.linspace(*optimize.STOP_LOSS_ATR_RANGE, num=200):
+        low, high = optimize.tp_multiplier_bounds(stop_loss)
+        assert low <= high
+
+
+def test_tp_bounds_still_respect_rrr_floor():
+    low, high = optimize.tp_multiplier_bounds(1.0)
+    assert low >= 1.0 * optimize.RRR_FLOOR
+
+
+def test_tp_bounds_reproduces_real_v17_incident_now_impossible():
+    # v17's real values: stop_loss_atr_multiplier=0.250. The old code let
+    # atr_take_profit_multiplier range all the way to ATR_TAKE_PROFIT_RANGE[1]
+    # (5.0), giving a reachable ratio of 5.0/0.25=20.0 -- the fixed upper
+    # bound now caps it at stop_loss * RRR_CEILING = 0.25*4.0 = 1.0.
+    low, high = optimize.tp_multiplier_bounds(0.250)
+    assert high == 0.250 * optimize.RRR_CEILING
+    assert high / 0.250 <= optimize.RRR_CEILING
+
+
 # find_live_config_for_strategy() -- needs Mongo (reads real System_Config).
 # Skips (not fails) if MONGODB_URI isn't available, same convention as
 # test_config_candidates_load.py.
