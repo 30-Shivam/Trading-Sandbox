@@ -389,16 +389,37 @@ def methodology_report(strategy: str, score_field: str = "trade_score", window_d
 def ensemble_weight(report: dict, neutral_prior: float = 1.0) -> float:
     """The blend weight one methodology contributes to the Best Ideas
     composite score (see best_ideas.blend_composite()) -- `neutral_prior`
-    (equal weight, same for every methodology) until BOTH
-    `report["trust_floor_met"]` is True AND `report["ir"]` is a real
-    number; after that, the methodology's OWN demonstrated ranking
-    stability -- `max(report["ir"], 0.0)` -- takes over. A negative IR
-    methodology is EXCLUDED from the blend (weight 0), not inverted into a
-    contrarian signal: this early, a negative IR is much more likely to be
-    noise than a genuine anti-signal worth trusting in reverse. This
-    function is the literal mechanism behind using IC/IR, not
-    sharpe_like/win_rate, to recursively compare/blend methodologies
-    against each other."""
-    if report.get("trust_floor_met") and report.get("ir") is not None:
+    (equal weight, same for every methodology) until `report["trust_floor_met"]`
+    is True; after that, the methodology's OWN demonstrated track record
+    takes over, preferring `ir` (stable across >=2 calendar windows, the
+    most trustworthy signal) but falling back to `overall_ic` (available
+    immediately once the floor clears, just not yet time-validated for
+    stability) rather than the flat neutral_prior. Either way, a NEGATIVE
+    value is EXCLUDED from the blend (weight 0), not inverted into a
+    contrarian signal: this early, a negative IC/IR is much more likely to
+    be noise than a genuine anti-signal worth trusting in reverse.
+
+    2026-08-25 fix: before the overall_ic fallback existed, EVERY
+    methodology fell back to the flat neutral_prior whenever `ir` was
+    None -- and `ir` needs >=2 non-degenerate IC_WINDOW_DAYS-wide windows
+    to exist at all (information_ratio() requires 2+ points for a std),
+    which this project's real history (~1 calendar month) has never yet
+    had for ANY methodology. The practical result: a proven, trust-floor-
+    cleared, strongly NEGATIVE methodology (squeeze_breakout, overall_ic
+    -0.32) was getting the exact same weight=1.0 as a proven, trust-floor-
+    cleared, strongly POSITIVE one (llm_agent, overall_ic +0.28) -- the
+    "IC/IR-weighted blend" was, in practice, a flat equal-weight average
+    the entire time, which is why the composite `best_ideas` score was
+    measurably WORSE (IC -0.32) than its own best single input
+    (llm_agent alone, +0.28) despite the blending mechanism existing
+    specifically to prevent that. This function is the literal mechanism
+    behind using IC/IR, not sharpe_like/win_rate, to recursively
+    compare/blend methodologies against each other -- it just wasn't able
+    to act on it yet for anyone."""
+    if not report.get("trust_floor_met"):
+        return neutral_prior
+    if report.get("ir") is not None:
         return max(report["ir"], 0.0)
+    if report.get("overall_ic") is not None:
+        return max(report["overall_ic"], 0.0)
     return neutral_prior

@@ -99,8 +99,44 @@ def test_ensemble_weight_neutral_prior_below_trust_floor():
     assert ic.ensemble_weight(report, neutral_prior=2.0) == 2.0
 
 
-def test_ensemble_weight_neutral_prior_when_ir_missing():
+def test_ensemble_weight_neutral_prior_when_ir_and_ic_both_missing():
     report = {"trust_floor_met": True, "ir": None}
+    assert ic.ensemble_weight(report) == 1.0
+
+
+# --- overall_ic fallback (2026-08-25 fix): before this, ANY methodology
+# with ir=None fell all the way back to the flat neutral_prior, even a
+# trust-floor-cleared one with a real, known overall_ic -- meaning a
+# proven-bad methodology got the exact same weight as a proven-good one
+# for as long as ir stayed unavailable (which needs >=2 calendar windows,
+# not just enough trades). See ensemble_weight()'s own docstring for the
+# real squeeze_breakout-vs-llm_agent incident this caused.
+
+def test_ensemble_weight_uses_overall_ic_when_ir_not_yet_available():
+    report = {"trust_floor_met": True, "ir": None, "overall_ic": 0.28}
+    assert ic.ensemble_weight(report) == 0.28
+
+
+def test_ensemble_weight_floors_negative_overall_ic_at_zero():
+    # The real squeeze_breakout case: trust floor cleared, ir still None,
+    # overall_ic solidly negative -- must be EXCLUDED (weight 0), not
+    # treated as equal to a positive methodology via the flat neutral prior.
+    report = {"trust_floor_met": True, "ir": None, "overall_ic": -0.32}
+    assert ic.ensemble_weight(report) == 0.0
+
+
+def test_ensemble_weight_prefers_ir_over_overall_ic_when_both_available():
+    # ir is the more trustworthy (time-stability-validated) signal --
+    # once it exists, it wins even if overall_ic differs.
+    report = {"trust_floor_met": True, "ir": 0.5, "overall_ic": -0.2}
+    assert ic.ensemble_weight(report) == 0.5
+
+
+def test_ensemble_weight_below_trust_floor_ignores_overall_ic_entirely():
+    # A methodology that hasn't cleared the trust floor stays at the
+    # neutral prior regardless of what its (not-yet-trustworthy) overall_ic
+    # says, positive or negative -- unchanged from the pre-fix behavior.
+    report = {"trust_floor_met": False, "ir": None, "overall_ic": -0.9}
     assert ic.ensemble_weight(report) == 1.0
 
 
