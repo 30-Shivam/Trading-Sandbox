@@ -170,6 +170,7 @@ import yfinance as yf
 import ai_context
 import best_ideas
 import config_loader
+import daily_briefing
 import ic_tracking
 import llm_agent
 import market_data
@@ -973,9 +974,30 @@ def main():
         tickers = tuple(parse_ticker_text(ticker_text))
         st.caption(f"{len(tickers)} ticker(s) loaded.")
 
-    tab1, tab_best_ideas, tab_daily, tab2 = st.tabs(
-        ["Mechanical Strategies", "Best Ideas", "Daily Signals (experimental)", "LLM Agent (experimental)"]
+    tab_briefing, tab1, tab_best_ideas, tab_daily, tab2 = st.tabs(
+        ["Daily Briefing", "Mechanical Strategies", "Best Ideas", "Daily Signals (experimental)",
+         "LLM Agent (experimental)"]
     )
+
+    with tab_briefing:
+        st.caption(
+            "One consolidated view of the day's state -- Position Review, today's LLM Agent Buy "
+            "candidates (audit results included), and portfolio health for trust-floor-cleared "
+            "methodologies. Same underlying logic as daily_briefing.py's own scheduled Discord "
+            "digest (see daily_run.py) -- purely a synthesis of already-existing data, no new "
+            "scans or LLM calls of its own."
+        )
+        try:
+            briefing_text = daily_briefing.gather()
+        except storage.MongoNotConfigured as exc:
+            briefing_text = None
+            st.warning(f"MongoDB not connected ({exc}) -- nothing to synthesize.")
+        if briefing_text:
+            # Two trailing spaces before each newline -- st.markdown() (standard
+            # CommonMark) collapses a single "\n" into a space, unlike Discord's
+            # own renderer (notifications.notify() sends this same text there
+            # via daily_briefing.py, where a bare "\n" already breaks the line).
+            st.markdown(briefing_text.replace("\n", "  \n"))
 
     with tab1:
         sector_lookup = read_ticker_sectors(WATCHLIST_FILE)

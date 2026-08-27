@@ -1,11 +1,11 @@
 """
 Scheduled daily driver -- closes the automation gap (item 1 in
 improvements.txt's NOT DONE list) without needing full containerization.
-Runs ingest.py, settle_trades.py, then review_positions.py back-to-back as
-SUBPROCESSES (isolated from this process, so a crash or sys.exit() in any
-of them can't take daily_run.py down with it -- their real exit code is
-all that matters here), and reports EVERY run (success or failure) via
-notifications.py --
+Runs ingest.py, settle_trades.py, review_positions.py, then
+daily_briefing.py back-to-back as SUBPROCESSES (isolated from this
+process, so a crash or sys.exit() in any of them can't take daily_run.py
+down with it -- their real exit code is all that matters here), and
+reports EVERY run (success or failure) via notifications.py --
 a short status line plus the full combined stdout/stderr of both steps,
 sent through TWO independent channels: a Discord webhook (if
 DISCORD_WEBHOOK_URL is configured) and GitHub Actions' own step summary
@@ -84,14 +84,21 @@ def main() -> int:
     ok_review, output_review = run_step("review_positions.py", "review_positions.py")
     print(output_review)
 
+    # Runs LAST and unconditionally -- it only reads/synthesizes what the
+    # three steps above already wrote, so it should report the day's FINAL
+    # state even if an earlier step failed partway through (same as
+    # settle_trades.py already running regardless of ingest.py's outcome).
+    ok_briefing, output_briefing = run_step("daily_briefing.py", "daily_briefing.py")
+    print(output_briefing)
+
     elapsed = time.time() - start
-    all_ok = ok_ingest and ok_settle and ok_review
+    all_ok = ok_ingest and ok_settle and ok_review and ok_briefing
 
     status = "OK" if all_ok else "FAILED"
     print(f"daily_run.py: {status} ({elapsed:.0f}s elapsed).")
 
     message = f"[Trading-Sandbox] daily_run.py {status} -- {elapsed:.0f}s elapsed, {started_at:%Y-%m-%d %H:%M} UTC"
-    full_report = f"{output_ingest}\n\n{output_settle}\n\n{output_review}"
+    full_report = f"{output_ingest}\n\n{output_settle}\n\n{output_review}\n\n{output_briefing}"
     filename = f"daily_run_{started_at:%Y%m%d_%H%M%S}.txt"
     notifications.notify_with_file(message, filename, full_report)
     # Second, independent channel -- always live in GitHub Actions (no

@@ -16,6 +16,7 @@ TOP_LEVEL_MODULES = [
     "run_backtest",
     "settle_trades",
     "review_positions",
+    "daily_briefing",
     "confirm_fill",
     "evaluate_config",
     "llm_agent",
