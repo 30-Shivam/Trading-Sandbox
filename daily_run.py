@@ -52,10 +52,18 @@ def run_step(name: str, script: str) -> tuple[bool, str]:
     """Runs `script` as a subprocess, returns (ok, full combined stdout+stderr
     prefixed with a one-line status header) -- untruncated, since the
     caller attaches this as a file rather than cramming it into a Discord
-    message body."""
+    message body.
+
+    Explicit encoding="utf-8" (with errors="replace") -- ingest.py's own
+    stdout/stderr are forced to UTF-8 (see its own reconfigure() call,
+    2026-08-26) specifically because real LLM-generated rationale text can
+    contain characters Windows' default codepage can't encode; without a
+    matching explicit encoding here, subprocess.run's text=True would
+    decode those UTF-8 bytes using the OS default codepage instead,
+    reintroducing the exact same class of crash one level up."""
     result = subprocess.run(
         [sys.executable, str(SCRIPT_DIR / script)],
-        capture_output=True, text=True, cwd=SCRIPT_DIR,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=SCRIPT_DIR,
     )
     ok = result.returncode == 0
     header = f"=== {name}: {'OK' if ok else 'FAILED'} (exit {result.returncode}) ==="

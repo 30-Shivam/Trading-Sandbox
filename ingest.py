@@ -53,6 +53,19 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+
+# Force UTF-8 stdout/stderr regardless of the invoking environment's default
+# codepage (Windows console/redirected-file default is cp1252, which cannot
+# encode characters real LLM output routinely contains -- e.g. U+2011
+# NON-BREAKING HYPHEN -- and previously crashed run_llm_agent()'s own
+# print() of verdict["rationale"] mid-run with UnicodeEncodeError, silently
+# dropping every ticker not yet processed that run (2026-08-26, found live
+# while re-running after the RRR-ceiling fix). errors="replace" rather than
+# a stricter mode -- a mis-rendered character in a log line is a cosmetic
+# problem; crashing the whole scheduled run over one is not. Must happen
+# before any print() call, including argparse's own --help output.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 import yfinance as yf
 
 import ai_context
