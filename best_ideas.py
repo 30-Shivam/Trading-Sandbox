@@ -106,8 +106,13 @@ REQUEST_DELAY_SEC = 0.5  # same pacing every other yfinance-calling loop in
 # doesn't feed itself) but IS its own separately IC-trackable strategy
 # label, so the ensembling step itself can be judged against its own best
 # individual input over time, not just assumed to help.
+# squeeze_breakout REMOVED 2026-08-26 (see config_loader.SECONDARY_STRATEGY_VERSIONS'
+# own comment for the full real-IC-based reasoning) -- its historical
+# Trade_Signals/Trade_Outcomes are untouched and still directly queryable
+# via ic_tracking.methodology_report("squeeze_breakout"), just no longer
+# iterated here, so it can no longer surface as a composite input.
 METHODOLOGIES = [
-    "ma_crossover", "squeeze_breakout", "rsi_mean_reversion", "pairs", "regime_switcher", "llm_agent",
+    "ma_crossover", "rsi_mean_reversion", "pairs", "regime_switcher", "llm_agent",
     "best_ideas_sector_rs", "best_ideas_qualitative", "best_ideas_meta",
 ]
 

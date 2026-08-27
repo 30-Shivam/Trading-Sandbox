@@ -189,31 +189,16 @@ DEFAULT_RISK_AMOUNT = 25         # default $ sidebar value for risk-based positi
 MAX_LLM_CANDIDATES = 10          # cap on the "LLM Agent" tab's per-page-load evaluation
                                   # count -- cost/rate-limit control, see llm_agent.py
 DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash --
-                                  # used by the secondary-strategy cash pools (currently
-                                  # just Squeeze Breakout, v39)
-SECONDARY_DEFAULT_CASH_OVERRIDES: dict[str, float] = {
-    # squeeze_breakout (v39) originally got this override 2026-08-20: lost to random-entry
-    # timing on every cut (ALL/TUNE/HOLDOUT) of a fresh multi-seed benchmark, AND showed a
-    # negative real live IC (-0.28 over 27 settled trades). v53 was promoted 2026-08-21 to
-    # replace v39 (stronger on the REAL-vs-RANDOM backtest checks) -- but that's a DIFFERENT
-    # claim from "does this strategy's own Trade_Score correctly rank which of its signals
-    # will do best," which is what live IC measures, and NOT what v53's promotion validated.
-    # 2026-08-25: confirmed live under v53, the IC problem persists and is WORSE, not fixed
-    # -- -0.32 over 40 settled trades (allocate_capital() sorts candidates by Trade_Score
-    # descending, so a negative IC means it preferentially funds the WORSE candidates first
-    # within this strategy's own pool). This override must stay regardless of which version
-    # is currently promoted, until a future retune's OWN live IC is confirmed non-negative --
-    # do not remove it just because a newer version cleared the backtest-only checks.
-    # Same "zero the default, don't force a full retirement" treatment breakout (v43) got in
-    # item 48 -- still shown/scanned/logged/fed into Best Ideas (useful context while a
-    # viable fix is sought; also automatically excluded from the Best Ideas composite blend
-    # itself now that ensemble_weight() zeroes a trust-floor-cleared negative-IC methodology
-    # -- see ic_tracking.ensemble_weight()'s own docstring), just requires deliberately
-    # typing in an amount here to actually allocate real capital. Per-label (not a
-    # DEFAULT_TOTAL_CASH change) so a FUTURE secondary strategy that clears validation still
-    # gets the normal $5,000 default -- see improvements.txt item 79.
-    "Squeeze Breakout": 0.0,
-}
+                                  # used by the secondary-strategy cash pools
+# squeeze_breakout's own entry here REMOVED 2026-08-26 -- it went past the
+# "zero the default" treatment straight to full removal from
+# config_loader.SECONDARY_STRATEGY_VERSIONS (see that dict's own comment
+# for the real, worsening live-IC history that motivated it), so this
+# sidebar loop no longer iterates it at all; an entry here would be dead
+# code. Per-label (not a DEFAULT_TOTAL_CASH change) so a FUTURE secondary
+# strategy that clears validation still gets the normal $5,000 default --
+# see improvements.txt item 79.
+SECONDARY_DEFAULT_CASH_OVERRIDES: dict[str, float] = {}
 DEFAULT_PRIMARY_CASH = 0         # default $ sidebar value for the PRIMARY (breakout,
                                   # v43) cash pool specifically -- deliberately 0, not
                                   # DEFAULT_TOTAL_CASH, since 2026-08-11: breakout (v43)

@@ -135,15 +135,26 @@ import swingtrade
 # "pairs" label directly. Real capital consequence: gets the same default
 # $5,000 cash pool every other newly-cleared secondary strategy has gotten.
 SECONDARY_STRATEGY_VERSIONS = {
-    # Promoted 2026-08-21 (v39 -> v53), per explicit user request: v53 was
-    # the strongest candidate found across the whole squeeze_breakout
-    # investigation (improvements.txt items 59/61/62) -- beats v39 outright
-    # on 2 of 3 cuts, ties the 3rd, best frequency retention of any
-    # candidate tried -- and was never promoted despite clearing validation
-    # weeks earlier. Made more urgent by item 88's real full-scale finding
-    # the same day: v39 had started LOSING to its own matched-random
-    # baseline on HOLDOUT (sharpe_like 0.0124 vs 0.0206).
-    "Squeeze Breakout": 53,
+    # Squeeze Breakout REMOVED 2026-08-26, per explicit user request during
+    # a portfolio-simplification pass ("I don't want it influencing anything
+    # else"). v53 (promoted 2026-08-21) cleared the backtest/real-vs-random
+    # validation that earned it a spot here, but its live IC never recovered
+    # -- confirmed -0.28 (v39, 27 trades, 2026-08-20) and then -0.32 (v53, 40
+    # trades, 2026-08-25/26), a real, worsening-not-improving pattern over a
+    # sizeable, trust-floor-cleared sample. It had already been fully
+    # neutralized everywhere that matters (SECONDARY_DEFAULT_CASH_OVERRIDES
+    # defaulted its cash pool to $0 since 2026-08-20; ensemble_weight()
+    # zeroes it out of the Best Ideas composite as of the 2026-08-25 fix) --
+    # this removes it from the daily scan/LLM-candidate-pool entirely,
+    # rather than leaving dead weight running forever. Same "remove all the
+    # losing strategies" treatment momentum_burst (v38) and adx_trend_entry
+    # (v40) got 2026-08-11 -- the underlying strategy code, Mongo candidates,
+    # and historical Trade_Signals/Trade_Outcomes are untouched, only taken
+    # out of this dict (and best_ideas.METHODOLOGIES, see that list's own
+    # comment). Revisit only if a future retune's own live IC turns out
+    # genuinely non-negative -- a better backtest result alone isn't enough,
+    # per the exact lesson SECONDARY_DEFAULT_CASH_OVERRIDES's history taught.
+    #
     # Promoted 2026-08-25 (v17 -> v66): v17's RRR (9.75) saturated
     # rrr_score_cap (4.0), granting the RRR score term's full 40/100
     # points to every ticker regardless of real RSI -- confirmed live,
@@ -171,7 +182,7 @@ SECONDARY_STRATEGY_VERSIONS = {
 # Same "config drives dispatch, a separate label drives what's logged"
 # pattern llm_agent.py's variant_strategy_name() already established for
 # prompt variants. A label absent from this dict logs under its own real
-# config.strategy unchanged (e.g. Squeeze Breakout -> "squeeze_breakout").
+# config.strategy unchanged (e.g. Mean-Reversion Pairs -> "pairs").
 SECONDARY_LOG_STRATEGY_OVERRIDES: dict[str, str] = {
     "RSI Mean-Reversion": "rsi_mean_reversion",
 }
