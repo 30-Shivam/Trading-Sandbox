@@ -9,8 +9,18 @@ import datetime
 from swingtrade.backtest import compute_max_drawdown, monte_carlo_drawdown
 
 
-def _trade(entry_date, pnl_pct, status="WIN"):
-    return {"entry_date": entry_date, "pnl_pct": pnl_pct, "status": status}
+# 2026-08-31: compute_max_drawdown()/monte_carlo_drawdown() now need
+# exit_date for concurrency weighting -- exit_date=entry_date (a
+# zero-day interval) keeps every trade below fully isolated/non-
+# overlapping, same as before the redesign, so every hand-verified
+# number in this file (about pnl-SEQUENCE/ordering effects, not
+# holding-period/concurrency) stays correct unchanged. Real
+# concurrency-weighting behavior is covered by tests/test_max_drawdown.py.
+def _trade(entry_date, pnl_pct, status="WIN", exit_date=None):
+    return {
+        "entry_date": entry_date, "exit_date": exit_date or entry_date,
+        "pnl_pct": pnl_pct, "status": status,
+    }
 
 
 def test_returns_none_with_fewer_than_three_resolved_trades():

@@ -83,53 +83,93 @@ def test_information_ratio_none_on_zero_std():
     assert ic.information_ratio([0.2, 0.2, 0.2]) is None
 
 
-def test_ensemble_weight_uses_ir_once_trust_floor_met():
-    report = {"trust_floor_met": True, "ir": 0.42}
-    assert ic.ensemble_weight(report) == 0.42
+# MIN_WINDOWS_FOR_IR_TRUST windows' worth of placeholder entries -- only
+# len() matters to ensemble_weight(), the per-window content is irrelevant.
+_ENOUGH_WINDOWS = [{"ic": 0.1}] * ic.MIN_WINDOWS_FOR_IR_TRUST
 
 
-def test_ensemble_weight_floors_negative_ir_at_zero():
-    report = {"trust_floor_met": True, "ir": -0.9}
-    assert ic.ensemble_weight(report) == 0.0
+# --- Continuous credibility shrinkage (2026-08-29 fix, replaces the old
+# binary trust-floor cutover): weight = credibility * max(signal, 0.0) +
+# (1 - credibility) * neutral_prior, where credibility = effective_n /
+# (effective_n + CREDIBILITY_HALF_LIFE_TRADES). See ensemble_weight()'s
+# own docstring for the full real-data motivation/tradeoff writeup.
 
-
-def test_ensemble_weight_neutral_prior_below_trust_floor():
-    report = {"trust_floor_met": False, "ir": 0.9}
+def test_ensemble_weight_no_signal_at_all_returns_neutral_prior():
+    # Nothing settled yet -- no data to shrink from, regardless of effective_n.
+    report = {"ir": None, "overall_ic": None, "effective_n_settled": 0.0}
     assert ic.ensemble_weight(report) == 1.0
     assert ic.ensemble_weight(report, neutral_prior=2.0) == 2.0
 
 
-def test_ensemble_weight_neutral_prior_when_ir_and_ic_both_missing():
-    report = {"trust_floor_met": True, "ir": None}
+def test_ensemble_weight_zero_effective_n_returns_neutral_prior_even_with_signal():
+    # credibility = 0/(0+K) = 0 -- a signal existing at all with zero
+    # effective weight behind it still fully shrinks to neutral.
+    report = {"ir": None, "overall_ic": 0.9, "effective_n_settled": 0.0}
     assert ic.ensemble_weight(report) == 1.0
 
 
-# --- overall_ic fallback (2026-08-25 fix): before this, ANY methodology
-# with ir=None fell all the way back to the flat neutral_prior, even a
-# trust-floor-cleared one with a real, known overall_ic -- meaning a
-# proven-bad methodology got the exact same weight as a proven-good one
-# for as long as ir stayed unavailable (which needs >=2 calendar windows,
-# not just enough trades). See ensemble_weight()'s own docstring for the
-# real squeeze_breakout-vs-llm_agent incident this caused.
-
-def test_ensemble_weight_uses_overall_ic_when_ir_not_yet_available():
-    report = {"trust_floor_met": True, "ir": None, "overall_ic": 0.28}
-    assert ic.ensemble_weight(report) == 0.28
+def test_ensemble_weight_half_credibility_at_K_effective_trades():
+    # effective_n == CREDIBILITY_HALF_LIFE_TRADES -> credibility == 0.5 by
+    # construction -- a clean, hand-computable midpoint.
+    report = {
+        "ir": None, "overall_ic": 0.4,
+        "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
+    }
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.4 + 0.5 * 1.0)
 
 
-def test_ensemble_weight_floors_negative_overall_ic_at_zero():
-    # The real squeeze_breakout case: trust floor cleared, ir still None,
-    # overall_ic solidly negative -- must be EXCLUDED (weight 0), not
-    # treated as equal to a positive methodology via the flat neutral prior.
-    report = {"trust_floor_met": True, "ir": None, "overall_ic": -0.32}
-    assert ic.ensemble_weight(report) == 0.0
+def test_ensemble_weight_negative_signal_floored_before_blending():
+    # Real squeeze_breakout-shaped case: a substantial negative signal at
+    # half credibility lands at half of neutral, not at 0 and not negative
+    # -- the floor-at-zero happens BEFORE blending, not after.
+    report = {
+        "ir": None, "overall_ic": -0.9,
+        "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
+    }
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.0 + 0.5 * 1.0)
+
+
+def test_ensemble_weight_converges_toward_full_signal_at_large_effective_n():
+    # As effective_n -> large, credibility -> 1, weight -> max(signal, 0)
+    # (never exactly, by design -- see docstring's "never 100% certain").
+    report = {"ir": None, "overall_ic": 0.35, "effective_n_settled": 1_000_000.0}
+    assert math.isclose(ic.ensemble_weight(report), 0.35, rel_tol=1e-4)
 
 
 def test_ensemble_weight_prefers_ir_over_overall_ic_when_both_available():
     # ir is the more trustworthy (time-stability-validated) signal --
-    # once it exists, it wins even if overall_ic differs.
-    report = {"trust_floor_met": True, "ir": 0.5, "overall_ic": -0.2}
-    assert ic.ensemble_weight(report) == 0.5
+    # once it exists AND has enough windows behind it, it wins even if
+    # overall_ic differs.
+    report = {
+        "ir": 0.5, "overall_ic": -0.2, "ic_series": _ENOUGH_WINDOWS,
+        "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
+    }
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.5 + 0.5 * 1.0)
+
+
+# --- MIN_WINDOWS_FOR_IR_TRUST gate (2026-08-27 fix): a 2-window ir is
+# technically defined (information_ratio() only needs 2 points for a std)
+# but empirically wild on real data (see ensemble_weight()'s own docstring:
+# +10.4 / -4.8 to -5.7 swings from real llm_agent/squeeze_breakout numbers
+# under a shortened window). ensemble_weight() should keep falling back to
+# overall_ic until enough real windows exist to trust ir's own stability.
+
+def test_ensemble_weight_falls_back_to_overall_ic_below_min_windows():
+    too_few = [{"ic": 0.1}] * (ic.MIN_WINDOWS_FOR_IR_TRUST - 1)
+    report = {
+        "ir": 0.9, "overall_ic": 0.3, "ic_series": too_few,
+        "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
+    }
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.3 + 0.5 * 1.0)
+
+
+def test_ensemble_weight_uses_ir_at_exactly_min_windows():
+    exactly_enough = [{"ic": 0.1}] * ic.MIN_WINDOWS_FOR_IR_TRUST
+    report = {
+        "ir": 0.9, "overall_ic": 0.3, "ic_series": exactly_enough,
+        "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
+    }
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.9 + 0.5 * 1.0)
 
 
 def test_ensemble_weight_below_trust_floor_ignores_overall_ic_entirely():

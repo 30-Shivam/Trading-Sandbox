@@ -8,13 +8,29 @@ changes without notice, and that's ongoing maintenance debt best absorbed by
 an actively-maintained Python library.
 """
 
+import os
 import time
 
 import pandas as pd
+import requests
 import yfinance as yf
+from dotenv import load_dotenv
 
 import swingtrade
 from watchlist import SECTOR_ETF
+
+# Reads FRED_API_KEY from the environment (see fetch_fred_series()) -- this
+# module must never depend on some OTHER already-imported module (storage/
+# mongo.py, notifications.py, llm_agent.py) having called load_dotenv()
+# first as a side effect. That exact "only works by import-order luck"
+# fragility already bit llm_agent.py once (2026-08-22, see its own
+# identical load_dotenv() call and comment) -- found again here 2026-08-31
+# while verifying FRED_API_KEY actually loads: a bare `import market_data`
+# alone saw fred_available() as False even with a real key configured,
+# and only started working once something else in the same process had
+# already imported storage/config_loader first. Matches storage/mongo.py's
+# own identical call for the same reason.
+load_dotenv()
 
 LOOKBACK_PERIOD = "1y"           # data window to fetch (needs 200d+ for SMA200)
 MARKET_INDEX_TICKER = "SPY"      # broad-market proxy for the macro gate
@@ -131,6 +147,78 @@ def get_macro_snapshot() -> dict:
         pass
 
     return {"vix": vix, "vix_change_pct": vix_change_pct, "headlines": get_macro_headlines()}
+
+
+FRED_API_KEY_ENV = "FRED_API_KEY"
+FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
+
+
+def fred_available() -> bool:
+    """Same "is this optional external service configured" convention as
+    llm_agent.py's own _gemini_available()/_groq_available() -- checked
+    before attempting a real fetch, not discovered by catching an
+    exception."""
+    return bool(os.environ.get(FRED_API_KEY_ENV))
+
+
+def fetch_fred_series(series_id: str, start, end) -> pd.Series | None:
+    """One daily FRED (Federal Reserve Economic Data) series as a pandas
+    Series, indexed by date -- for macro/regime research (see
+    benchmark_macro_regime.py). Requires FRED_API_KEY (free, no cost --
+    register at fred.stlouisfed.org/docs/api/api_key.html -- same "optional
+    external service, degrades gracefully if unset" convention as
+    GEMINI_API_KEY/DISCORD_WEBHOOK_URL elsewhere in this project). Returns
+    None if the key isn't configured or the request/parse fails for any
+    reason -- never raises, matching every other fetcher here.
+
+    Deliberately meant ONLY for NON-REVISED, market-observed series (e.g.
+    T10Y2Y, the daily 10-year/2-year Treasury yield spread) -- NOT
+    survey/estimate-based series like ISM PMI or GDP, which get genuinely
+    REVISED after their initial release. Reading "today's" FRED value for
+    a date in the backtest's past would silently graft a revision-driven
+    look-ahead-bias problem onto a codebase that's gone to real lengths
+    everywhere else (entry-fill timing, .shift(1) indicators, ticker-
+    holdout) to avoid exactly this class of bug. This function doesn't
+    enforce that choice for you -- picking a genuinely point-in-time-safe
+    series_id is the caller's responsibility, the same way choosing a
+    sensible lookback_days is elsewhere in this codebase.
+
+    `start`/`end` accept anything pd.Timestamp() can parse. Observations
+    with a missing value (FRED's own "." placeholder, e.g. a market
+    holiday) are dropped, not interpolated or forward-filled -- callers
+    that need a value for every calendar day should reindex/ffill this
+    Series themselves, an explicit choice rather than one silently made
+    here."""
+    api_key = os.environ.get(FRED_API_KEY_ENV)
+    if not api_key:
+        return None
+    params = {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "observation_start": pd.Timestamp(start).strftime("%Y-%m-%d"),
+        "observation_end": pd.Timestamp(end).strftime("%Y-%m-%d"),
+    }
+    try:
+        response = requests.get(FRED_BASE_URL, params=params, timeout=15)
+        response.raise_for_status()
+        observations = response.json().get("observations", [])
+    except Exception:
+        return None
+
+    dates, values = [], []
+    for obs in observations:
+        raw_value = obs.get("value")
+        if raw_value in (None, ".", ""):
+            continue
+        try:
+            dates.append(pd.Timestamp(obs["date"]))
+            values.append(float(raw_value))
+        except (ValueError, KeyError, TypeError):
+            continue
+    if not dates:
+        return None
+    return pd.Series(values, index=pd.DatetimeIndex(dates)).sort_index()
 
 
 def _get_analyst_data(ticker_obj: yf.Ticker) -> dict | None:
@@ -343,7 +431,7 @@ def get_ticker_currency(ticker: str) -> str:
 def fetch_ticker_bundle(
     tickers: tuple[str, ...],
     sector_lookup: dict[str, str] | None = None,
-) -> tuple[dict[str, dict], pd.DataFrame | None, list[tuple[str, str]], dict[str, pd.DataFrame]]:
+) -> tuple[dict[str, dict], pd.DataFrame | None, list[tuple[str, str]], dict[str, pd.DataFrame], pd.Series | None]:
     """Fetch OHLCV + earnings + headlines for every ticker ONCE, independent
     of any strategy config -- the pure-fetch half of what scan_tickers()
     used to do in one fetch-then-compute-then-discard loop. Also fetches the
@@ -363,7 +451,7 @@ def fetch_ticker_bundle(
     score_bundle_for_strategy() below. `None` (default) skips this
     entirely -- zero behavior/cost change for callers that don't pass it.
 
-    Returns `(bundle, market_df, skipped, sector_data)`: `bundle` maps ticker ->
+    Returns `(bundle, market_df, skipped, sector_data, yield_curve)`: `bundle` maps ticker ->
     `{"df": OHLCV DataFrame, "next_earnings": Timestamp | None,
     "top_headline": str, "currency": "USD" | "CAD"}` (see
     get_ticker_currency() -- a pure suffix check, not a fetch, so it
@@ -373,7 +461,10 @@ def fetch_ticker_bundle(
     point); `skipped` is `(ticker, reason)` pairs for tickers whose OWN
     data failed to fetch; `sector_data` maps sector name -> OHLCV (empty
     dict if `sector_lookup` wasn't given, or if a specific sector's ETF
-    failed to fetch -- same graceful-degradation treatment as market_df).
+    failed to fetch -- same graceful-degradation treatment as market_df);
+    `yield_curve` is a single FRED T10Y2Y Series (`None` if `FRED_API_KEY`
+    isn't set or the fetch failed -- same graceful-degradation treatment,
+    backs ma_crossover_yield_curve_spread_max, improvements.txt item 109/110).
 
     Callers running more than one strategy against the same tickers (see
     dip_buy_analyzer.py's multi-strategy dashboard sections) should call
@@ -383,6 +474,26 @@ def fetch_ticker_bundle(
         market_df = fetch_data(MARKET_INDEX_TICKER)
     except Exception:
         market_df = None
+
+    # Single shared FRED T10Y2Y series (2026-08-31) -- same "fetch once,
+    # unconditionally, degrade to None on any failure" treatment as
+    # market_df above, not per-ticker/per-sector like sector_data below,
+    # since it's one macro series shared by every ticker's own
+    # Yield_Curve_Spread. ~400-day window comfortably covers
+    # LOOKBACK_PERIOD ("1y")'s own ticker OHLCV range so
+    # precompute_ma_crossover_frame()'s reindex+ffill has real coverage
+    # across the whole window, not a thin tail. Gated on fred_available()
+    # (this same module) -- None (no FRED_API_KEY) is the normal, expected
+    # case, not an error; backs ma_crossover_yield_curve_spread_max
+    # (improvements.txt item 109/110).
+    yield_curve: pd.Series | None = None
+    if fred_available():
+        try:
+            yield_curve = fetch_fred_series(
+                "T10Y2Y", pd.Timestamp.now() - pd.Timedelta(days=400), pd.Timestamp.now()
+            )
+        except Exception:
+            yield_curve = None  # degrades gracefully, same as market_df above
 
     sector_data: dict[str, pd.DataFrame] = {}
     if sector_lookup:
@@ -413,7 +524,7 @@ def fetch_ticker_bundle(
             }
         except Exception as exc:
             skipped.append((ticker, str(exc)))
-    return bundle, market_df, skipped, sector_data
+    return bundle, market_df, skipped, sector_data, yield_curve
 
 
 def build_pair_price_panels(
@@ -459,6 +570,7 @@ def score_bundle_for_strategy(
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """Compute levels for every ticker in an already-fetched bundle (see
     fetch_ticker_bundle()), dispatching on `config.strategy`: "rsi"
@@ -481,7 +593,14 @@ def score_bundle_for_strategy(
     (improvements.txt items 68/70/71) on "breakout"/"squeeze_breakout"/
     "ma_crossover" only. Either omitted (default None) means every
     ticker's Sector_Relative_Strength reads None/NaN, same as before this
-    parameter existed."""
+    parameter existed.
+
+    `yield_curve` (single FRED T10Y2Y Series, also from fetch_ticker_bundle())
+    backs "ma_crossover"'s own Yield_Curve_Spread / ma_crossover_yield_curve_spread_max
+    filter (improvements.txt items 109/110) -- live, not just backtest/Optuna,
+    now that it's threaded here. Omitted (default None, or when FRED_API_KEY
+    isn't set) means Yield_Curve_Spread reads None/NaN and the filter never
+    excludes anything, same graceful-degradation convention as sector_data."""
     sector_lookup = sector_lookup or {}
     sector_data = sector_data or {}
     pair_price_panels = pair_price_panels or {}
@@ -534,6 +653,7 @@ def score_bundle_for_strategy(
                 levels = swingtrade.compute_ma_crossover_levels(
                     ticker, df, config, next_earnings_date=next_earnings,
                     top_headline=top_headline, market_df=market_df, sector_df=sector_ohlcv,
+                    yield_curve=yield_curve,
                 )
             elif config.strategy == "pairs":
                 levels = swingtrade.compute_pairs_levels(
@@ -578,9 +698,12 @@ def scan_tickers(
     only Sector_Relative_Strength filter (improvements.txt items 68/70/71)
     -- omitted (default None) means every ticker's Sector_Relative_Strength
     reads None/NaN, same as before this parameter existed."""
-    bundle, market_df, fetch_skipped, sector_data = fetch_ticker_bundle(tickers, sector_lookup=sector_lookup)
+    bundle, market_df, fetch_skipped, sector_data, yield_curve = fetch_ticker_bundle(
+        tickers, sector_lookup=sector_lookup
+    )
     results, score_skipped = score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+        yield_curve=yield_curve,
     )
     return results, fetch_skipped + score_skipped
 

@@ -158,6 +158,7 @@ import optuna
 import pandas as pd
 
 import config_loader
+import market_data as market_data_module
 import storage
 import swingtrade
 from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history
@@ -302,6 +303,13 @@ BREAKOUT_RELATIVE_STRENGTH_RANGE = (-50.0, 15.0)
 # same permissive lower bound so a search can find "no meaningful
 # filtering" if that's actually best rather than being forced to filter.
 SECTOR_RELATIVE_STRENGTH_RANGE = (-50.0, 15.0)
+# ma_crossover_yield_curve_spread_max (2026-08-31, benchmark_macro_regime.py's
+# real finding) -- a CEILING, opposite polarity from SECTOR_RELATIVE_STRENGTH_RANGE's
+# floor: lower/inverted spreads were found favorable. Bounds span solidly-inverted
+# through solidly-normal, informed by the real observed T10Y2Y range fetched this
+# session (roughly -1 to 3 over the last few years); a search can still find "no
+# meaningful filtering" near the upper end if that's actually best.
+YIELD_CURVE_SPREAD_MAX_RANGE = (-3.0, 5.0)
 # 0.0 = practical "disabled" (a real ratio is always >= 0); upper bound (3.0)
 # requires today's volume to be 3x the prior average -- a genuinely
 # demanding confirmation threshold. Same "let a real search decide"
@@ -799,6 +807,7 @@ def real_vs_random_ratio_check(
     start: pd.Timestamp, end: pd.Timestamp, sector_lookup: dict[str, str],
     earnings_data: dict | None = None, sector_data: dict | None = None,
     pair_price_panels: dict | None = None, momentum_panel: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
     seed: int = 1,
 ) -> dict:
     """Single-window (not fold-based) REAL-vs-RANDOM comparison for one
@@ -838,6 +847,7 @@ def real_vs_random_ratio_check(
         ticker_data, market_data, start, end, config, earnings_data=earnings_data,
         sector_lookup=sector_lookup, strategy=strategy, sector_data=sector_data,
         pair_price_panels=pair_price_panels, momentum_rank_frame=momentum_rank_frame,
+        yield_curve=yield_curve,
     )
     real_counts: dict[str, int] = {}
     for t in real_trades:
@@ -1012,6 +1022,7 @@ def build_objective(
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_panel: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
 ):
     """`multi_objective=False` (default) is byte-for-byte the original
     single-scalar-objective behavior -- unchanged, so every existing script/
@@ -1085,7 +1096,15 @@ def build_objective(
     signal depends on it). Precomputing the ranking once with a fixed
     lookback before the search started would silently make that whole
     search dimension a no-op. None (default) means every trial's
-    Momentum_Signal always reads False."""
+    Momentum_Signal always reads False.
+
+    `yield_curve` (optional, a single FRED T10Y2Y Series, see
+    market_data.py's fetch_fred_series()) backs ma_crossover's backtest/Optuna-only
+    ma_crossover_yield_curve_spread_max search dimension (2026-08-31,
+    benchmark_macro_regime.py) -- threaded straight through to
+    run_walk_forward() the same way sector_data is. None (default, or when
+    FRED_API_KEY isn't set) means every trial's Yield_Curve_Spread reads
+    None/NaN, same as before this parameter existed."""
     def objective(trial: optuna.Trial):
         # Shared by every strategy branch below -- hoisted out of the
         # per-strategy dicts (used to be 7 duplicated independent-sampling
@@ -1227,6 +1246,9 @@ def build_objective(
                 "ma_crossover_sector_relative_strength_min": trial.suggest_float(
                     "ma_crossover_sector_relative_strength_min", *SECTOR_RELATIVE_STRENGTH_RANGE
                 ),
+                "ma_crossover_yield_curve_spread_max": trial.suggest_float(
+                    "ma_crossover_yield_curve_spread_max", *YIELD_CURVE_SPREAD_MAX_RANGE
+                ),
                 "atr_take_profit_multiplier": atr_take_profit_multiplier,
                 "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
@@ -1297,7 +1319,7 @@ def build_objective(
             ticker_data, market_data, folds, candidate, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=strategy, max_workers=max_workers,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
-            momentum_rank_frame=trial_momentum_rank_frame,
+            momentum_rank_frame=trial_momentum_rank_frame, yield_curve=yield_curve,
         )
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
@@ -1520,6 +1542,18 @@ def main():
             if not etf_df.empty:
                 sector_data[sector] = etf_df
 
+    # Yield-curve data (backtest/Optuna-only ma_crossover_yield_curve_spread_max
+    # filter, 2026-08-31, benchmark_macro_regime.py) -- gated on
+    # market_data_module.fred_available(): degrades to a clean yield_curve=None
+    # no-op (same as every other optional feature here) if FRED_API_KEY isn't
+    # set, not an error. market_data (no suffix) is this function's own local
+    # DataFrame variable above -- market_data_module is the module import,
+    # aliased specifically to avoid colliding with that existing local name.
+    yield_curve = None
+    if args.strategy == "ma_crossover" and market_data_module.fred_available():
+        print("Fetching FRED T10Y2Y yield-curve spread for Yield_Curve_Spread...")
+        yield_curve = market_data_module.fetch_fred_series("T10Y2Y", start, end)
+
     ticker_data = {}
     for i, ticker in enumerate(tickers):
         if i > 0:
@@ -1612,7 +1646,7 @@ def main():
         tune_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
         sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
         sector_data=sector_data, pair_price_panels=pair_price_panels,
-        momentum_rank_frame=momentum_rank_frame_for(baseline_config),
+        momentum_rank_frame=momentum_rank_frame_for(baseline_config), yield_curve=yield_curve,
     )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
@@ -1651,7 +1685,7 @@ def main():
             min_effective_trade_count=min_effective_trade_count,
             min_win_rate=min_win_rate,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
-            momentum_panel=momentum_panel,
+            momentum_panel=momentum_panel, yield_curve=yield_curve,
         ),
         n_trials=args.trials, show_progress_bar=False,
     )
@@ -1672,9 +1706,11 @@ def main():
     if args.multi_objective:
         pareto = study.best_trials
         print()
-        print(f"Pareto front: {len(pareto)} non-dominated trial(s) (sharpe_like, max_drawdown%)")
+        print(f"Pareto front: {len(pareto)} non-dominated trial(s) (sharpe_like, tapered_max_drawdown%)")
         for t in sorted(pareto, key=lambda t: -t.values[0]):
-            print(f"  Trial #{t.number}: sharpe_like={t.values[0]:.4f}, max_drawdown={t.values[1]:.2f}%  "
+            raw_dd = t.user_attrs.get("max_drawdown")
+            raw_dd_str = f", raw={raw_dd:.2f}%" if raw_dd is not None else ""
+            print(f"  Trial #{t.number}: sharpe_like={t.values[0]:.4f}, tapered_max_drawdown={t.values[1]:.2f}%{raw_dd_str}  "
                   f"({_annualized_and_win_rate(t)})  params={t.params}")
 
         eligible = [t for t in pareto if t.values[0] > UNDER_SAMPLED_PENALTY]
@@ -1683,20 +1719,41 @@ def main():
             print("[WARN] No Pareto-optimal trial cleared the under-sampled floor -- not writing "
                   "a candidate. Try a wider date range, more tickers, or a longer in-sample window.")
             return
-        # Selection heuristic, stated plainly: highest sharpe_like among the
-        # Pareto-optimal trials (i.e. among configs where no OTHER trial beat
-        # them on both axes simultaneously) -- keeps the existing "one
-        # candidate gets written" champion/challenger flow intact rather than
-        # asking a human to pick blindly, while the full front (printed
-        # above) still shows what was traded off to get there.
-        best = max(eligible, key=lambda t: t.values[0])
+        # Selection heuristic (2026-08-31, improvements.txt item 110):
+        # highest sharpe_like among the Pareto-optimal trials that ALSO
+        # clear MIN_TRADES_FOR_TRUSTED_DRAWDOWN on their own TUNE
+        # effective_trade_count -- not just highest sharpe_like alone.
+        # Found via a real incident: a thin-sample trial (57 effective
+        # trades vs a 568.5 baseline) got selected purely for having the
+        # highest RAW sharpe_like among Pareto-eligible trials, despite its
+        # own drawdown axis being penalized down to a near-worst-case
+        # tapered_max_drawdown (87.34%) for exactly that thinness -- the
+        # selection step was silently ignoring the very penalty
+        # taper_drawdown_for_sample_size() exists to apply. `trusted_pool`
+        # falls back to the full `eligible` set (old behavior) only if NO
+        # Pareto-optimal trial clears the bar -- graceful degradation
+        # rather than refusing to write anything.
+        trusted_pool = [
+            t for t in eligible
+            if t.user_attrs.get("metrics", {}).get("effective_trade_count", 0) >= MIN_TRADES_FOR_TRUSTED_DRAWDOWN
+        ]
+        pool = trusted_pool or eligible
+        best = max(pool, key=lambda t: t.values[0])
         best_metrics = best.user_attrs.get("metrics", {})
-        best_drawdown = best.user_attrs.get("max_drawdown")
+        best_drawdown = best.user_attrs.get("max_drawdown")  # raw, NOT tapered -- see notes= below
         print()
         print(f"Selected from Pareto front, trial #{best.number}: sharpe_like={best.values[0]:.4f}, "
-              f"max_drawdown={best.values[1]:.2f}%  ({_annualized_and_win_rate(best)})")
+              f"tapered_max_drawdown={best.values[1]:.2f}% (raw={best_drawdown}%)  ({_annualized_and_win_rate(best)})")
         print(f"  params: {best.params}")
         print(f"  metrics (TUNE tickers): {best_metrics}")
+        if not trusted_pool:
+            print(f"  [WARN] NO Pareto-optimal trial reached MIN_TRADES_FOR_TRUSTED_DRAWDOWN "
+                  f"({MIN_TRADES_FOR_TRUSTED_DRAWDOWN} effective trades) -- falling back to the highest "
+                  "raw sharpe_like among ALL Pareto-eligible trials regardless of sample size. This trial's "
+                  f"own effective_trade_count is {best_metrics.get('effective_trade_count')}; its raw drawdown "
+                  "above may look reassuring but is itself thinly sampled and was heavily penalized in the "
+                  "tapered score. Treat this candidate with real skepticism, not just the raw numbers above, "
+                  "until re-checked on a larger sample (wider date range, more tickers, or more trials).")
     else:
         best = study.best_trial
         best_metrics = best.user_attrs.get("metrics", {})
@@ -1808,7 +1865,7 @@ def main():
             holdout_ticker_data, market_data, folds, baseline_config, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
-            momentum_rank_frame=momentum_rank_frame_for(baseline_config),
+            momentum_rank_frame=momentum_rank_frame_for(baseline_config), yield_curve=yield_curve,
         )
         holdout_baseline_metrics = summarize_weighted(holdout_baseline_results, end, args.recency_half_life_days)
 
@@ -1816,7 +1873,7 @@ def main():
             holdout_ticker_data, market_data, folds, candidate_config, earnings_data=earnings_data,
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
-            momentum_rank_frame=momentum_rank_frame_for(candidate_config),
+            momentum_rank_frame=momentum_rank_frame_for(candidate_config), yield_curve=yield_curve,
         )
         holdout_candidate_metrics = summarize_weighted(holdout_candidate_results, end, args.recency_half_life_days)
 
@@ -1846,7 +1903,7 @@ def main():
                 holdout_ticker_data, market_data, folds, live_config, earnings_data=earnings_data,
                 sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
                 sector_data=sector_data, pair_price_panels=pair_price_panels,
-                momentum_rank_frame=momentum_rank_frame_for(live_config),
+                momentum_rank_frame=momentum_rank_frame_for(live_config), yield_curve=yield_curve,
             )
             holdout_live_metrics = summarize_weighted(holdout_live_results, end, args.recency_half_life_days)
             print(f"  LIVE ({live_label}) on holdout: {holdout_live_metrics}")
@@ -1895,12 +1952,12 @@ def main():
     baseline_rvr = real_vs_random_ratio_check(
         args.strategy, baseline_config, ticker_data, market_data, start, end, sector_lookup,
         earnings_data=earnings_data, sector_data=sector_data, pair_price_panels=pair_price_panels,
-        momentum_panel=momentum_panel,
+        momentum_panel=momentum_panel, yield_curve=yield_curve,
     )
     candidate_rvr = real_vs_random_ratio_check(
         args.strategy, candidate_config, ticker_data, market_data, start, end, sector_lookup,
         earnings_data=earnings_data, sector_data=sector_data, pair_price_panels=pair_price_panels,
-        momentum_panel=momentum_panel,
+        momentum_panel=momentum_panel, yield_curve=yield_curve,
     )
     print(f"  BASELINE  ({args.strategy}, DEFAULT_CONFIG): REAL sharpe_like={baseline_rvr['real'].get('sharpe_like')} "
           f"vs RANDOM sharpe_like={baseline_rvr['random'].get('sharpe_like')}  (gap={baseline_rvr['gap']})")
@@ -1927,7 +1984,10 @@ def main():
         f"Baseline sharpe_like={baseline_metrics.get('sharpe_like')}, best sharpe_like={best_sharpe:.4f}."
     )
     if args.multi_objective:
-        notes += f" Selected trial max_drawdown={best_drawdown}% (Pareto front had {len(pareto)} trial(s))."
+        notes += (
+            f" Selected trial raw max_drawdown={best_drawdown}%, tapered_max_drawdown="
+            f"{best.values[1]:.2f}% (Pareto front had {len(pareto)} trial(s))."
+        )
     if holdout_metrics:
         notes += (
             f" Holdout ({len(holdout_tickers)} tickers): baseline sharpe_like="

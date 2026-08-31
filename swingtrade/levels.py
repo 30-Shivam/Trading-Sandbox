@@ -2586,6 +2586,7 @@ def precompute_ma_crossover_frame(
     config: TradingConfig = DEFAULT_CONFIG,
     market_df: pd.DataFrame | None = None,
     sector_df: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Vectorized precompute of every column ma_crossover_levels_from_frame()
     needs -- built ON TOP of precompute_breakout_frame() wholesale, like
@@ -2596,12 +2597,31 @@ def precompute_ma_crossover_frame(
     counterparts -- MA_Short_Prev/MA_Long_Prev are needed to detect the
     ACTUAL crossover day (short was <= long yesterday, short > long today),
     not just "short is currently above long," which would fire on every
-    day the relationship holds rather than only the day it changes."""
+    day the relationship holds rather than only the day it changes.
+
+    `yield_curve` (optional, a single date-indexed Series shared across
+    every ticker -- see market_data.fetch_fred_series(), currently only
+    ever T10Y2Y) backs the BACKTEST/OPTUNA-ONLY
+    ma_crossover_yield_curve_spread_max filter (see that field's own
+    comment in config.py for the real finding motivating it). Forward-
+    filled onto `df`'s own trading-day index first (FRED's own calendar
+    doesn't align to trading days -- weekends/holidays would otherwise
+    read NaN), then `.shift(1)`'d -- the same no-look-ahead discipline
+    every other indicator here uses, and the same "strictly BEFORE
+    signal_date" convention benchmark_macro_regime.py's own
+    _regime_as_of() already established, so a live signal can never read
+    a same-day-or-later FRED observation. `Yield_Curve_Spread` is NaN
+    wherever no yield_curve observation exists yet, same missing-data
+    convention Sector_Relative_Strength already follows -- never excludes
+    a signal on its own (see the scoring/backtest gates, which both treat
+    NaN as "unavailable, don't exclude")."""
     df = precompute_breakout_frame(df, config, market_df=market_df, sector_df=sector_df)
     df["MA_Short"] = df["Close"].rolling(window=config.ma_crossover_short_window).mean()
     df["MA_Long"] = df["Close"].rolling(window=config.ma_crossover_long_window).mean()
     df["MA_Short_Prev"] = df["MA_Short"].shift(1)
     df["MA_Long_Prev"] = df["MA_Long"].shift(1)
+    if yield_curve is not None:
+        df["Yield_Curve_Spread"] = yield_curve.reindex(df.index, method="ffill").shift(1)
     return df
 
 
@@ -2708,6 +2728,15 @@ def ma_crossover_levels_from_frame(
         if pd.notna(srs_val):
             sector_relative_strength = round(float(srs_val), 4)
 
+    # Yield_Curve_Spread (backtest/Optuna-only, see config.py's
+    # ma_crossover_yield_curve_spread_max) -- same graceful missing-
+    # column/NaN treatment as Sector_Relative_Strength above.
+    yield_curve_spread = None
+    if "Yield_Curve_Spread" in frame.columns:
+        ycs_val = last_row["Yield_Curve_Spread"]
+        if pd.notna(ycs_val):
+            yield_curve_spread = round(float(ycs_val), 4)
+
     return {
         "Ticker": ticker,
         "As_Of": last_date.date(),
@@ -2716,6 +2745,7 @@ def ma_crossover_levels_from_frame(
         "ATR": round(atr, 2),
         "ADX": adx,
         "Sector_Relative_Strength": sector_relative_strength,
+        "Yield_Curve_Spread": yield_curve_spread,
         "MA_Short": round(ma_short, 2),
         "MA_Long": round(ma_long, 2),
         "MA_Crossover_Signal": crossover_signal,
@@ -2739,6 +2769,7 @@ def compute_ma_crossover_levels(
     top_headline: str = "",
     market_df: pd.DataFrame | None = None,
     sector_df: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
 ) -> dict:
     """Compute moving-average-crossover levels for one ticker's OHLCV
     history -- a genuinely different mechanical trigger from every
@@ -2767,12 +2798,22 @@ def compute_ma_crossover_levels(
     Thin wrapper over precompute_ma_crossover_frame()/
     ma_crossover_levels_from_frame() -- kept as a single-call convenience
     for the live dashboard, matching every other strategy's same
-    rationale. NOT wired into any dashboard tab yet, NOT called from
-    ingest.py -- this strategy is pending its own random-entry-timing
-    validation (see benchmark_random_entry.py) before being trusted with
-    even experimental/tracked-only status, let alone capital.
+    rationale. ma_crossover cleared its own random-entry-timing validation
+    (benchmark_random_entry.py) and was promoted to the PRIMARY, real-capital
+    strategy on 2026-08-16 (improvements.txt item 73) -- this function is
+    what market_data.score_bundle_for_strategy() actually calls for every
+    live "ma_crossover" scan (both the dashboard and ingest.py).
+
+    `yield_curve` (optional, a single FRED T10Y2Y Series -- see
+    market_data.fetch_ticker_bundle()) backs Yield_Curve_Spread /
+    ma_crossover_yield_curve_spread_max (improvements.txt items 109/110),
+    live as well as backtest/Optuna now that it's threaded here. Omitted
+    (default None) means Yield_Curve_Spread reads None and the filter never
+    excludes anything, same graceful-degradation convention as sector_df.
     """
-    frame = precompute_ma_crossover_frame(df, config, market_df=market_df, sector_df=sector_df)
+    frame = precompute_ma_crossover_frame(
+        df, config, market_df=market_df, sector_df=sector_df, yield_curve=yield_curve
+    )
     as_of = frame.index[-1]
     return ma_crossover_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 

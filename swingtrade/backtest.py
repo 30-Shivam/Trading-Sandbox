@@ -60,6 +60,7 @@ import os
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -2698,6 +2699,7 @@ def simulate_ma_crossover_signals(
     earnings_dates: pd.DatetimeIndex | None = None,
     sector: str = "Unknown",
     sector_ohlcv: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
 ) -> list[dict]:
     """Moving-average-crossover counterpart to every other simulate_*_signals()
     this session -- buys the day a short-term SMA crosses ABOVE a
@@ -2731,6 +2733,13 @@ def simulate_ma_crossover_signals(
     this strategy's backtested Catalyst_Warning was ALWAYS False regardless
     of real earnings proximity (see improvements.txt for the gap this
     closes, shared with simulate_squeeze_breakout_signals()).
+
+    `yield_curve` (optional, a single date-indexed Series shared across
+    every ticker -- see market_data.fetch_fred_series(), currently only
+    ever T10Y2Y) backs the BACKTEST/OPTUNA-ONLY
+    ma_crossover_yield_curve_spread_max filter -- see config.py's own
+    comment on that field for the real finding motivating it
+    (benchmark_macro_regime.py, 2026-08-31).
     """
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
@@ -2744,7 +2753,9 @@ def simulate_ma_crossover_signals(
     # enable the new, backtest/Optuna-only Sector_Relative_Strength filter
     # below; nothing else in this strategy reads Relative_Strength, so this
     # is additive and changes no existing gating behavior.
-    frame = precompute_ma_crossover_frame(ohlcv, config, market_df=market_ohlcv, sector_df=sector_ohlcv)
+    frame = precompute_ma_crossover_frame(
+        ohlcv, config, market_df=market_ohlcv, sector_df=sector_ohlcv, yield_curve=yield_curve,
+    )
 
     for as_of in eligible_dates:
         try:
@@ -2766,6 +2777,9 @@ def simulate_ma_crossover_signals(
             continue
         sector_rel_strength = levels.get("Sector_Relative_Strength")
         if sector_rel_strength is not None and sector_rel_strength < config.ma_crossover_sector_relative_strength_min:
+            continue
+        yield_curve_spread = levels.get("Yield_Curve_Spread")
+        if yield_curve_spread is not None and yield_curve_spread > config.ma_crossover_yield_curve_spread_max:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]
@@ -2924,6 +2938,7 @@ def run_backtest(
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     insider_data: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
@@ -2995,7 +3010,19 @@ def run_backtest(
     multiprocessing path (ProcessPoolExecutor initargs) from day one -- see
     the insider_data note immediately above for why forgetting this for a
     strategy whose ENTIRE signal depends on the cross-ticker data would be
-    a silent, not-a-crash failure in every parallel Optuna trial."""
+    a silent, not-a-crash failure in every parallel Optuna trial.
+
+    `yield_curve` (optional, a single date-indexed Series shared across
+    EVERY ticker unchanged -- see market_data.fetch_fred_series(),
+    currently only ever T10Y2Y) backs "ma_crossover"'s BACKTEST/OPTUNA-ONLY
+    ma_crossover_yield_curve_spread_max filter (see config.py's own
+    comment on that field). Unlike sector_data/pair_price_panels/
+    momentum_rank_frame, this is NOT resolved per-ticker at all -- there's
+    no per-sector or per-ticker lookup, the same Series is passed straight
+    through to every ticker's own simulate_ma_crossover_signals() call.
+    `None` (default) means no yield-curve data at all -- Yield_Curve_Spread
+    then reads None/NaN and the gate never excludes on its own, same
+    convention as every other optional filter here."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     sector_data = sector_data or {}
@@ -3054,6 +3081,7 @@ def run_backtest(
             trades = simulate_ma_crossover_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector, sector_ohlcv=sector_ohlcv,
+                yield_curve=yield_curve,
             )
         elif strategy == "pairs":
             trades = simulate_pairs_signals(
@@ -3206,10 +3234,10 @@ def _annualize_sharpe(resolved: list[dict], sharpe_like: float | None) -> tuple[
     same standard trade-frequency convention: trades_per_year from the
     pooled trades' own entry_date span, annualized_sharpe_like =
     sharpe_like * sqrt(trades_per_year). Same explicit caveat as
-    compute_max_drawdown(): an approximation for reading the number on a
-    familiar scale, not a literal compounding portfolio simulation (no
-    concurrent-position capital allocation modeled) -- additive alongside
-    sharpe_like, not a replacement for it.
+    compute_max_drawdown()'s own docstring: an approximation for reading
+    the number on a familiar scale, not a literal dollar-accurate
+    portfolio simulation -- additive alongside sharpe_like, not a
+    replacement for it.
 
     Returns (trades_per_year, annualized_sharpe_like), both None if there
     aren't at least 2 distinct entry dates to establish a rate from, if
@@ -3395,48 +3423,172 @@ def summarize_by_period(trades: list[dict], summarize_fn=None) -> dict:
     return {str(year): summarize_fn(bucket) for year, bucket in sorted(buckets.items())}
 
 
-def compute_max_drawdown(trades: list[dict]) -> float | None:
-    """Max peak-to-trough decline (%) of a SEQUENTIAL equity curve built by
-    compounding resolved trades in chronological (entry_date) order --
-    optimize.py's default single-objective search only ever optimizes
-    sharpe_like (mean/stdev), which is blind to tail risk: a config can
-    "win" by juicing consistency while quietly tolerating a nastier
-    worst-case drawdown. This gives Optuna's optional multi-objective mode
-    (see optimize.py --multi-objective) a second axis to actually see that.
+def _concurrency_at_entry(resolved: list[dict]) -> list[int]:
+    """For each trade in `resolved` (same order as input), how many trades
+    -- including itself -- had an OPEN `[entry_date, exit_date]` interval
+    (closed on both ends) at the moment THIS trade itself entered. Pure
+    O(n log n) event-delta sweep over dates already present on every
+    resolved trade dict (no OHLCV, no new data dependency): +1 on
+    `entry_date`, -1 the day AFTER `exit_date` (so a position still counts
+    as open ON its own exit_date -- see compute_max_drawdown()'s own
+    docstring for why that closed-interval convention was chosen: there's
+    no intraday fill-sequencing data across different tickers to know
+    whose capital freed up first on a shared boundary day).
 
-    Deliberately a simplification, not a precise portfolio simulation: this
-    engine doesn't track concurrent-position capital allocation (multiple
-    tickers' trades can genuinely overlap in real calendar time), so this
-    treats the pooled trade list as if positions were taken one at a time,
-    compounding sequentially. That's a standard, defensible proxy for how
-    much LOSS-CLUSTERING a config produces -- not a literal "what would my
-    account balance have done" claim. Returns None if there are no
-    resolved (non-OPEN) trades."""
+    Every trade's own entry event guarantees its own date key exists in
+    the running tally, so every returned count is always >= 1 -- callers
+    never need a divide-by-zero guard on `1 / count`."""
+    delta: dict = defaultdict(int)
+    for t in resolved:
+        delta[t["entry_date"]] += 1
+        delta[t["exit_date"] + timedelta(days=1)] -= 1
+    running = 0
+    concurrency_as_of: dict = {}
+    for d in sorted(delta):
+        running += delta[d]
+        concurrency_as_of[d] = running
+    return [concurrency_as_of[t["entry_date"]] for t in resolved]
+
+
+def _batched_weighted_returns(resolved: list[dict]) -> list[float]:
+    """Per-trade weighted returns (`pnl_pct/100` scaled by
+    `1/_concurrency_at_entry()`), combined ADDITIVELY within each shared
+    `exit_date`, returned as one value per distinct exit_date in
+    chronological order -- see compute_max_drawdown()'s own docstring for
+    why same-day exits must be summed, not compounded against each other
+    one at a time (order-dependent phantom-peak bug, verified numerically
+    in tests/test_max_drawdown.py::test_same_day_exits_are_order_independent)."""
+    concurrency = _concurrency_at_entry(resolved)
+    batches: dict = defaultdict(float)
+    for t, c in zip(resolved, concurrency):
+        batches[t["exit_date"]] += (t["pnl_pct"] / 100) / c
+    return [batches[d] for d in sorted(batches)]
+
+
+def compute_max_drawdown(trades: list[dict]) -> float | None:
+    """Max peak-to-trough decline (%) of a CONCURRENCY-WEIGHTED equity
+    curve -- approximates real portfolio risk instead of the old model's
+    fiction that every pooled trade (across up to 407 tickers) used 100%
+    of capital, one at a time, with zero overlap. optimize.py's default
+    single-objective search only ever optimizes sharpe_like (mean/stdev),
+    which is blind to tail risk: a config can "win" by juicing consistency
+    while quietly tolerating a nastier worst-case drawdown. This gives
+    Optuna's optional multi-objective mode (see optimize.py
+    --multi-objective) a second axis to actually see that.
+
+    2026-08-31 redesign: found via a real multi-objective search for
+    ma_crossover that the OLD sequential-100%-per-trade model produced
+    94.8% "drawdown" for an UNTUNED DEFAULT_CONFIG baseline and 98.5% for
+    a validated candidate -- numbers too saturated near 100% to
+    discriminate a good config from a bad one, because this is a
+    swing-trading strategy scanning up to 407 tickers daily with positions
+    held up to config.max_holding_days at a time: many trades genuinely
+    overlap in real calendar time, and treating each as if it alone
+    consumed the whole account manufactures a far worse curve than any
+    real (even lightly diversified) account would show.
+
+    Model: `_concurrency_at_entry()` sweep-line-counts how many OTHER
+    trades (including itself) had an open [entry_date, exit_date] interval
+    (both dates inclusive) at the moment THIS trade itself entered --
+    using only entry_date/exit_date, both already present on every
+    resolved trade dict (see settlement.py's settle_trade()/
+    settle_trade_with_trailing()). Each trade's position_weight = 1 / that
+    count -- a fixed snapshot of its estimated share of capital at the
+    moment it opened, not a dynamically renormalized daily allocation.
+    Trades sharing an exit_date are combined ADDITIVELY (weighted-sum),
+    never compounded against each other one at a time -- see
+    _batched_weighted_returns()'s own docstring for why. Batches are
+    compounded across distinct exit_date values in chronological order:
+    P&L realizes (and capital frees up) at EXIT, not entry, so that's when
+    each trade's weighted return books into the running equity curve.
+
+    Reduces to the exact OLD sequential-100%-per-trade behavior whenever
+    there is no real overlap (every position_weight is 1.0, one trade per
+    batch) -- verified in tests/test_max_drawdown.py.
+
+    Still an approximation, not a dollar-accurate portfolio simulation:
+      - No hard cap enforces that concurrently-active weights sum to <=1
+        -- position_weight is a per-trade snapshot at ITS OWN entry, never
+        renormalized against trades that open/close around it, so very
+        high-concurrency clusters can be under- or over-weighted relative
+        to a real fixed-capital account.
+      - No daily mark-to-market: an open position's equity impact is
+        invisible until its exit_date batch resolves, so intraday/interday
+        unrealized drawdown while a position is still open isn't
+        captured -- this function only ever receives lightweight
+        trade-summary dicts, never OHLCV, by design.
+      - Same-day entry/exit boundary convention: a trade exiting on day D
+        and a trade entering on day D are treated as concurrent that day
+        (closed-interval convention) -- there's no intraday
+        fill-sequencing data across different tickers to know whose
+        capital freed up first.
+      - Still a proxy for LOSS-CLUSTERING risk under a plausible
+        capital-allocation approximation, not a literal "what would my
+        account balance have done" claim -- same spirit as the old model,
+        just a materially less misleading one.
+
+    Returns None if there are no resolved (non-OPEN) trades, or if any
+    resolved trade is missing entry_date/exit_date (same
+    degrade-gracefully convention as compute_k_ratio()/annualized-sharpe
+    helpers use for live-Mongo-pooled minimal dicts -- no current caller
+    triggers this, but it avoids a surprising crash if one ever does)."""
     resolved = [t for t in trades if t["status"] != "OPEN"]
     if not resolved:
         return None
-    ordered = sorted(resolved, key=lambda t: t["entry_date"])
+    if any("entry_date" not in t or "exit_date" not in t for t in resolved):
+        return None
     equity = 1.0
     peak = 1.0
     max_dd = 0.0
-    for t in ordered:
-        equity *= (1 + t["pnl_pct"] / 100)
+    for r in _batched_weighted_returns(resolved):
+        equity *= (1 + r)
         peak = max(peak, equity)
         if peak > 0:
             max_dd = max(max_dd, (peak - equity) / peak)
     return round(max_dd * 100, 2)
 
 
+def _exit_date_batch_layout(resolved: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Precomputes the (order, boundaries) pair `monte_carlo_drawdown()`
+    needs to batch same-exit_date trades additively across every
+    simulation without re-deriving the layout each time. `order` is a
+    permutation of `resolved`'s indices sorted by exit_date; `boundaries`
+    is the start index (within the `order`-permuted array) of each
+    distinct exit_date's group, ready to feed straight into
+    `np.add.reduceat`."""
+    order = np.array(sorted(range(len(resolved)), key=lambda i: resolved[i]["exit_date"]), dtype=int)
+    sorted_exit_dates = [resolved[i]["exit_date"] for i in order]
+    boundaries = [0]
+    for i in range(1, len(sorted_exit_dates)):
+        if sorted_exit_dates[i] != sorted_exit_dates[i - 1]:
+            boundaries.append(i)
+    return order, np.array(boundaries, dtype=int)
+
+
 def monte_carlo_drawdown(trades: list[dict], n_simulations: int = 1000, seed: int = 42) -> dict | None:
     """How much of compute_max_drawdown()'s single chronological-order
     result is just the LUCK of the particular sequence a fixed set of
     trades happened to occur in? Reshuffles the same resolved trades'
-    pnl_pct values into n_simulations random orderings, sequentially
-    compounds each (same "not a real concurrent-position portfolio sim"
-    simplification as compute_max_drawdown()), and reports the resulting
-    max_drawdown distribution -- a materially worse P95/worst case than
-    the actual chronological run means the smooth-looking real equity
-    curve was partly lucky ordering, not just genuine edge quality.
+    pnl_pct values into n_simulations random orderings and reports the
+    resulting max_drawdown distribution (same concurrency-weighted,
+    exit-date-batched equity model as compute_max_drawdown() -- see that
+    function's own docstring for the full model/limits) -- a materially
+    worse P95/worst case than the actual chronological run means the
+    smooth-looking real equity curve was partly lucky ordering, not just
+    genuine edge quality.
+
+    2026-08-31: composes with compute_max_drawdown()'s concurrency
+    weighting by keeping each trade's OWN entry_date/exit_date -- and
+    therefore its own position_weight and its own exit-date batch
+    membership -- FIXED across every simulation; only WHICH pnl_pct value
+    lands on which (fixed) weighted trade slot is reshuffled. Deliberate:
+    concurrency/weighting is a property of when the strategy's signals
+    actually fired and how long positions were actually held, which this
+    check isn't asking about -- that's a sample-generalization question
+    already covered by ticker-holdout (item 69), not an ordering-luck
+    question. Weights and exit-date batch layout are computed ONCE via
+    _exit_date_batch_layout() and reused across all n_simulations, not
+    re-derived per simulation.
 
     Reshuffles ORDER only, not trade SELECTION -- this answers "how lucky
     was the sequence", not "how lucky was the sample" (that's what
@@ -3444,16 +3596,26 @@ def monte_carlo_drawdown(trades: list[dict], n_simulations: int = 1000, seed: in
 
     Returns None with fewer than 3 resolved trades (mirrors
     compute_k_ratio()'s floor -- not enough trades for a distribution to
-    mean anything)."""
+    mean anything), or if any resolved trade is missing
+    entry_date/exit_date (same degrade-gracefully convention
+    compute_max_drawdown() now uses)."""
     resolved = [t for t in trades if t["status"] != "OPEN"]
     if len(resolved) < 3:
         return None
+    if any("entry_date" not in t or "exit_date" not in t for t in resolved):
+        return None
 
+    weights = np.array([1.0 / c for c in _concurrency_at_entry(resolved)], dtype=float)
     pnl_pct = np.array([t["pnl_pct"] for t in resolved], dtype=float)
+    order, boundaries = _exit_date_batch_layout(resolved)
+
     rng = np.random.default_rng(seed)
     shuffled = rng.permuted(np.tile(pnl_pct, (n_simulations, 1)), axis=1)
+    weighted = (shuffled / 100) * weights
+    weighted = weighted[:, order]
+    batch_returns = np.add.reduceat(weighted, boundaries, axis=1)
 
-    equity = np.cumprod(1 + shuffled / 100, axis=1)
+    equity = np.cumprod(1 + batch_returns, axis=1)
     peak = np.maximum.accumulate(equity, axis=1)
     drawdown = np.where(peak > 0, (peak - equity) / peak, 0.0)
     max_dd_pct = drawdown.max(axis=1) * 100
@@ -3474,11 +3636,15 @@ def compute_k_ratio(trades: list[dict]) -> float | None:
     calendar time, distinct from sharpe_like (mean/stdev of per-trade
     returns) which is blind to *ordering* -- two configs with identical
     win_rate/sharpe_like can still differ sharply in whether gains accrue
-    steadily or in one lumpy cluster. Built the same way as
-    compute_max_drawdown(): compound resolved trades into a single
-    sequential equity curve in chronological (entry_date) order (same
-    "not a real concurrent-position portfolio sim" caveat applies), then
-    fit an OLS regression of log(equity) against elapsed calendar days
+    steadily or in one lumpy cluster. Compounds resolved trades into a
+    single SEQUENTIAL, unweighted equity curve in chronological
+    (entry_date) order -- deliberately kept as the older simplification
+    for now (2026-08-31: compute_max_drawdown() was reworked into a
+    concurrency-weighted model that no longer treats every trade as 100%
+    of capital; k_ratio has the identical "not a real concurrent-position
+    portfolio sim" flaw but is a documented follow-up, not yet updated --
+    see improvements.txt), then fit an OLS regression of log(equity)
+    against elapsed calendar days
     (log-space so compounding growth is linear, the standard K-ratio
     setup). K-ratio is the regression slope's t-statistic (slope divided
     by its own standard error) -- large and positive means equity grew
@@ -3555,6 +3721,7 @@ def _run_fold_sequential(
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
 ) -> FoldResult:
     """The actual per-fold work, shared by both the sequential and
     parallel paths of run_walk_forward() -- one fold's in-sample and
@@ -3563,12 +3730,12 @@ def _run_fold_sequential(
     in_trades = run_backtest(
         ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config,
         earnings_data, sector_lookup, strategy, sector_data, pair_price_panels,
-        momentum_rank_frame=momentum_rank_frame,
+        momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve,
     )
     out_trades = run_backtest(
         ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config,
         earnings_data, sector_lookup, strategy, sector_data, pair_price_panels,
-        momentum_rank_frame=momentum_rank_frame,
+        momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve,
     )
     return FoldResult(
         fold=fold,
@@ -3612,6 +3779,11 @@ _worker_pair_price_panels: dict[str, pd.DataFrame] | None = None
 # was supplied at all, every worker's Momentum_Signal then always reads
 # False.
 _worker_momentum_rank_frame: pd.DataFrame | None = None
+# Shared yield-curve Series (see run_backtest()'s own docstring) -- same
+# "loaded once per worker, not once per fold" treatment as the above.
+# Unlike sector_data/pair_price_panels, this is NOT keyed by anything --
+# the exact same Series object is handed unchanged to every ticker.
+_worker_yield_curve: pd.Series | None = None
 
 
 def _init_worker(
@@ -3619,14 +3791,16 @@ def _init_worker(
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
 ) -> None:
     global _worker_ticker_data, _worker_market_data, _worker_sector_data, _worker_pair_price_panels
-    global _worker_momentum_rank_frame
+    global _worker_momentum_rank_frame, _worker_yield_curve
     _worker_ticker_data = ticker_data
     _worker_market_data = market_data
     _worker_sector_data = sector_data
     _worker_pair_price_panels = pair_price_panels
     _worker_momentum_rank_frame = momentum_rank_frame
+    _worker_yield_curve = yield_curve
 
 
 def _run_fold_worker(
@@ -3639,7 +3813,7 @@ def _run_fold_worker(
     pickle) actually cross the process boundary per task."""
     return _run_fold_sequential(
         fold, _worker_ticker_data, _worker_market_data, config, earnings_data, sector_lookup, strategy,
-        _worker_sector_data, _worker_pair_price_panels, _worker_momentum_rank_frame,
+        _worker_sector_data, _worker_pair_price_panels, _worker_momentum_rank_frame, _worker_yield_curve,
     )
 
 
@@ -3656,6 +3830,7 @@ def run_walk_forward(
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
+    yield_curve: pd.Series | None = None,
 ) -> list[FoldResult]:
     """Run the backtest across every fold, in-sample and out-of-sample
     separately. Optuna (Phase 5) evaluates a candidate config by scoring it
@@ -3710,12 +3885,20 @@ def run_walk_forward(
     thread would mean every Optuna trial run with `parallel=True` silently
     sees no percentile data and produces zero signals. None (default) means
     no percentile data at all, identical to every caller from before this
-    parameter existed."""
+    parameter existed.
+
+    `yield_curve` (optional, a single date-indexed Series shared across
+    every ticker unchanged, see market_data.fetch_fred_series()) backs
+    "ma_crossover"'s BACKTEST/OPTUNA-ONLY ma_crossover_yield_curve_spread_max
+    filter -- threaded through BOTH paths identically to sector_data/
+    pair_price_panels (loaded once per worker via the pool initializer on
+    the parallel path). None (default) means no yield-curve data at all,
+    identical to every caller from before this parameter existed."""
     if not parallel or len(folds) <= 1:
         return [
             _run_fold_sequential(
                 fold, ticker_data, market_data, config, earnings_data, sector_lookup, strategy, sector_data,
-                pair_price_panels, momentum_rank_frame,
+                pair_price_panels, momentum_rank_frame, yield_curve,
             )
             for fold in folds
         ]
@@ -3725,7 +3908,7 @@ def run_walk_forward(
 
     with ProcessPoolExecutor(
         max_workers=max_workers, initializer=_init_worker,
-        initargs=(ticker_data, market_data, sector_data, pair_price_panels, momentum_rank_frame),
+        initargs=(ticker_data, market_data, sector_data, pair_price_panels, momentum_rank_frame, yield_curve),
     ) as executor:
         futures = [
             executor.submit(_run_fold_worker, fold, config, earnings_data, sector_lookup, strategy)

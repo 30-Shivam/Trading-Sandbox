@@ -644,7 +644,15 @@ def add_ma_crossover_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAU
         df["Sector_Relative_Strength"].isna()
         | (df["Sector_Relative_Strength"] >= config.ma_crossover_sector_relative_strength_min)
     )
-    eligible = df["MA_Crossover_Signal"] & not_near_earnings & sector_strong_enough
+    # Yield_Curve_Spread (backtest/Optuna-only, see config.py's
+    # ma_crossover_yield_curve_spread_max) -- a CEILING not a floor (real
+    # finding: ma_crossover's edge is stronger when the curve is inverted/
+    # low, not high), same graceful None/NaN-never-excludes treatment.
+    yield_curve_ok = (
+        df["Yield_Curve_Spread"].isna()
+        | (df["Yield_Curve_Spread"] <= config.ma_crossover_yield_curve_spread_max)
+    )
+    eligible = df["MA_Crossover_Signal"] & not_near_earnings & sector_strong_enough & yield_curve_ok
 
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))

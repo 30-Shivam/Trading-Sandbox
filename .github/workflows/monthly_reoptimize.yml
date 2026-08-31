@@ -45,3 +45,23 @@ jobs:
           DISCORD_WEBHOOK_URL_BEST_IDEAS_REOPTIMIZE: ${{ secrets.DISCORD_WEBHOOK_URL_BEST_IDEAS_REOPTIMIZE }}
           # No GEMINI_API_KEY/GROQ_API_KEY here -- this job never calls
           # llm_agent, only the 2 mechanical strategies + sector-RS.
+      # Catch-all for a failure before reoptimize_best_ideas.py's own
+      # Python-level reporting could run (e.g. `pip install` itself
+      # failing) -- same gap and same fix as daily_run.yml's own identical
+      # step, per improvements.txt item 2(b). Pure shell/curl, no installed
+      # dependencies required. Tries the dedicated webhook first, falls
+      # back to the shared one -- same fallback notifications.py's own
+      # get_strategy_webhook_url()/notify() already establish.
+      - name: Notify on early/infra failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL_BEST_IDEAS_REOPTIMIZE: ${{ secrets.DISCORD_WEBHOOK_URL_BEST_IDEAS_REOPTIMIZE }}
+        run: |
+          echo "::error title=monthly_reoptimize.yml FAILED::A step before or including 'python reoptimize_best_ideas.py' failed -- see the job log above for which one."
+          WEBHOOK="${DISCORD_WEBHOOK_URL_BEST_IDEAS_REOPTIMIZE:-$DISCORD_WEBHOOK_URL}"
+          if [ -n "$WEBHOOK" ]; then
+            curl -sS -X POST -H "Content-Type: application/json" \
+              -d "{\"content\": \"[Trading-Sandbox] monthly_reoptimize.yml FAILED before/during python reoptimize_best_ideas.py -- check the Actions run log: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
+              "$WEBHOOK" || true
+          fi

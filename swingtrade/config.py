@@ -681,6 +681,31 @@ class TradingConfig:
                                            # own) in live production until sector-ETF
                                            # fetching is separately wired into
                                            # market_data.py.
+    ma_crossover_yield_curve_spread_max: float = 100.0  # a CEILING, not a floor
+                                           # like every *_relative_strength_min
+                                           # sibling above -- grounded in a real
+                                           # finding (benchmark_macro_regime.py,
+                                           # 2026-08-31): ma_crossover's real edge
+                                           # is meaningfully stronger when the
+                                           # 10y/2y Treasury yield curve (FRED
+                                           # T10Y2Y) is INVERTED (low/negative)
+                                           # than when it's normal (higher/
+                                           # positive) -- holdout sharpe_like 0.110
+                                           # vs 0.073, consistent on ALL/TUNE/
+                                           # HOLDOUT. Admits a signal only if
+                                           # Yield_Curve_Spread <= this value (or
+                                           # unavailable) -- a tuned, LOWER max
+                                           # increasingly restricts trading to
+                                           # inverted/near-inverted regimes; 100.0
+                                           # (disabled) is a practical no-op since
+                                           # real T10Y2Y values never approach it.
+                                           # Same BACKTEST/OPTUNA-ONLY scope as
+                                           # sector relative strength above: reads
+                                           # None/NaN (never excludes on its own)
+                                           # until FRED fetching is separately
+                                           # wired into live production -- a
+                                           # deliberate, later decision, not
+                                           # bundled into this field's own build.
 
     # Mean-reversion PAIRS strategy (swingtrade/levels.compute_pairs_levels,
     # swingtrade/backtest.simulate_pairs_signals) -- LONG-ONLY laggard-

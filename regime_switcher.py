@@ -27,25 +27,55 @@ hypothesis grounded in each mechanical strategy's OWN already-documented
 design intent, for prospective data to actually test:
 
 - Regime signal: ADX (Average Directional Index, already computed
-  unconditionally for breakout/squeeze_breakout/ma_crossover via
-  swingtrade.levels.precompute_breakout_frame()). Reuses the exact 25.0
-  "trending" threshold convention adx_trend_entry_threshold already
-  established (classical TA: 25+ is "trending", 40+ is "strong trend") --
-  not a new number invented for this feature.
-- ADX >= 25.0 -> "trending" regime -> prefer breakout, then ma_crossover --
-  both are trend-following BY CONSTRUCTION (breakout requires a fresh
-  N-day high in a confirmed uptrend; ma_crossover requires a short/long
-  SMA crossover, a definitional trend-confirmation event).
-- ADX < 25.0 -> "choppy" regime -> prefer squeeze_breakout -- its own
-  documented design is explicitly built to NOT require a pre-existing
-  trend, targeting the volatility-contraction-then-expansion ("coiled
-  spring") pattern that characteristically occurs during range-bound/
-  choppy conditions.
+  unconditionally for every mechanical strategy that runs through
+  swingtrade.levels.precompute_breakout_frame()/its own equivalents).
+  Reuses the exact 25.0 "trending" threshold convention
+  adx_trend_entry_threshold already established (classical TA: 25+ is
+  "trending", 40+ is "strong trend") -- not a new number invented for
+  this feature.
+- ADX >= 25.0 -> "trending" regime -> prefer ma_crossover -- trend-following
+  BY CONSTRUCTION (a short/long SMA crossover is a definitional
+  trend-confirmation event).
+- ADX < 25.0 -> "choppy" regime -> prefer pairs -- statistical-arbitrage
+  mean-reversion between two correlated peers, which by design doesn't
+  depend on either ticker having its own pre-existing trend, and (unlike
+  the strategy this replaces) has real, currently-standing backtest
+  validation (beats matched-count random-entry timing on every cut,
+  ALL/TUNE/HOLDOUT -- see improvements.txt item 82).
 
-Only draws from the 3 CURRENTLY LIVE, capital-eligible strategy versions
-(breakout, squeeze_breakout, ma_crossover -- whichever versions
-config_loader currently points at), not undecided candidates like v53/v54,
-so there's no ambiguity about which parameter variant is being tested.
+2026-08-31 fix: BOTH original preference lists had silently rotted --
+`breakout` (trending) was fully retired from every live-scanning path
+weeks ago (item 73, superseded by ma_crossover as primary), and
+`squeeze_breakout` (choppy, the ENTIRE original list for that regime) was
+separately retired for a real, proven-negative live IC (-0.32 over 40
+settled trades, item 102's own trading-strategy-status entry). Neither
+retirement touched this file, so for weeks: "trending" silently degraded
+to ma_crossover-only (breakout never fired to begin with), and "choppy"
+silently became DEAD -- its one preferred strategy could never appear in
+`strategy_rows` at all, so select_regime_pick() returned None for every
+single choppy-regime ticker. This wasn't caught earlier because a clean
+"no pick" and a real "nothing preferred fired" both look identical from
+the caller's side -- only found by directly reading this file's own
+REGIME_STRATEGY_PREFERENCE against what's actually still live, prompted
+by regime_switcher's real settled-trade IC coming back solidly negative
+(-0.47 over 22 effective trades) and tracing why.
+
+Chose `pairs` over `rsi_mean_reversion` as squeeze_breakout's choppy-regime
+replacement deliberately, not by default: RSI Mean-Reversion mechanically
+fits the "choppy" thesis just as well on paper, but a fresh, rigorous
+random-entry re-check of its live v66 config (2026-08-29) found it LOSES
+to matched-count random timing on the holdout cut (win_rate 15.0% vs
+random's 17.9%, sharpe_like 0.059 vs random's 0.095) -- no demonstrated
+real edge, despite looking validated by a weaker internal check at
+promotion time. Swapping in a strategy with no proven edge wouldn't have
+actually fixed anything, just replaced one broken pillar with another.
+`pairs` is the only currently-live strategy besides ma_crossover with a
+real, standing beat-random validation on record.
+
+Only draws from CURRENTLY LIVE, capital-eligible strategy versions
+(whichever versions config_loader currently points at), not undecided
+candidates, so there's no ambiguity about which parameter variant is
+being tested.
 
 NEVER capital-allocated -- Shares_To_Buy/Est_Cost are always 0, no cash
 pool, no allocate_capital() call, same as llm_agent.py.
@@ -56,8 +86,8 @@ import pandas as pd
 ADX_TREND_THRESHOLD = 25.0  # matches config.adx_trend_entry_threshold's own default
 
 REGIME_STRATEGY_PREFERENCE = {
-    "trending": ["breakout", "ma_crossover"],
-    "choppy": ["squeeze_breakout"],
+    "trending": ["ma_crossover"],
+    "choppy": ["pairs"],
 }
 
 
@@ -72,10 +102,12 @@ def classify_regime(adx: float | None, adx_trend_threshold: float = ADX_TREND_TH
 
 
 def select_regime_pick(ticker: str, strategy_rows: dict[str, dict]) -> dict | None:
-    """`strategy_rows` is {"breakout": row_dict, "squeeze_breakout": row_dict,
-    "ma_crossover": row_dict} for whichever of the 3 strategies actually
-    fired (Signal != "Ignore") for this ticker today -- strategies that
-    didn't fire simply aren't keys in this dict. Reads ADX from any
+    """`strategy_rows` is {strategy_name: row_dict, ...} for whichever
+    currently-live strategies actually fired (Signal != "Ignore") for this
+    ticker today (e.g. "ma_crossover", "pairs", "rsi_mean_reversion") --
+    strategies that didn't fire simply aren't keys in this dict, and this
+    function has no fixed notion of which strategies exist beyond whatever
+    REGIME_STRATEGY_PREFERENCE names. Reads ADX from any
     available row (identical value regardless of which strategy computed
     it -- same underlying OHLCV/config.adx_window), classifies the regime,
     then walks that regime's preference list IN ORDER and returns the

@@ -127,10 +127,11 @@ def test_squeeze_breakout_sector_filter_is_noop_at_default():
     assert result.loc[0, "Trade_Score"] > 0.0
 
 
-def _ma_crossover_row(sector_relative_strength):
+def _ma_crossover_row(sector_relative_strength, yield_curve_spread=None):
     return {
         "MA_Crossover_Signal": True, "Catalyst_Warning": False,
         "Sector_Relative_Strength": sector_relative_strength,
+        "Yield_Curve_Spread": yield_curve_spread,
         "RRR": 2.0, "Signal_Strength_Pct": 1.0,
     }
 
@@ -146,3 +147,59 @@ def test_ma_crossover_sector_filter_is_noop_at_default():
     df = pd.DataFrame([_ma_crossover_row(-99.0)])
     result = swingtrade.add_ma_crossover_trade_score(df, CONFIG)
     assert result.loc[0, "Trade_Score"] > 0.0
+
+
+# --- ma_crossover_yield_curve_spread_max (2026-08-31, benchmark_macro_regime.py) ---
+
+def test_ma_crossover_yield_curve_filter_excludes_above_threshold():
+    # Real finding: ma_crossover's edge is stronger when the curve is
+    # INVERTED (low/negative) -- the field is a CEILING, opposite polarity
+    # from the sector filter's floor. A spread of 2.0 exceeding a max of
+    # 1.0 must exclude.
+    df = pd.DataFrame([_ma_crossover_row(sector_relative_strength=None, yield_curve_spread=2.0)])
+    config = swingtrade.TradingConfig(**{**CONFIG.to_dict(), "ma_crossover_yield_curve_spread_max": 1.0})
+    result = swingtrade.add_ma_crossover_trade_score(df, config)
+    assert result.loc[0, "Trade_Score"] == 0.0
+
+
+def test_ma_crossover_yield_curve_filter_is_noop_at_default():
+    df = pd.DataFrame([_ma_crossover_row(sector_relative_strength=None, yield_curve_spread=50.0)])
+    result = swingtrade.add_ma_crossover_trade_score(df, CONFIG)
+    assert result.loc[0, "Trade_Score"] > 0.0
+
+
+def test_ma_crossover_yield_curve_filter_missing_value_never_excludes():
+    df = pd.DataFrame([_ma_crossover_row(sector_relative_strength=None, yield_curve_spread=None)])
+    config = swingtrade.TradingConfig(**{**CONFIG.to_dict(), "ma_crossover_yield_curve_spread_max": -3.0})
+    result = swingtrade.add_ma_crossover_trade_score(df, config)
+    assert result.loc[0, "Trade_Score"] > 0.0
+
+
+# --- compute_ma_crossover_levels() live-wiring (2026-08-31) -- the live
+# single-ticker wrapper market_data.score_bundle_for_strategy() actually
+# calls for every real "ma_crossover" scan, distinct from
+# precompute_ma_crossover_frame()'s own already-tested yield_curve
+# threading (test_yield_curve_multiprocessing_threading.py covers the
+# backtest/Optuna side only) -- mirrors
+# test_compute_breakout_levels_returns_none_without_sector_df()'s exact
+# shape for the live-wrapper-level graceful-degradation check.
+
+def test_compute_ma_crossover_levels_yield_curve_spread_populated_with_data():
+    n = 260
+    ticker_df = _synthetic_ohlcv(n, 100.0, 0.1, seed=3)
+    yield_curve = pd.Series(1.5, index=ticker_df.index)
+
+    levels = swingtrade.levels.compute_ma_crossover_levels(
+        "TEST", ticker_df, CONFIG, yield_curve=yield_curve,
+    )
+
+    assert levels["Yield_Curve_Spread"] is not None
+
+
+def test_compute_ma_crossover_levels_yield_curve_spread_none_without_data():
+    n = 260
+    ticker_df = _synthetic_ohlcv(n, 100.0, 0.1, seed=3)
+
+    levels = swingtrade.levels.compute_ma_crossover_levels("TEST", ticker_df, CONFIG)
+
+    assert levels["Yield_Curve_Spread"] is None

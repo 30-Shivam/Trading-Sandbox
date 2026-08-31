@@ -62,3 +62,26 @@ jobs:
           # default active rather than accidentally overriding it with an
           # empty string if the secret doesn't exist.
           # MONGODB_DB_NAME: ${{ secrets.MONGODB_DB_NAME }}
+      # Catch-all for a failure BEFORE daily_run.py's own internal
+      # try/except + notify_github_summary() reporting could even run --
+      # e.g. `pip install` itself failing, or a Python-level crash so early
+      # (a broken import, a syntax error) that daily_run.py's own
+      # notification call at the end of main() is never reached. Every
+      # failure daily_run.py itself can see is already double-reported
+      # (Discord + GitHub step summary, see its own docstring); this step
+      # is specifically for failures ABOVE that layer, per improvements.txt
+      # item 2(b)'s own long-flagged gap. Pure shell/curl, no Python or
+      # installed dependencies required, so it still runs even if the
+      # environment itself is broken. `if: failure()` means this only runs
+      # when a PRIOR step in this job failed.
+      - name: Notify on early/infra failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          echo "::error title=daily_run.yml FAILED::A step before or including 'python daily_run.py' failed -- see the job log above for which one."
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            curl -sS -X POST -H "Content-Type: application/json" \
+              -d "{\"content\": \"[Trading-Sandbox] daily_run.yml FAILED before/during python daily_run.py -- check the Actions run log: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
+              "$DISCORD_WEBHOOK_URL" || true
+          fi

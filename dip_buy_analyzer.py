@@ -200,16 +200,25 @@ DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available c
 # strategy that clears validation still gets the normal $5,000 default --
 # see improvements.txt item 79.
 SECONDARY_DEFAULT_CASH_OVERRIDES: dict[str, float] = {}
-DEFAULT_PRIMARY_CASH = 0         # default $ sidebar value for the PRIMARY (breakout,
-                                  # v43) cash pool specifically -- deliberately 0, not
-                                  # DEFAULT_TOTAL_CASH, since 2026-08-11: breakout (v43)
-                                  # was found to lose to random-entry timing on every
-                                  # variant tested (improvements.txt items 44/47), so
-                                  # nothing should size against it by default. Still
-                                  # shown/scanned (useful context while a replacement is
-                                  # sought) -- just requires deliberately typing in an
-                                  # amount to actually allocate capital, rather than
-                                  # defaulting to $5,000 every session.
+DEFAULT_PRIMARY_CASH = 5000       # default $ sidebar value for whichever strategy holds
+                                  # the PRIMARY slot. Originally set to 0 on 2026-08-11
+                                  # because breakout (v43), primary at the time, was found
+                                  # to lose to random-entry timing (improvements.txt items
+                                  # 44/47) -- deliberately not DEFAULT_TOTAL_CASH so nothing
+                                  # would size against a known-losing strategy by default.
+                                  # ma_crossover took over the primary slot 2026-08-16 (item
+                                  # 73) and is validated (beats random-entry on every cut) --
+                                  # this constant was never revisited when the slot changed
+                                  # hands, so it kept a caution meant for breakout applied to
+                                  # a genuinely different, cleared strategy for 2 weeks.
+                                  # Raised to $5,000 (2026-08-29, per explicit user approval)
+                                  # -- same default every other newly-validated strategy gets
+                                  # the moment it clears validation (item 51's precedent,
+                                  # applied to RSI/Pairs too). Still just a sidebar default;
+                                  # you can always type in a different amount on any given
+                                  # day, and this has zero effect on signal logging, IC/
+                                  # trust-floor tracking, or ingest.py's own separate flat
+                                  # --position-budget sizing -- all independent of this value.
 
 SCAN_CACHE_TTL_SEC = 900         # how long a scan result stays cached (15 min)
 
@@ -569,6 +578,7 @@ def render_secondary_section(
     sector_data: dict | None = None,
     log_strategy_override: str | None = None,
     pair_price_panels: dict | None = None,
+    yield_curve=None,
 ) -> pd.DataFrame:
     """Score, log, allocate, and display one secondary strategy's results
     against the SAME already-fetched bundle the primary scan used -- no
@@ -595,9 +605,12 @@ def render_secondary_section(
     nothing was analyzed -- so callers (see the LLM Agent tab's candidate
     pre-filter) can see what this strategy found today without re-scoring."""
     st.subheader(label)
+    caveat = config_loader.SECONDARY_VALIDATION_CAVEATS.get(label)
+    if caveat:
+        st.warning(caveat)
     results, score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-        pair_price_panels=pair_price_panels,
+        pair_price_panels=pair_price_panels, yield_curve=yield_curve,
     )
     if not results:
         st.caption("No tickers were successfully analyzed.")
@@ -672,6 +685,7 @@ def render_experimental_section(
     sector_lookup: dict[str, str] | None = None,
     sector_data: dict | None = None,
     momentum_panel: pd.DataFrame | None = None,
+    yield_curve=None,
 ) -> pd.DataFrame:
     """Score, log, and display one EXPERIMENTAL strategy's results against
     the SAME already-fetched bundle every other section uses -- no extra
@@ -692,10 +706,18 @@ def render_experimental_section(
     record-keeping, not a substitute for the offline validation that
     already happened.
 
-    Shares_To_Buy/Est_Cost are deliberately omitted from the display
+    Shares_To_Buy/Est_Cost are deliberately omitted from the DISPLAY
     (unlike render_secondary_section()'s DISPLAY_COLUMNS_BREAKOUT) --
     showing zeroed sizing columns for a strategy with no cash pool would
-    read as a bug, not a design choice."""
+    read as a bug, not a design choice. They're still set to 0.0 on the
+    underlying results_df before logging (2026-08-27 fix): storage/
+    signals.py's _build_document() unconditionally reads both columns for
+    every strategy, and neither score_bundle_for_strategy() nor any
+    add_*_trade_score() populates them (only the sizing step this function
+    correctly never calls does) -- the log_trade_signals() call below was
+    raising a KeyError on every real invocation, silently swallowed by the
+    try/except into a st.warning() easy to miss. See ingest.py's
+    run_experimental_strategies() for the headless twin of this same fix."""
     st.subheader(label)
     # Computed fresh from THIS call's own config.momentum_lookback_days, not
     # precomputed once elsewhere -- see optimize.py's build_objective() for
@@ -707,7 +729,7 @@ def render_experimental_section(
     )
     results, score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-        momentum_rank_frame=momentum_rank_frame,
+        momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve,
     )
     if not results:
         st.caption("No tickers were successfully analyzed.")
@@ -716,6 +738,11 @@ def render_experimental_section(
     results_df = pd.DataFrame(results)
     results_df = _score_for_strategy(results_df, config)
     results_df = results_df.sort_values("Trade_Score", ascending=False).reset_index(drop=True)
+    # Never capital-allocated -- see this function's own docstring for the
+    # real KeyError this fixes (log_trade_signals() needs these columns to
+    # exist even though they're deliberately never shown/computed for real).
+    results_df["Shares_To_Buy"] = 0.0
+    results_df["Est_Cost"] = 0.0
 
     if storage_ok:
         try:
@@ -833,10 +860,9 @@ def main():
             value=float(DEFAULT_PRIMARY_CASH),
             step=100.0,
             help="Capital pool spent greedily down the Trade_Score-ranked Buy/Strong Buy list; "
-                 "defaults to $0 -- breakout (v43) lost to random-entry timing on every variant "
-                 "tested (2026-08-11, improvements.txt items 44/47), so nothing sizes against it "
-                 "unless you deliberately enter an amount. Type in a value if you want to size a "
-                 "trade anyway. "
+                 "defaults to $5,000 (2026-08-29) now that ma_crossover, the current primary, "
+                 "is validated -- same default every newly-cleared strategy gets. Change or "
+                 "zero it out here any day you want a different amount. "
                  "trades that no longer fit are marked Insufficient Funds, trades that would "
                  "over-concentrate one sector are marked Sector Limit Reached, and trades that "
                  "would push TOTAL spend past a portfolio-wide cap are marked Portfolio Limit "
@@ -1022,9 +1048,10 @@ def main():
             st.stop()
         st.success(f"{market_data.MARKET_INDEX_TICKER} is above its 200-day SMA ({market_close:.2f} >= {market_sma200:.2f}).")
 
-        bundle, market_df, fetch_skipped, sector_data = cached_fetch_bundle(tickers)
+        bundle, market_df, fetch_skipped, sector_data, yield_curve = cached_fetch_bundle(tickers)
         primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(
             bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+            yield_curve=yield_curve,
         )
         results_df = pd.DataFrame(primary_results)
         skipped = fetch_skipped + primary_score_skipped
@@ -1285,6 +1312,7 @@ def main():
                 sector_data=sector_data,
                 log_strategy_override=config_loader.SECONDARY_LOG_STRATEGY_OVERRIDES.get(label),
                 pair_price_panels=pair_price_panels,
+                yield_curve=yield_curve,
             )
 
         if generate_ai_context:
@@ -1416,28 +1444,34 @@ def main():
         st.subheader("Methodology track record (Information Coefficient / Information Ratio)")
         st.caption(
             "Rank correlation between each methodology's OWN score at signal time and its "
-            "realized forward pnl_pct at settlement, pooled over rolling 30-day windows "
+            "realized forward pnl_pct at settlement, pooled over rolling 14-day windows "
             "(daily breadth is too thin for a strict per-day IC) -- IR is mean(IC)/std(IC) "
             "across those windows: how STABLE the ranking skill is, not just whether it "
             "showed up once. This is what actually sets each methodology's blend weight "
             "above -- see ic_tracking.py. Signals are tier-weighted (real Strong Buy/Buy = "
             "1.0, Watch-only research signals = 0.5, research_loosened = 0.25) so one "
-            "correlated batch of Watch signals can't fake a trustworthy sample. A methodology "
-            "needs BOTH >= 20 EFFECTIVE (tier-weighted) settled trades AND 2+ rolling windows "
-            "(so IR has more than one data point to compute a stdev from) before its IR drives "
-            "its weight; until then it contributes at a neutral, equal prior -- clearing the "
-            "trade-count floor alone is not enough, since a single window's IC can't yet say "
-            "anything about STABILITY."
+            "correlated batch of Watch signals can't fake a trustworthy sample. **Weighting is "
+            "continuous credibility shrinkage (2026-08-29), not a hard cutover**: "
+            f"`credibility = effective_n / (effective_n + {ic_tracking.CREDIBILITY_HALF_LIFE_TRADES})`, "
+            "then weight blends that credibility's worth of the methodology's own signal (preferring "
+            f"IR once {ic_tracking.MIN_WINDOWS_FOR_IR_TRUST}+ rolling windows exist, else overall_ic) "
+            "with the neutral equal-weight prior -- a methodology with a little real evidence now counts "
+            "for a little, not nothing, and even strong evidence never reaches 100% credibility. See "
+            "ic_tracking.ensemble_weight()'s own docstring for the full real-data motivation."
         )
         methodology_names = best_ideas.METHODOLOGIES + ["best_ideas"]
         methodology_weights = {name: ic_tracking.ensemble_weight(ic_reports.get(name) or {}) for name in methodology_names}
-        equal_weight_count = sum(1 for w in methodology_weights.values() if w == 1.0)
-        if equal_weight_count:
+        credibilities = {}
+        for name in methodology_names:
+            eff_n = (ic_reports.get(name) or {}).get("effective_n_settled", 0.0) or 0.0
+            credibilities[name] = eff_n / (eff_n + ic_tracking.CREDIBILITY_HALF_LIFE_TRADES)
+        low_credibility_count = sum(1 for c in credibilities.values() if c < 0.25)
+        if low_credibility_count:
             st.caption(
-                f"**{equal_weight_count} of {len(methodology_names)} methodologies are currently on the "
-                "neutral equal-weight prior** (not yet IR-driven) -- today's composite blend is closer to a "
-                "plain average of available opinions than a skill-weighted one for those methodologies, "
-                "regardless of how their own overall IC below looks."
+                f"**{low_credibility_count} of {len(methodology_names)} methodologies are still below "
+                "25% credibility** (real settled-trade evidence still thin) -- today's composite blend "
+                "leans heavily toward the neutral equal-weight prior for those, regardless of how their "
+                "own overall IC below looks."
             )
         ic_cols = st.columns(len(methodology_names))
         for col, name in zip(ic_cols, methodology_names):
@@ -1445,7 +1479,6 @@ def main():
                 "n_settled": 0, "effective_n_settled": 0.0, "overall_ic": None, "ir": None, "trust_floor_met": False,
             }
             weight = methodology_weights[name]
-            n_windows = len(report.get("ic_series") or [])
             with col:
                 st.caption(f"**{name}**")
                 st.metric("Settled trades", report["n_settled"])
@@ -1462,18 +1495,8 @@ def main():
                         )
                     st.metric("Overall IC", f"{report['overall_ic']:.2f}" if report["overall_ic"] is not None else "n/a")
                     st.metric("IR", f"{report['ir']:.2f}" if report["ir"] is not None else "n/a")
-                    if not report["trust_floor_met"]:
-                        st.caption(
-                            f"Below trust floor ({effective_n:.1f}/20 effective, {report['n_settled']} raw settled) "
-                            "-- equal-weight prior"
-                        )
-                    elif report["ir"] is None:
-                        st.caption(
-                            f"Trust floor met, but only {n_windows} rolling window(s) so far (need 2+ for IR) "
-                            "-- still equal-weight prior"
-                        )
-                    else:
-                        st.caption(f"IR-driven weight: {weight:.2f}")
+                    st.metric("Weight", f"{weight:.2f}")
+                    st.caption(f"Credibility: {credibilities[name]:.0%} (effective_n={effective_n:.1f})")
 
     with tab_daily:
         st.warning(
@@ -1500,6 +1523,7 @@ def main():
                 storage_ok,
                 sector_lookup=sector_lookup, sector_data=sector_data,
                 momentum_panel=momentum_panel,
+                yield_curve=yield_curve,
             )
 
     with tab2:

@@ -71,14 +71,65 @@ MIN_TRADES_FOR_ANY_IC = 3   # fewer than this and a rank correlation is not
                              # meaningfully defined, regardless of pooling
 MIN_TRADES_PER_WINDOW = 5   # a window's own IC is skipped below this, even
                              # pooled -- still too thin to trust
-IC_WINDOW_DAYS = 30         # pooling window width, see module docstring
+IC_WINDOW_DAYS = 14         # pooling window width, see module docstring.
+                             # Lowered from 30 (2026-08-27) after real Mongo
+                             # data showed every live methodology sitting at
+                             # exactly 1 window under the old default (their
+                             # real settled-trade span hadn't yet crossed 30
+                             # days) -- 14 keeps each window's own effective_n
+                             # well above MIN_TRADES_PER_WINDOW at today's
+                             # real accrual pace (~15-19) while roughly
+                             # halving calendar time to MIN_WINDOWS_FOR_IR_TRUST
+                             # windows. See ensemble_weight()'s own new gate
+                             # below -- shortening the window alone, without
+                             # that gate, would have let a 2-point IR (shown
+                             # empirically to swing +10 to -5 on real data)
+                             # start driving the blend the moment a 2nd window
+                             # appeared.
 TRUST_FLOOR_TRADES = 20     # matches llm_agent.py's own established
                              # prospective trust floor (20-30 settled
                              # trades, see dip_buy_analyzer.py's "Validation
-                             # progress" sections) -- below this, a
-                             # methodology's IC/IR is still reported but
-                             # does NOT drive its blend weight, see
-                             # ensemble_weight()
+                             # progress" sections) -- `trust_floor_met` is
+                             # still reported (a useful "has this cleared
+                             # the traditional bar" summary for display),
+                             # but as of 2026-08-29 no longer directly gates
+                             # ensemble_weight()'s own blend -- see
+                             # CREDIBILITY_HALF_LIFE_TRADES/ensemble_weight()
+                             # below for the continuous replacement.
+CREDIBILITY_HALF_LIFE_TRADES = TRUST_FLOOR_TRADES  # ensemble_weight()'s
+                             # continuous shrinkage constant (2026-08-29,
+                             # per explicit user request to replace the old
+                             # binary trust-floor cutover with something
+                             # that lets partial evidence count for
+                             # something honestly, rather than a
+                             # methodology with 19 effective trades getting
+                             # ZERO credit while one with 20 gets full
+                             # credit). Deliberately set equal to
+                             # TRUST_FLOOR_TRADES (not an independent
+                             # constant) so the old floor becomes the point
+                             # of being exactly half-credible, not a
+                             # coincidence -- see ensemble_weight()'s own
+                             # docstring for the credibility formula and the
+                             # real-data tradeoff analysis (a proven-negative
+                             # methodology at this K never reaches exactly
+                             # zero weight, only asymptotically approaches
+                             # it -- a deliberate choice, confirmed with the
+                             # user, over a smaller K that would converge
+                             # faster/more aggressively).
+MIN_WINDOWS_FOR_IR_TRUST = 4  # ensemble_weight() only prefers `ir` over the
+                             # overall_ic fallback once this many real
+                             # windows exist (2026-08-27) -- information_ratio()
+                             # itself only requires 2 (the minimum for a
+                             # defined std), but a std from 1 degree of
+                             # freedom is dangerously noisy in practice: real
+                             # data showed llm_agent's 2-window IR at +10.4
+                             # and squeeze_breakout's at -4.8 to -5.7 under a
+                             # shortened window, vs. overall_ic values of
+                             # +0.28/-0.32 for the same methodologies pooled
+                             # over 30-40 effective trades. 4 windows (3
+                             # degrees of freedom) is still noisy but far
+                             # less prone to a single lucky/unlucky window
+                             # dominating the ratio.
 
 # Per-tier weight for pooling Trade_Signals/Trade_Outcomes into IC/trust-floor
 # math (2026-08-21, per explicit user request) -- "actionable" (real Strong
@@ -388,38 +439,71 @@ def methodology_report(strategy: str, score_field: str = "trade_score", window_d
 
 def ensemble_weight(report: dict, neutral_prior: float = 1.0) -> float:
     """The blend weight one methodology contributes to the Best Ideas
-    composite score (see best_ideas.blend_composite()) -- `neutral_prior`
-    (equal weight, same for every methodology) until `report["trust_floor_met"]`
-    is True; after that, the methodology's OWN demonstrated track record
-    takes over, preferring `ir` (stable across >=2 calendar windows, the
-    most trustworthy signal) but falling back to `overall_ic` (available
-    immediately once the floor clears, just not yet time-validated for
-    stability) rather than the flat neutral_prior. Either way, a NEGATIVE
-    value is EXCLUDED from the blend (weight 0), not inverted into a
-    contrarian signal: this early, a negative IC/IR is much more likely to
-    be noise than a genuine anti-signal worth trusting in reverse.
+    composite score (see best_ideas.blend_composite()) -- a CONTINUOUS
+    credibility-weighted shrinkage of the methodology's own demonstrated
+    signal toward `neutral_prior` (equal weight, same for every
+    methodology), rather than the binary "neutral until a floor, full
+    trust after" cutover this function used before 2026-08-29.
 
-    2026-08-25 fix: before the overall_ic fallback existed, EVERY
-    methodology fell back to the flat neutral_prior whenever `ir` was
-    None -- and `ir` needs >=2 non-degenerate IC_WINDOW_DAYS-wide windows
-    to exist at all (information_ratio() requires 2+ points for a std),
-    which this project's real history (~1 calendar month) has never yet
-    had for ANY methodology. The practical result: a proven, trust-floor-
-    cleared, strongly NEGATIVE methodology (squeeze_breakout, overall_ic
-    -0.32) was getting the exact same weight=1.0 as a proven, trust-floor-
-    cleared, strongly POSITIVE one (llm_agent, overall_ic +0.28) -- the
-    "IC/IR-weighted blend" was, in practice, a flat equal-weight average
-    the entire time, which is why the composite `best_ideas` score was
-    measurably WORSE (IC -0.32) than its own best single input
-    (llm_agent alone, +0.28) despite the blending mechanism existing
-    specifically to prevent that. This function is the literal mechanism
-    behind using IC/IR, not sharpe_like/win_rate, to recursively
-    compare/blend methodologies against each other -- it just wasn't able
-    to act on it yet for anyone."""
-    if not report.get("trust_floor_met"):
+    Signal selection unchanged from the pre-shrinkage version: prefers `ir`
+    (stable across >=MIN_WINDOWS_FOR_IR_TRUST calendar windows, the most
+    trustworthy figure) but falls back to `overall_ic` (available as soon
+    as enough trades exist, just not yet time-validated for stability); if
+    NEITHER is available (nothing settled yet), returns `neutral_prior`
+    directly -- there's no data at all to shrink from. Once a raw signal
+    exists, a NEGATIVE value is floored to 0.0 BEFORE blending (excluded
+    from the blend's own upside, never inverted into a contrarian bet --
+    same reasoning as always: this early, a negative IC/IR is much more
+    likely to be noise than a genuine anti-signal worth trusting in
+    reverse) -- credibility is applied on top of that floored value, not
+    the raw one, so a low-credibility negative naturally lands close to
+    neutral rather than being punished for a small, possibly-unlucky
+    sample.
+
+    Credibility formula (Bühlmann-style credibility theory, no new
+    dependency -- same "closed-form pandas/pure-Python math, no scipy"
+    discipline this whole module already follows): `credibility =
+    effective_n / (effective_n + CREDIBILITY_HALF_LIFE_TRADES)`, then
+    `weight = credibility * max(signal, 0.0) + (1 - credibility) *
+    neutral_prior`. At `effective_n=0` this is exactly `neutral_prior`
+    (the old below-floor behavior); as `effective_n` grows it smoothly
+    converges toward the old post-floor value (`max(signal, 0.0)`) without
+    ever fully reaching it -- a methodology with 19 effective trades no
+    longer gets ZERO credit while one with 20 gets FULL credit, which was
+    the real, somewhat arbitrary discontinuity this replaces.
+
+    2026-08-29 fix, per explicit user request ("brainstorm genuinely
+    meaningful additions"): designed and verified against real live Mongo
+    data before shipping. Two concrete findings from that check: (1) this
+    also partly corrects a pre-existing quirk where `neutral_prior=1.0` is
+    numerically LARGER than almost any real IC ever observed, so the old
+    hard-cutover system already punished a genuinely good methodology
+    (llm_agent, overall_ic=+0.28, the best real performer) relative to
+    untested ones (weight 0.28 vs 1.0) -- shrinkage pulling it UP toward
+    1.0 (real example: effective_n=33 -> weight~0.55) is arguably more
+    correct, not a regression. (2) the real, deliberate tradeoff: a
+    methodology with substantial NEGATIVE evidence (squeeze_breakout,
+    overall_ic=-0.32 over 26 effective trades) no longer reaches an exact
+    zero weight either (real example: ~0.43 at this K) -- it only
+    asymptotically approaches zero as effective_n keeps growing. Confirmed
+    with the user directly: K=CREDIBILITY_HALF_LIFE_TRADES=20 (uniform
+    shrinkage philosophy, nothing -- including bad news -- ever treated as
+    100% certain) over a smaller K that would converge faster/more
+    aggressively toward the old hard-zero behavior, or an asymmetric
+    design that kept the hard floor for negatives only.
+
+    `report["trust_floor_met"]` is still computed by methodology_report()
+    and still meaningful for display (a "has this cleared the traditional
+    bar" summary caption), but is no longer read by this function at all
+    -- the continuous credibility formula fully subsumes what that boolean
+    used to gate."""
+    windows = report.get("ic_series") or []
+    if report.get("ir") is not None and len(windows) >= MIN_WINDOWS_FOR_IR_TRUST:
+        signal = report["ir"]
+    elif report.get("overall_ic") is not None:
+        signal = report["overall_ic"]
+    else:
         return neutral_prior
-    if report.get("ir") is not None:
-        return max(report["ir"], 0.0)
-    if report.get("overall_ic") is not None:
-        return max(report["overall_ic"], 0.0)
-    return neutral_prior
+    effective_n = report.get("effective_n_settled") or 0.0
+    credibility = effective_n / (effective_n + CREDIBILITY_HALF_LIFE_TRADES)
+    return credibility * max(signal, 0.0) + (1 - credibility) * neutral_prior

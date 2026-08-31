@@ -33,6 +33,20 @@ import sys
 import time
 from pathlib import Path
 
+# Force UTF-8 stdout/stderr regardless of the invoking environment's default
+# codepage -- Windows console/redirected-file default is cp1252, which
+# cannot encode characters real LLM output routinely contains (e.g. U+2011
+# NON-BREAKING HYPHEN). Same fix already applied to ingest.py (2026-08-26)
+# for the identical crash on LLM rationale text; this script has its own
+# separate entry point and never inherited it -- found 2026-08-29 running
+# the first real cycle, which crashed printing a genuine LLM proposal's
+# rationale before it ever reached Strategy_Research_Journal. errors="replace"
+# rather than a stricter mode -- a mis-rendered character in a log line is
+# cosmetic; crashing the whole cycle over one, discarding a real proposal,
+# is not. Must happen before any print() call.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import pandas as pd
 
 import llm_agent

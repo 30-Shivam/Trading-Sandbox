@@ -122,6 +122,20 @@ def test_portfolio_health_sorted_best_ic_first():
     assert names_in_order == ["llm_agent", "best_ideas_qualitative", "squeeze_breakout"]
 
 
+# --- 2026-08-31: config_loader.SECONDARY_VALIDATION_CAVEATS inline flag ---
+
+def test_portfolio_health_flags_methodology_with_open_validation_caveat():
+    reports = {"rsi_mean_reversion": _report(0.02)}
+    section = db.build_portfolio_health_section(reports)
+    assert "[!] backtest validation caveat -- see dashboard" in section
+
+
+def test_portfolio_health_no_flag_for_methodology_without_a_caveat():
+    reports = {"llm_agent": _report(0.28)}
+    section = db.build_portfolio_health_section(reports)
+    assert "[!]" not in section
+
+
 # ---- build_daily_briefing ----
 
 def test_daily_briefing_all_empty_sections_gives_placeholder():

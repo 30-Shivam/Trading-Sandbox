@@ -120,6 +120,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_ma_crossover_trade_score(df, config)
     elif config.strategy == "pairs":
         return swingtrade.add_pairs_trade_score(df, config)
+    elif config.strategy == "momentum_rank":
+        return swingtrade.add_momentum_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -164,6 +166,7 @@ def run_secondary_strategy(
     sector_data: dict | None = None,
     log_strategy_override: str | None = None,
     pair_price_panels: dict | None = None,
+    yield_curve=None,
 ) -> pd.DataFrame:
     """Score, size, and log one secondary strategy's results against the
     SAME already-fetched bundle the primary scan used -- no extra network
@@ -182,7 +185,7 @@ def run_secondary_strategy(
     sync so dashboard-triggered and automated runs log identically)."""
     results, score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-        pair_price_panels=pair_price_panels,
+        pair_price_panels=pair_price_panels, yield_curve=yield_curve,
     )
     if not results:
         print(f"{label}: no tickers were successfully analyzed.")
@@ -361,10 +364,12 @@ def run_regime_switcher(strategy_frames: dict[str, pd.DataFrame], config: swingt
     docstring for the full design/rationale (EXPLICITLY prospective-only,
     skips the backtesting-validation pipeline every other strategy went
     through, by deliberate user choice). `strategy_frames` is keyed by the
-    REAL strategy identifier ("breakout"/"squeeze_breakout"/"ma_crossover"),
-    not a display label -- see run()'s own construction of this dict,
-    built alongside (not from) all_signal_frames since that dict's keys
-    are human-readable labels like "Primary (breakout)".
+    REAL strategy identifier (e.g. "ma_crossover"/"pairs"/"rsi_mean_reversion",
+    whatever's currently live -- regime_switcher.py's own
+    REGIME_STRATEGY_PREFERENCE is what actually decides which of these
+    matter), not a display label -- see run()'s own construction of this
+    dict, built alongside (not from) all_signal_frames since that dict's
+    keys are human-readable labels like "Primary (ma_crossover)".
 
     Automated here (not left dashboard-only like a normal new experimental
     strategy would be) specifically so its own prospective trust floor
@@ -381,7 +386,7 @@ def run_regime_switcher(strategy_frames: dict[str, pd.DataFrame], config: swingt
             candidates.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
 
     if not candidates:
-        print("Regime Switcher: no tickers scored above Ignore under breakout/squeeze_breakout/ma_crossover today -- nothing to evaluate.")
+        print("Regime Switcher: no tickers scored above Ignore under any currently-live strategy today -- nothing to evaluate.")
         return
 
     switcher_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "regime_switcher"})
@@ -418,6 +423,83 @@ def run_regime_switcher(strategy_frames: dict[str, pd.DataFrame], config: swingt
         print(f"[WARN] Regime Switcher signal logging failed: {exc}", file=sys.stderr)
 
 
+def run_experimental_strategies(
+    bundle: dict, market_df, sector_lookup: dict[str, str] | None, sector_data: dict | None,
+    yield_curve=None,
+) -> None:
+    """Headless automation for config_loader.EXPERIMENTAL_STRATEGY_VERSIONS
+    (currently just Momentum Rank v65) -- mirrors run_regime_switcher()'s
+    own reasoning exactly: automated here, not left dashboard-only, so its
+    real prospective trust floor accumulates by calendar time regardless of
+    whether anyone opens the dashboard's Experimental tab.
+
+    Real gap this closes (found 2026-08-27): dip_buy_analyzer.py's
+    render_experimental_section() already scores+logs an experimental
+    strategy's signals to MongoDB (`strategy=config.strategy`, see its own
+    docstring), but only when a human actually renders that Streamlit tab --
+    unlike regime_switcher/llm_agent/best_ideas, nothing called it headlessly.
+    Confirmed via a real Mongo query: Momentum Rank (live since 2026-08-24)
+    had logged ZERO Trade_Signals rows 3 days later.
+
+    Second real bug found while smoke-testing THIS function against live
+    data (2026-08-27): storage/signals.py's _build_document() unconditionally
+    reads row["Shares_To_Buy"]/row["Est_Cost"] for every strategy -- but
+    neither market_data.score_bundle_for_strategy() nor any add_*_trade_score()
+    populates them (only _size_positions(), which experimental strategies
+    correctly never call, does). This means render_experimental_section()'s
+    own log_trade_signals() call has almost certainly been silently failing
+    the same way every time it's run too (caught by its blanket
+    `except Exception` -> st.warning(), easy to miss) -- not just "nobody
+    opened the tab," a second independent reason Momentum Rank has zero real
+    signals. Fixed at the root here (explicit zeroed columns before logging,
+    matching run_regime_switcher()'s own row construction) -- see the
+    matching fix in dip_buy_analyzer.py's render_experimental_section().
+
+    Generalized over EXPERIMENTAL_STRATEGY_VERSIONS (not hardcoded to
+    momentum_rank) so any future addition to that dict is covered
+    automatically, same as run() already does for SECONDARY_STRATEGY_VERSIONS.
+
+    NEVER capital-allocated -- no _size_positions() call, same as
+    run_regime_switcher()/run_best_ideas_strategy(). This isn't something
+    this function has to separately enforce: EXPERIMENTAL_STRATEGY_VERSIONS
+    being a dict distinct from SECONDARY_STRATEGY_VERSIONS is the actual
+    mechanism preventing capital allocation (see its own docstring in
+    config_loader.py) -- dip_buy_analyzer.py's render_experimental_section()
+    relies on the identical separation."""
+    momentum_panel = market_data.build_momentum_panel(bundle)
+    for label, version in config_loader.EXPERIMENTAL_STRATEGY_VERSIONS.items():
+        config, source = config_loader.load_config_by_version(version)
+        if config is None:
+            print(f"{label} (v{version}, experimental): skipped -- {source}")
+            continue
+        momentum_rank_frame = (
+            swingtrade.compute_momentum_rank_frame(momentum_panel, config.momentum_lookback_days)
+            if config.strategy == "momentum_rank" else None
+        )
+        results, score_skipped = market_data.score_bundle_for_strategy(
+            bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+            momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve,
+        )
+        if not results:
+            print(f"{label} (v{version}, experimental): no tickers scored today.")
+            continue
+        results_df = pd.DataFrame(results)
+        results_df = _score_for_strategy(results_df, config)
+        # Never capital-allocated (no _size_positions() call above) --
+        # explicit zeros so log_trade_signals()/_build_document() (which
+        # unconditionally reads these two columns for every strategy) has
+        # something to read. See this function's own docstring for the real
+        # KeyError this fixes.
+        results_df["Shares_To_Buy"] = 0.0
+        results_df["Est_Cost"] = 0.0
+        try:
+            logged = storage.log_trade_signals(results_df, config.to_dict())
+            print(f"{label} (v{version}, experimental): logged {logged['actionable']} actionable + "
+                  f"{logged['research']} research signal(s) to MongoDB (never capital-allocated).")
+        except Exception as exc:
+            print(f"[WARN] {label} (v{version}, experimental) signal logging failed: {exc}", file=sys.stderr)
+
+
 def run_best_ideas_strategy(
     strategy_frames: dict[str, pd.DataFrame], regime_picks: list[dict],
     bundle: dict, market_df, sector_lookup: dict[str, str] | None,
@@ -425,8 +507,10 @@ def run_best_ideas_strategy(
 ) -> None:
     """Headless counterpart to dip_buy_analyzer.py's "Best Ideas" tab -- see
     best_ideas.py for the full methodology/reasoning (an IC/IR-weighted
-    ensemble across ma_crossover/squeeze_breakout/regime_switcher/
-    llm_agent plus 3 new methodologies built for that tab: sector-relative-
+    ensemble across whatever's in best_ideas.METHODOLOGIES currently
+    (ma_crossover/regime_switcher/llm_agent -- squeeze_breakout removed
+    2026-08-26, see improvements.txt item 102's predecessor entries) plus
+    3 new methodologies built for that tab: sector-relative-
     strength momentum, a rule-based qualitative composite, and an LLM
     meta-synthesis call). NEVER capital-allocated -- Shares_To_Buy/Est_Cost
     are always 0, no cash pool, no allocate_capital() call, same as
@@ -501,12 +585,13 @@ def run(
     # (improvements.txt items 68/70/71) -- fast local file read, not a
     # network call.
     sector_lookup = read_ticker_sectors(watchlist_path)
-    bundle, market_df, fetch_skipped, sector_data = market_data.fetch_ticker_bundle(
+    bundle, market_df, fetch_skipped, sector_data, yield_curve = market_data.fetch_ticker_bundle(
         tickers, sector_lookup=sector_lookup,
     )
 
     primary_results, primary_score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+        yield_curve=yield_curve,
     )
     skipped = fetch_skipped + primary_score_skipped
     if not primary_results:
@@ -566,7 +651,7 @@ def run(
             f"{label} (v{version})", secondary_config, bundle, market_df, position_budget, risk_amount,
             sector_lookup=sector_lookup, sector_data=sector_data,
             log_strategy_override=config_loader.SECONDARY_LOG_STRATEGY_OVERRIDES.get(label),
-            pair_price_panels=pair_price_panels,
+            pair_price_panels=pair_price_panels, yield_curve=yield_curve,
         )
         if not secondary_df.empty:
             all_signal_frames[f"{label} (v{version})"] = secondary_df
@@ -586,6 +671,7 @@ def run(
 
     run_llm_agent(all_signal_frames, config)
     run_regime_switcher(strategy_frames, config)
+    run_experimental_strategies(bundle, market_df, sector_lookup, sector_data, yield_curve=yield_curve)
 
     # Recomputes the same regime picks run_regime_switcher() just derived
     # internally (cheap, no network -- pure re-application of

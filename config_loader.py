@@ -187,6 +187,30 @@ SECONDARY_LOG_STRATEGY_OVERRIDES: dict[str, str] = {
     "RSI Mean-Reversion": "rsi_mean_reversion",
 }
 
+# Per-label validation-status caveat, rendered as a warning banner wherever
+# a secondary strategy's own dashboard section shows (dip_buy_analyzer.py's
+# render_secondary_section()) -- deliberately NOT a capital-eligibility gate
+# (per explicit user direction 2026-08-31: capital eligibility doesn't
+# matter to how they actually trade, they read signals and decide
+# themselves either way, same as the real ATD.TO trade that came from a
+# never-capital-eligible Best Ideas signal). The thing that actually
+# protects a discretionary decision is knowing a signal's real validation
+# status before trusting it, not a backend allocation flag. A label absent
+# from this dict has no known open caveat -- remove an entry once a
+# strategy either gets re-validated for real or is retired outright (same
+# "real negative IC -> full removal, not just a warning" treatment
+# squeeze_breakout got, see best_ideas.METHODOLOGIES's own comment).
+SECONDARY_VALIDATION_CAVEATS: dict[str, str] = {
+    "RSI Mean-Reversion": (
+        "Backtested timing FAILED a fresh random-entry benchmark (2026-08-31): v66 loses to "
+        "matched-count random-entry timing on the holdout cut (win_rate 15.0% vs random's 17.9%, "
+        "sharpe_like 0.059 vs random's 0.095) -- no demonstrated real edge from entry timing. It was "
+        "only ever validated against its own predecessor (v17), never against random. Real settled-"
+        "trade IC is currently thin-positive (~+0.02, small sample), not negative -- not retired, but "
+        "should not be read as a validated signal right now."
+    ),
+}
+
 # Fixed candidate System_Config versions for EXPERIMENTAL strategies --
 # deliberately a SEPARATE dict from SECONDARY_STRATEGY_VERSIONS above, not
 # merged into it. This separation is the actual mechanism that keeps an

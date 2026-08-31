@@ -104,18 +104,33 @@ def build_candidates_section(candidates_by_ticker: dict[str, list[dict]]) -> str
     return "\n".join(lines)
 
 
+_LOGGED_NAME_TO_LABEL = {logged: label for label, logged in config_loader.SECONDARY_LOG_STRATEGY_OVERRIDES.items()}
+
+
 def build_portfolio_health_section(reports: dict[str, dict]) -> str:
     """`reports`: {strategy: ic_tracking.methodology_report() result}.
     Only reports methodologies that have cleared their own trust floor --
     below that, the IC number isn't trustworthy enough to be worth a
-    daily line (see TRUST_FLOOR_TRADES). Returns "" if none have."""
+    daily line (see TRUST_FLOOR_TRADES). Returns "" if none have.
+
+    2026-08-31: a methodology with an open entry in
+    config_loader.SECONDARY_VALIDATION_CAVEATS (e.g. RSI Mean-Reversion,
+    which failed a fresh random-entry benchmark the same real IC here
+    doesn't yet reflect) gets a short inline flag pointing at the dashboard
+    for the full caveat text -- this digest stays a quick daily read, not a
+    second copy of the full warning banner render_secondary_section()
+    already shows."""
     cleared = {name: r for name, r in reports.items() if r["trust_floor_met"] and r["overall_ic"] is not None}
     if not cleared:
         return ""
     lines = ["**Portfolio health** (trust-floor-cleared methodologies)"]
     for name, r in sorted(cleared.items(), key=lambda kv: -kv[1]["overall_ic"]):
         direction = "positive" if r["overall_ic"] > 0 else "negative"
-        lines.append(f"  {name}: IC {r['overall_ic']:+.3f} ({direction}), n={r['effective_n_settled']:.0f}")
+        line = f"  {name}: IC {r['overall_ic']:+.3f} ({direction}), n={r['effective_n_settled']:.0f}"
+        label = _LOGGED_NAME_TO_LABEL.get(name, name)
+        if label in config_loader.SECONDARY_VALIDATION_CAVEATS:
+            line += "  [!] backtest validation caveat -- see dashboard"
+        lines.append(line)
     return "\n".join(lines)
 
 
