@@ -1,0 +1,34 @@
+Testing LIVE config: Using System_Config v60 (active). (strategy=ma_crossover)
+
+Fetching T10Y2Y (10Y-2Y Treasury spread) from FRED, 2021-08-31..2026-08-30...
+Fetched 1248 observation(s) -- 541 inverted-curve day(s) (43.3% of the series).
+
+Fetching SPY (market proxy)...
+Fetched 407/407 ticker(s).
+Ticker holdout: frac=0.25, averaging TUNE/HOLDOUT over 10 seeds ([42, 1, 5, 7, 13, 99, 123, 2024, 2025, 777]) -- see improvements.txt item 69.
+
+Simulating ma_crossover for 407 ticker(s), 2021-08-31..2026-08-30...
+  1931 signal(s)
+
+Bucketing trades by T10Y2Y regime as of each trade's own signal_date...
+  [WARN] 3 trade(s) skipped -- no FRED observation yet before signal_date.
+  Inverted-curve trades: 817
+  Normal-curve trades:   1111
+
+=== ALL TICKERS ===
+  INVERTED (T10Y2Y < 0): {'trade_count': 817, 'effective_trade_count': 719.7, 'win_rate': 47.86, 'avg_pnl_pct': 0.31, 'pnl_std': 2.4, 'sharpe_like': 0.129, 'trades_per_year': 340.6, 'annualized_sharpe_like': 2.381, 'k_ratio': 56.642}
+  NORMAL   (T10Y2Y >= 0): {'trade_count': 1107, 'effective_trade_count': 994.4, 'win_rate': 44.62, 'avg_pnl_pct': 0.22, 'pnl_std': 2.81, 'sharpe_like': 0.077, 'trades_per_year': 222.3, 'annualized_sharpe_like': 1.148, 'k_ratio': 28.574}
+
+=== TUNE (avg of 10 seeds) ===
+  INVERTED: {'pnl_std': 2.417, 'effective_trade_count': 561.93, 'win_rate': 47.842, 'avg_pnl_pct': 0.313, 'trades_per_year': 258.82, 'annualized_sharpe_like': 2.0786, 'k_ratio': 50.5741, 'trade_count': 620.5, 'sharpe_like': 0.1292, '_sharpe_like_min': 0.094, '_sharpe_like_max': 0.154, '_k_ratio_min': 40.445, '_k_ratio_max': 59.304, '_seeds_used': 10}
+  NORMAL:   {'pnl_std': 2.834, 'effective_trade_count': 762.97, 'win_rate': 44.704, 'avg_pnl_pct': 0.22, 'trades_per_year': 166.41, 'annualized_sharpe_like': 0.9961, 'k_ratio': 21.3281, 'trade_count': 828.6, 'sharpe_like': 0.0772, '_sharpe_like_min': 0.051, '_sharpe_like_max': 0.108, '_k_ratio_min': 0.705, '_k_ratio_max': 45.374, '_seeds_used': 10}
+
+=== HOLDOUT (avg of 10 seeds) ===
+  INVERTED: {'pnl_std': 2.376, 'effective_trade_count': 189.77, 'win_rate': 47.735, 'avg_pnl_pct': 0.265, 'trades_per_year': 88.36, 'annualized_sharpe_like': 1.0497, 'k_ratio': 19.6508, 'trade_count': 196.5, 'sharpe_like': 0.1104, '_sharpe_like_min': 0.041, '_sharpe_like_max': 0.195, '_k_ratio_min': 4.405, '_k_ratio_max': 41.784, '_seeds_used': 10}
+  NORMAL:   {'pnl_std': 2.872, 'effective_trade_count': 269.81, 'win_rate': 44.329, 'avg_pnl_pct': 0.21, 'trades_per_year': 56.1, 'annualized_sharpe_like': 0.5511, 'k_ratio': 8.3236, 'trade_count': 278.4, 'sharpe_like': 0.0734, '_sharpe_like_min': -0.059, '_sharpe_like_max': 0.187, '_k_ratio_min': -33.881, '_k_ratio_max': 18.558, '_seeds_used': 10}
+
+Decision gate: INVERTED and NORMAL need to show a REAL, consistent difference in
+sharpe_like/win_rate on BOTH TUNE and HOLDOUT (averaged across seeds, not a single
+draw), not just ALL, to count as real evidence macro regime carries information
+beyond ma_crossover's own edge. A HOLDOUT-only or inconsistent result means stop
+here -- do not build a live macro-regime filter on top of this.

@@ -1,0 +1,79 @@
+$EBAY: possibly delisted; no price data found  (1d 2020-07-06 00:00:00 -> 2026-08-30 00:00:00)
+
+1 Failed download:
+['EBAY']: possibly delisted; no price data found  (1d 2020-07-06 00:00:00 -> 2026-08-30 00:00:00)
+$CCL: possibly delisted; no price data found  (1d 2020-07-06 00:00:00 -> 2026-08-30 00:00:00)
+
+1 Failed download:
+['CCL']: possibly delisted; no price data found  (1d 2020-07-06 00:00:00 -> 2026-08-30 00:00:00)
+[I 2026-08-30 19:58:10,769] A new study created in memory with name: no-name-fe08543c-9b9b-45f1-a453-d059f57d5264
+[I 2026-08-30 20:01:10,450] Trial 0 finished with values: [0.064, 93.81] and parameters: {'stop_loss_atr_multiplier': 1.249080237694725, 'atr_take_profit_multiplier': 4.848572664704217, 'ma_crossover_short_window': 24, 'ma_crossover_long_window': 72, 'ma_crossover_sector_relative_strength_min': -39.85878837124163}.
+[I 2026-08-30 20:04:10,612] Trial 1 finished with values: [0.086, 53.77] and parameters: {'stop_loss_atr_multiplier': 0.8119890406724053, 'atr_take_profit_multiplier': 1.4123742807316348, 'ma_crossover_short_window': 27, 'ma_crossover_long_window': 72, 'ma_crossover_sector_relative_strength_min': -3.9752824432570435}.
+[I 2026-08-30 20:07:06,818] Trial 2 finished with values: [0.071, 68.48] and parameters: {'stop_loss_atr_multiplier': 0.5411689885916049, 'atr_take_profit_multiplier': 2.1296306827161637, 'ma_crossover_short_window': 26, 'ma_crossover_long_window': 45, 'ma_crossover_sector_relative_strength_min': -38.18137713153846}.
+[I 2026-08-30 20:10:06,706] Trial 3 finished with values: [0.063, 97.89] and parameters: {'stop_loss_atr_multiplier': 0.8668090197068676, 'atr_take_profit_multiplier': 2.0198222404266097, 'ma_crossover_short_window': 18, 'ma_crossover_long_window': 60, 'ma_crossover_sector_relative_strength_min': -31.070105887127276}.
+[I 2026-08-30 20:13:04,023] Trial 4 finished with values: [0.057, 99.05] and parameters: {'stop_loss_atr_multiplier': 1.723705789444759, 'atr_take_profit_multiplier': 3.070684366055144, 'ma_crossover_short_window': 12, 'ma_crossover_long_window': 56, 'ma_crossover_sector_relative_strength_min': -20.355451025892666}.
+[I 2026-08-30 20:15:58,295] Trial 5 finished with values: [0.121, 97.97] and parameters: {'stop_loss_atr_multiplier': 2.070351922786027, 'atr_take_profit_multiplier': 3.649499989135013, 'ma_crossover_short_window': 18, 'ma_crossover_long_window': 72, 'ma_crossover_sector_relative_strength_min': -46.98072317320015}.
+[I 2026-08-30 20:18:52,141] Trial 6 finished with values: [-10.0, 100.0] and parameters: {'stop_loss_atr_multiplier': 1.7150897038028767, 'atr_take_profit_multiplier': 3.1288214744633294, 'ma_crossover_short_window': 6, 'ma_crossover_long_window': 97, 'ma_crossover_sector_relative_strength_min': 12.766082149846355}.
+[I 2026-08-30 20:21:53,055] Trial 7 finished with values: [0.133, 99.0] and parameters: {'stop_loss_atr_multiplier': 2.1167946962329225, 'atr_take_profit_multiplier': 3.8782526622623923, 'ma_crossover_short_window': 7, 'ma_crossover_long_window': 78, 'ma_crossover_sector_relative_strength_min': -21.390087906925917}.
+[I 2026-08-30 20:24:13,435] Trial 8 finished with values: [-0.043, 96.97] and parameters: {'stop_loss_atr_multiplier': 0.7440764696895577, 'atr_take_profit_multiplier': 2.074801120656998, 'ma_crossover_short_window': 5, 'ma_crossover_long_window': 94, 'ma_crossover_sector_relative_strength_min': -33.1793011959989}.
+[I 2026-08-30 20:26:17,214] Trial 9 finished with values: [0.111, 94.94] and parameters: {'stop_loss_atr_multiplier': 1.825044568707964, 'atr_take_profit_multiplier': 3.5684081201028466, 'ma_crossover_short_window': 18, 'ma_crossover_long_window': 68, 'ma_crossover_sector_relative_strength_min': -37.984460390840745}.
+[I 2026-08-30 20:28:18,082] Trial 10 finished with values: [0.086, 99.98] and parameters: {'stop_loss_atr_multiplier': 2.437950416353774, 'atr_take_profit_multiplier': 4.835664740237352, 'ma_crossover_short_window': 12, 'ma_crossover_long_window': 31, 'ma_crossover_sector_relative_strength_min': -13.23514910570879}.
+[I 2026-08-30 20:30:08,066] Trial 11 finished with values: [0.053, 87.8] and parameters: {'stop_loss_atr_multiplier': 1.2683143965023944, 'atr_take_profit_multiplier': 4.236769838311982, 'ma_crossover_short_window': 30, 'ma_crossover_long_window': 83, 'ma_crossover_sector_relative_strength_min': -2.0036395928736574}.
+[I 2026-08-30 20:32:07,949] Trial 12 finished with values: [0.178, 98.54] and parameters: {'stop_loss_atr_multiplier': 2.477987806929142, 'atr_take_profit_multiplier': 4.60220348867735, 'ma_crossover_short_window': 12, 'ma_crossover_long_window': 82, 'ma_crossover_sector_relative_strength_min': -5.188491004918006}.
+[I 2026-08-30 20:34:14,916] Trial 13 finished with values: [-10.0, 100.0] and parameters: {'stop_loss_atr_multiplier': 1.1760816766669469, 'atr_take_profit_multiplier': 3.0872961783495176, 'ma_crossover_short_window': 12, 'ma_crossover_long_window': 88, 'ma_crossover_sector_relative_strength_min': 1.5047011861757165}.
+[I 2026-08-30 20:36:34,738] Trial 14 finished with values: [0.14, 92.25] and parameters: {'stop_loss_atr_multiplier': 2.360504824242808, 'atr_take_profit_multiplier': 4.62024356689208, 'ma_crossover_short_window': 24, 'ma_crossover_long_window': 86, 'ma_crossover_sector_relative_strength_min': -4.4244312994056045}.
+[I 2026-08-30 20:38:36,293] Trial 15 finished with values: [-10.0, 100.0] and parameters: {'stop_loss_atr_multiplier': 2.4873127959647365, 'atr_take_profit_multiplier': 4.65645541126833, 'ma_crossover_short_window': 22, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': 11.635598503459736}.
+[I 2026-08-30 20:41:05,371] Trial 16 finished with values: [0.152, 95.07] and parameters: {'stop_loss_atr_multiplier': 2.2274629762931997, 'atr_take_profit_multiplier': 4.54428518098765, 'ma_crossover_short_window': 15, 'ma_crossover_long_window': 100, 'ma_crossover_sector_relative_strength_min': -10.944912645737634}.
+[I 2026-08-30 20:43:56,340] Trial 17 finished with values: [-10.0, 100.0] and parameters: {'stop_loss_atr_multiplier': 2.298400629553454, 'atr_take_profit_multiplier': 4.489566222818493, 'ma_crossover_short_window': 9, 'ma_crossover_long_window': 81, 'ma_crossover_sector_relative_strength_min': 3.7917828005638707}.
+[I 2026-08-30 20:46:32,440] Trial 18 finished with values: [0.136, 95.45] and parameters: {'stop_loss_atr_multiplier': 2.0548134370233138, 'atr_take_profit_multiplier': 4.278489624237031, 'ma_crossover_short_window': 21, 'ma_crossover_long_window': 61, 'ma_crossover_sector_relative_strength_min': -12.517436061495937}.
+[I 2026-08-30 20:49:12,566] Trial 19 finished with values: [0.083, 99.1] and parameters: {'stop_loss_atr_multiplier': 1.9488455245253133, 'atr_take_profit_multiplier': 4.993877431752633, 'ma_crossover_short_window': 15, 'ma_crossover_long_window': 52, 'ma_crossover_sector_relative_strength_min': -20.84437630214506}.
+Fetching history for 407 ticker(s) + SPY, 2021-08-30..2026-08-30 (once, reused across all 20 trials)...
+Fetching 11 sector ETF(s) for Sector_Relative_Strength...
+Fetched 405/407 ticker(s).
+Generated 54 walk-forward fold(s).
+Ticker holdout split (seed=42, frac=0.25): 303 tune / 102 holdout. Holdout tickers never seen during tuning: ['ACN', 'ADI', 'ADM', 'AFL', 'ALL', 'AMCR', 'AON', 'ARM', 'AWK', 'BIIB', 'BKR', 'BLK', 'CMI', 'COIN', 'COP', 'COST', 'CPAY', 'CSCO', 'CSX', 'DE', 'DGX', 'DHR', 'DLR', 'DOCU', 'DOW', 'DTE', 'EMR', 'EW', 'EXC', 'EXR', 'FOXA', 'GOOG', 'GPN', 'GRMN', 'HLT', 'HST', 'IBM', 'IDXX', 'IR', 'ISRG', 'KHC', 'KKR', 'KR', 'L.TO', 'LHX', 'LIN', 'LITE', 'LLY', 'LMT', 'LULU', 'MAR', 'MCHP', 'MCK', 'MCO', 'MDB', 'MDT', 'MPWR', 'MSCI', 'MSFT', 'MSTR', 'MTB', 'MTCH', 'NEM', 'NTR.TO', 'ODFL', 'OKTA', 'OXY', 'PCAR', 'PG', 'PLD', 'PSA', 'PSX', 'PYPL', 'QRVO', 'RL', 'SLB', 'SNDK', 'SRE', 'STZ', 'SW', 'SYK', 'T', 'TD.TO', 'TDG', 'TEAM', 'TEL', 'TJX', 'TPR', 'U', 'ULTA', 'V', 'VRTX', 'WAB', 'WBD', 'WEC', 'WFC', 'WM', 'WY', 'XEL', 'XYZ', 'YUM', 'ZM']
+Using up to 8 CPU core(s) for walk-forward parallelization (--max-workers to change; 12 available).
+
+Baseline (DEFAULT_CONFIG, strategy=ma_crossover) pooled out-of-sample metrics on TUNE tickers (recency-weighted, half-life=180d): {'trade_count': 1743, 'effective_trade_count': 554.2, 'win_rate': 31.31, 'avg_pnl_pct': -0.1, 'pnl_std': 4.47, 'sharpe_like': -0.021, 'trades_per_year': 398.6, 'annualized_sharpe_like': -0.419, 'k_ratio': 11.034}
+  Baseline max_drawdown: 94.8%
+Live Trade_Outcomes so far (every signal, all tiers): 722 -- pooled metrics: {'trade_count': 722, 'open_count': 0, 'win_count': 227, 'loss_count': 493, 'expired_count': 2, 'win_rate': 31.44, 'avg_pnl_pct': 1.06, 'total_pnl_pct': 765.86, 'pnl_std': 7.69, 'sharpe_like': 0.138, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}
+  Actionable tier (Strong Buy/Buy) only: 431 -- pooled metrics: {'trade_count': 431, 'open_count': 0, 'win_count': 153, 'loss_count': 276, 'expired_count': 2, 'win_rate': 35.5, 'avg_pnl_pct': 2.37, 'total_pnl_pct': 1022.84, 'pnl_std': 8.86, 'sharpe_like': 0.268, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}
+    ...of which CONFIRMED real fills: 2 -- pooled metrics: {'trade_count': 2, 'open_count': 0, 'win_count': 0, 'loss_count': 2, 'expired_count': 0, 'win_rate': 0.0, 'avg_pnl_pct': -5.03, 'total_pnl_pct': -10.06, 'pnl_std': 0.2, 'sharpe_like': -25.405, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}
+  Research tier (Watch, never traded/tradeable) only: 221 -- pooled metrics: {'trade_count': 221, 'open_count': 0, 'win_count': 43, 'loss_count': 178, 'expired_count': 0, 'win_rate': 19.46, 'avg_pnl_pct': -1.44, 'total_pnl_pct': -318.7, 'pnl_std': 4.49, 'sharpe_like': -0.321, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}
+  Research_loosened tier (active config scored Ignore, loosened config didn't, never traded/tradeable) only: 70 -- pooled metrics: {'trade_count': 70, 'open_count': 0, 'win_count': 31, 'loss_count': 39, 'expired_count': 0, 'win_rate': 44.29, 'avg_pnl_pct': 0.88, 'total_pnl_pct': 61.72, 'pnl_std': 5.81, 'sharpe_like': 0.152, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}. Reflects the loosened config, NOT the active one -- a sanity check on whether loosening is worth considering, not a report card on v19 itself.
+
+Pareto front: 4 non-dominated trial(s) (sharpe_like, max_drawdown%)
+  Trial #12: sharpe_like=0.1780, max_drawdown=98.54%  (annualized_sharpe~3.309, win_rate=15.6%)  params={'stop_loss_atr_multiplier': 2.477987806929142, 'atr_take_profit_multiplier': 4.60220348867735, 'ma_crossover_short_window': 12, 'ma_crossover_long_window': 82, 'ma_crossover_sector_relative_strength_min': -5.188491004918006}
+  Trial #16: sharpe_like=0.1520, max_drawdown=95.07%  (annualized_sharpe~2.617, win_rate=15.8%)  params={'stop_loss_atr_multiplier': 2.2274629762931997, 'atr_take_profit_multiplier': 4.54428518098765, 'ma_crossover_short_window': 15, 'ma_crossover_long_window': 100, 'ma_crossover_sector_relative_strength_min': -10.944912645737634}
+  Trial #14: sharpe_like=0.1400, max_drawdown=92.25%  (annualized_sharpe~2.311, win_rate=15.3%)  params={'stop_loss_atr_multiplier': 2.360504824242808, 'atr_take_profit_multiplier': 4.62024356689208, 'ma_crossover_short_window': 24, 'ma_crossover_long_window': 86, 'ma_crossover_sector_relative_strength_min': -4.4244312994056045}
+  Trial #1: sharpe_like=0.0860, max_drawdown=53.77%  (annualized_sharpe~1.472, win_rate=41.6%)  params={'stop_loss_atr_multiplier': 0.8119890406724053, 'atr_take_profit_multiplier': 1.4123742807316348, 'ma_crossover_short_window': 27, 'ma_crossover_long_window': 72, 'ma_crossover_sector_relative_strength_min': -3.9752824432570435}
+
+Selected from Pareto front, trial #12: sharpe_like=0.1780, max_drawdown=98.54%  (annualized_sharpe~3.309, win_rate=15.6%)
+  params: {'stop_loss_atr_multiplier': 2.477987806929142, 'atr_take_profit_multiplier': 4.60220348867735, 'ma_crossover_short_window': 12, 'ma_crossover_long_window': 82, 'ma_crossover_sector_relative_strength_min': -5.188491004918006}
+  metrics (TUNE tickers): {'trade_count': 1512, 'effective_trade_count': 494.8, 'win_rate': 15.63, 'avg_pnl_pct': 1.38, 'pnl_std': 7.75, 'sharpe_like': 0.178, 'trades_per_year': 345.6, 'annualized_sharpe_like': 3.309, 'k_ratio': 40.015}
+
+=== Deflated Sharpe Ratio (selection-bias correction, 16 scored trial(s) this search, sharpe_std=0.0525) ===
+  Search-level DSR: 99.9% confidence this beats what 16 trials would produce by chance alone (zero real skill).
+  Project-wide DSR: 97.9% confidence using 67 (every candidate System_Config ever written across this whole project) as N -- a much more conservative, whole-project view, reusing this search's own sharpe_std as the best available proxy (not a rigorous full-history recomputation -- no per-trial Sharpe is stored from past searches).
+  Caveat: assumes independent trials -- Optuna's TPE sampler deliberately exploits promising regions, so real trials are somewhat correlated, making this a real but imperfect approximation. Also assumes normal returns (skewness=0, kurtosis=3) -- the true correction would need the winning trial's raw per-trade return distribution, not just its summarized metrics.
+
+=== RRR-vs-scoring-ceiling check (can this config's Buy tier ever fire -- or fire too easily?) ===
+  BASELINE  (DEFAULT_CONFIG): RRR=2.0, best-case Trade_Score=66.67 vs signal_buy_threshold=60 -- OK, reachable; RRR alone=33.33 vs signal_watch_threshold=40 -- OK, discriminating
+  CANDIDATE (winning trial):  RRR=1.86, best-case Trade_Score=64.33 vs signal_buy_threshold=60 -- OK, reachable; RRR alone=31.0 vs signal_watch_threshold=40 -- OK, discriminating
+
+=== Ticker-universe holdout validation (102 tickers Optuna never saw) ===
+  baseline (DEFAULT_CONFIG, strategy=ma_crossover) on holdout: {'trade_count': 619, 'effective_trade_count': 227.9, 'win_rate': 33.16, 'avg_pnl_pct': 0.05, 'pnl_std': 4.16, 'sharpe_like': 0.013, 'trades_per_year': 141.7, 'annualized_sharpe_like': 0.155, 'k_ratio': -18.99}
+  candidate (winning trial) on holdout: {'trade_count': 546, 'effective_trade_count': 185.5, 'win_rate': 15.06, 'avg_pnl_pct': 1.13, 'pnl_std': 7.15, 'sharpe_like': 0.158, 'trades_per_year': 124.6, 'annualized_sharpe_like': 1.764, 'k_ratio': 32.242}
+  baseline max_drawdown on holdout: 87.14%
+  candidate max_drawdown on holdout: 74.84%
+  LIVE (active v60) on holdout: {'trade_count': 440, 'effective_trade_count': 159.9, 'win_rate': 39.64, 'avg_pnl_pct': -0.02, 'pnl_std': 2.49, 'sharpe_like': -0.007, 'trades_per_year': 100.6, 'annualized_sharpe_like': -0.07, 'k_ratio': 36.668}
+  Candidate (0.158) beats what's actually live (active v60, -0.007) on holdout -- the decision-relevant comparison, not just vs DEFAULT_CONFIG.
+
+=== Real-vs-random ratio check (single window, same methodology as benchmark_random_entry.py) ===
+Isolates whether tuning found genuinely better TIMING or just a payoff-bracket shape that inflates ANY entry's return, real or random -- watch the GAP (REAL sharpe_like minus RANDOM sharpe_like), not the raw REAL number alone.
+  BASELINE  (ma_crossover, DEFAULT_CONFIG): REAL sharpe_like=-0.002 vs RANDOM sharpe_like=0.004  (gap=-0.006)
+  CANDIDATE (ma_crossover, winning trial):  REAL sharpe_like=0.093 vs RANDOM sharpe_like=0.023  (gap=0.07)
+  Candidate's real-vs-random GAP (0.0700) improved on baseline's (-0.0060) -- a real, if modest, sign the tuning found genuine timing value, not just a reshaped payoff bracket.
+
+Wrote candidate System_Config version=68 (status=candidate, NOT active).
+Review it, then run: python promote_config.py --promote 68
