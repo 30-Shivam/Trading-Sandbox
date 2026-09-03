@@ -1351,6 +1351,8 @@ Any future refinement (relative strength, volume confirmation, etc.) should be m
 
     **Verified against the real documented incident's own numbers, not just synthetic cases**: fed `recommend_lookback()` the actual real IC values from item 76's write-up (21d=-0.0028, 63d=-0.110, all weak-to-negative) -- confirms the fix now correctly returns `None` instead of the flawed real recommendation that fired at the time.
 
+    **Committed and pushed 2026-09-03, per explicit user request** -- commit `4875d78` on `main`. No new automation/deployment needed -- modifies an already-existing script (`reoptimize_sector_rs.py`), takes effect wherever it's next invoked.
+
 1. [DONE, see item 21] Automation (Phase 8).
 
 2. [DONE, all 3 pieces] Alerting -- Strong Buy (items 21/32), settlement outcomes (item 95), Position Review flip-to-SELL (`review_positions.py`, built same session as item 95 but never updated here -- headless, scheduled via `daily_run.py`, LLM second-opinion enrichment added 2026-08-25, confirmed working end-to-end 2026-08-29), and (2026-08-29) a GitHub Actions-level `if: failure()` catch-all on `daily_run.yml`/`monthly_reoptimize.yml` -- pure shell/curl, no Python/installed dependencies required, so it fires even if `pip install` or an early Python-level crash means the scripts' own internal notify() calls never run. Not added to `tests.yml`: push/PR-triggered failures are already immediately visible to whoever pushed, unlike the scheduled-run invisibility problem this item exists to close.
