@@ -1,0 +1,55 @@
+name: Small/Mid-Cap RSI experimental scan
+
+# Runs ingest.py --smallmid-rsi-only on its own schedule/runner -- see
+# config_loader.py's SMALLMID_RSI_* constants and ingest.py's
+# run_smallmid_rsi_experimental() docstring for why this strategy needs a
+# completely separate ticker universe (smallmid_watchlist.txt, ~1000 S&P
+# 600/400 tickers) from daily_run.yml's own primary/secondary scan.
+#
+# Deliberately a SEPARATE workflow, not a 6th step folded into daily_run.py:
+# ~1000 sequential ticker fetches (market_data.REQUEST_DELAY_SEC pacing)
+# would meaningfully eat into daily_run.yml's own 45-minute budget, shared
+# with the primary scan, LLM Agent, LLM strategy research, and regime
+# switcher. Running as an independent job means it can't compete for that
+# budget, and a failure here can't take the primary run down (or vice
+# versa) -- same per-step isolation rationale daily_run.py already applies
+# at the subprocess level, applied here at the workflow level instead.
+#
+# Built 2026-09-01 (improvements.txt items 114/115) -- confirm the local
+# smoke test (python ingest.py --smallmid-rsi-only) works end-to-end before
+# relying on this schedule; matches monthly_reoptimize.yml's own "built but
+# not yet enabled until confirmed" precedent.
+
+on:
+  schedule:
+    - cron: "35 21 * * 1-5"  # same weekday/after-close timing as daily_run.yml, independent runner
+  workflow_dispatch: {}
+
+jobs:
+  smallmid-rsi-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90  # ~1000 tickers, sequential fetch -- meaningfully longer than
+                          # daily_run.yml's 408-ticker/45-min budget
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python ingest.py --smallmid-rsi-only
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          # No LLM_API_KEY / DISCORD_WEBHOOK_URL needed -- run_smallmid_rsi_experimental()
+          # never calls llm_agent or notifications.notify(), same as
+          # run_experimental_strategies()'s own no-notification convention.
+      - name: Notify on early/infra failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          echo "::error title=smallmid_rsi.yml FAILED::A step before or including 'python ingest.py --smallmid-rsi-only' failed -- see the job log above for which one."
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            curl -sS -X POST -H "Content-Type: application/json" \
+              -d "{\"content\": \"[Trading-Sandbox] smallmid_rsi.yml FAILED -- check the Actions run log: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
+              "$DISCORD_WEBHOOK_URL" || true
+          fi

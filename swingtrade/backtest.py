@@ -3450,19 +3450,23 @@ def _concurrency_at_entry(resolved: list[dict]) -> list[int]:
     return [concurrency_as_of[t["entry_date"]] for t in resolved]
 
 
-def _batched_weighted_returns(resolved: list[dict]) -> list[float]:
+def _batched_weighted_returns(resolved: list[dict]) -> list[tuple]:
     """Per-trade weighted returns (`pnl_pct/100` scaled by
     `1/_concurrency_at_entry()`), combined ADDITIVELY within each shared
-    `exit_date`, returned as one value per distinct exit_date in
-    chronological order -- see compute_max_drawdown()'s own docstring for
-    why same-day exits must be summed, not compounded against each other
-    one at a time (order-dependent phantom-peak bug, verified numerically
-    in tests/test_max_drawdown.py::test_same_day_exits_are_order_independent)."""
+    `exit_date`, returned as `(exit_date, batch_return)` pairs -- one per
+    distinct exit_date, in chronological order -- see
+    compute_max_drawdown()'s own docstring for why same-day exits must be
+    summed, not compounded against each other one at a time (order-dependent
+    phantom-peak bug, verified numerically in
+    tests/test_max_drawdown.py::test_same_day_exits_are_order_independent).
+    The date half of each pair exists for compute_k_ratio()'s benefit (it
+    needs a calendar axis to regress against); compute_max_drawdown() itself
+    only needs the return values."""
     concurrency = _concurrency_at_entry(resolved)
     batches: dict = defaultdict(float)
     for t, c in zip(resolved, concurrency):
         batches[t["exit_date"]] += (t["pnl_pct"] / 100) / c
-    return [batches[d] for d in sorted(batches)]
+    return [(d, batches[d]) for d in sorted(batches)]
 
 
 def compute_max_drawdown(trades: list[dict]) -> float | None:
@@ -3540,7 +3544,7 @@ def compute_max_drawdown(trades: list[dict]) -> float | None:
     equity = 1.0
     peak = 1.0
     max_dd = 0.0
-    for r in _batched_weighted_returns(resolved):
+    for _, r in _batched_weighted_returns(resolved):
         equity *= (1 + r)
         peak = max(peak, equity)
         if peak > 0:
@@ -3632,24 +3636,33 @@ def monte_carlo_drawdown(trades: list[dict], n_simulations: int = 1000, seed: in
 
 
 def compute_k_ratio(trades: list[dict]) -> float | None:
-    """K-ratio: how CONSISTENTLY a sequential equity curve compounds over
-    calendar time, distinct from sharpe_like (mean/stdev of per-trade
-    returns) which is blind to *ordering* -- two configs with identical
-    win_rate/sharpe_like can still differ sharply in whether gains accrue
-    steadily or in one lumpy cluster. Compounds resolved trades into a
-    single SEQUENTIAL, unweighted equity curve in chronological
-    (entry_date) order -- deliberately kept as the older simplification
-    for now (2026-08-31: compute_max_drawdown() was reworked into a
-    concurrency-weighted model that no longer treats every trade as 100%
-    of capital; k_ratio has the identical "not a real concurrent-position
-    portfolio sim" flaw but is a documented follow-up, not yet updated --
-    see improvements.txt), then fit an OLS regression of log(equity)
-    against elapsed calendar days
-    (log-space so compounding growth is linear, the standard K-ratio
-    setup). K-ratio is the regression slope's t-statistic (slope divided
-    by its own standard error) -- large and positive means equity grew
-    steadily and reliably in a straight line; near zero or negative means
-    the trend is noisy, flat, or reversing.
+    """K-ratio: how CONSISTENTLY an equity curve compounds over calendar
+    time, distinct from sharpe_like (mean/stdev of per-trade returns) which
+    is blind to *ordering* -- two configs with identical win_rate/sharpe_like
+    can still differ sharply in whether gains accrue steadily or in one
+    lumpy cluster. Fits an OLS regression of log(equity) against elapsed
+    calendar days (log-space so compounding growth is linear, the standard
+    K-ratio setup). K-ratio is the regression slope's t-statistic (slope
+    divided by its own standard error) -- large and positive means equity
+    grew steadily and reliably in a straight line; near zero or negative
+    means the trend is noisy, flat, or reversing.
+
+    2026-08-31: reworked onto the same CONCURRENCY-WEIGHTED equity curve as
+    compute_max_drawdown() (reuses its own `_batched_weighted_returns()`
+    helper directly) -- previously compounded every resolved trade
+    one-at-a-time in entry_date order as if each alone used 100% of capital,
+    the identical "not a real concurrent-position portfolio sim" flaw
+    compute_max_drawdown() was redesigned to fix earlier the same day (see
+    that function's own docstring for the full model/limits). Each trade's
+    position_weight = 1 / how many trades were concurrently open at the
+    moment it entered; trades sharing an exit_date combine additively into
+    one batch. The regression's calendar axis is now each BATCH's exit_date
+    (when its P&L actually realizes and its weighted return books into the
+    curve), not each trade's entry_date -- consistent with
+    compute_max_drawdown()'s own "P&L realizes at EXIT, not entry" choice.
+    Reduces to the exact old per-trade-in-entry-order behavior whenever
+    there's no real overlap (every weight is 1.0, one trade per batch,
+    exit_date order matches entry_date order for non-overlapping trades).
 
     Deliberately RAW, not annualized or scaled by sample size -- same
     "comparable only within a similarly-sized/timed run" convention
@@ -3657,25 +3670,32 @@ def compute_k_ratio(trades: list[dict]) -> float | None:
     point 12): only compare k_ratio between runs over the same calendar
     window and trade universe, never across runs of different length.
 
-    Returns None with fewer than 3 resolved trades, when trades don't
-    carry entry_date at all (same degrade-gracefully convention as
-    _annualize_sharpe(), for live-Mongo-pooled trades that lack it), when
-    every trade shares one entry_date (no time axis to regress against),
-    or in the degenerate zero-residual-variance case (avoids a
+    Returns None with fewer than 3 resolved trades, when any resolved trade
+    is missing entry_date or exit_date (same degrade-gracefully convention
+    as compute_max_drawdown()/_annualize_sharpe() -- real callers pool live
+    Trade_Outcomes Mongo documents into a minimal {"status", "pnl_pct"}
+    shape with neither field, see optimize.py's report_live_outcomes_context(),
+    settle_trades.py), when fewer than 3 distinct exit_date batches remain
+    after combining same-exit_date trades (no reliable time axis to regress
+    against -- can happen even with >=3 resolved trades if several share an
+    exit_date), or in the degenerate zero-residual-variance case (avoids a
     divide-by-zero rather than returning a nonsensical infinite value)."""
     resolved = [t for t in trades if t["status"] != "OPEN"]
-    if len(resolved) < 3 or any("entry_date" not in t for t in resolved):
+    if len(resolved) < 3 or any("entry_date" not in t or "exit_date" not in t for t in resolved):
         return None
 
-    ordered = sorted(resolved, key=lambda t: t["entry_date"])
-    start = ordered[0]["entry_date"]
+    batched = _batched_weighted_returns(resolved)
+    if len(batched) < 3:
+        return None
+
+    start = batched[0][0]
     equity = 1.0
     xs, ys = [], []
-    for t in ordered:
-        equity *= (1 + t["pnl_pct"] / 100)
+    for exit_date, r in batched:
+        equity *= (1 + r)
         if equity <= 0:
             return None
-        xs.append(float((t["entry_date"] - start).days))
+        xs.append(float((exit_date - start).days))
         ys.append(math.log(equity))
 
     x = pd.Series(xs)

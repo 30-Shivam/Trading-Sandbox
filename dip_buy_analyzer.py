@@ -184,6 +184,7 @@ from watchlist import parse_ticker_text, read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
+SMALLMID_WATCHLIST_FILE = SCRIPT_DIR / "smallmid_watchlist.txt"
 
 DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for flat position sizing
 DEFAULT_RISK_AMOUNT = 25         # default $ sidebar value for risk-based position sizing
@@ -331,6 +332,19 @@ def cached_fetch_bundle(tickers: tuple[str, ...]):
     it doesn't need its own cache key) rather than threading `sector_lookup`
     through this function's own signature/cache key."""
     sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
+    return market_data.fetch_ticker_bundle(tickers, sector_lookup=sector_lookup)
+
+
+@st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Fetching small/mid-cap watchlist data...")
+def cached_fetch_smallmid_bundle(tickers: tuple[str, ...]):
+    """RSI Mean-Reversion (Small/Mid-Cap)'s own separate fetch -- a
+    DELIBERATELY distinct function from cached_fetch_bundle() above, not a
+    call into it with different tickers. cached_fetch_bundle() hardcodes
+    `read_ticker_sectors(WATCHLIST_FILE)` internally -- calling it with
+    smallmid tickers would silently return {} sectors for every one of them
+    (none are in the primary watchlist). See config_loader.py's own
+    SMALLMID_RSI_* constants for why this strategy needs its own universe."""
+    sector_lookup = read_ticker_sectors(SMALLMID_WATCHLIST_FILE)
     return market_data.fetch_ticker_bundle(tickers, sector_lookup=sector_lookup)
 
 
@@ -686,6 +700,7 @@ def render_experimental_section(
     sector_data: dict | None = None,
     momentum_panel: pd.DataFrame | None = None,
     yield_curve=None,
+    log_strategy_override: str | None = None,
 ) -> pd.DataFrame:
     """Score, log, and display one EXPERIMENTAL strategy's results against
     the SAME already-fetched bundle every other section uses -- no extra
@@ -695,6 +710,17 @@ def render_experimental_section(
     config_loader.EXPERIMENTAL_STRATEGY_VERSIONS' docstring for why this
     stays a separate dict from SECONDARY_STRATEGY_VERSIONS, the actual
     mechanism enforcing this).
+
+    `log_strategy_override`, if set, logs Trade_Signals/Trade_Outcomes under
+    a DIFFERENT strategy label than `config.strategy` -- same mechanism (and
+    same rationale) as render_secondary_section()'s own param of the same
+    name / config_loader.SECONDARY_LOG_STRATEGY_OVERRIDES. Added 2026-09-01
+    for RSI Mean-Reversion (Small/Mid-Cap), which reuses v66 (config.strategy
+    == "rsi") unmodified -- without this, its signals would log under the
+    bare "rsi" label, colliding with ~175 old pre-2026-08-20 documents from
+    before RSI Mean-Reversion's own v17->v66 rename (see
+    SECONDARY_LOG_STRATEGY_OVERRIDES's docstring for that history). Default
+    None preserves every existing caller's behavior unchanged.
 
     Unlike the LLM Agent tab, an experimental strategy here IS a mechanical
     one and was already run through the SAME offline validation every
@@ -745,8 +771,12 @@ def render_experimental_section(
     results_df["Est_Cost"] = 0.0
 
     if storage_ok:
+        log_config = (
+            swingtrade.TradingConfig(**{**config.to_dict(), "strategy": log_strategy_override})
+            if log_strategy_override else config
+        )
         try:
-            logged = storage.log_trade_signals(results_df, config.to_dict())
+            logged = storage.log_trade_signals(results_df, log_config.to_dict())
             st.caption(
                 f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) "
                 "to MongoDB (never capital-allocated -- see warning above)."
@@ -1525,6 +1555,45 @@ def main():
                 momentum_panel=momentum_panel,
                 yield_curve=yield_curve,
             )
+
+        st.divider()
+        st.subheader(f"{config_loader.SMALLMID_RSI_LABEL} (experimental)")
+        st.info(
+            "**Different ticker universe, not a different strategy.** RSI Mean-Reversion's "
+            "own v66 config, UNCHANGED, scanned against S&P 600 SmallCap + S&P 400 MidCap "
+            "(~1000 tickers) instead of the main watchlist. A real random-baseline check "
+            "(2026-09-01) found v66 shows no edge on the main large-cap watchlist (see its "
+            "caveat in the Mechanical Strategies tab) but a genuine, holdout-validated edge "
+            "here (holdout sharpe_like 0.223 vs a random baseline of ~0.05, consistent across "
+            "cuts, 18,000+ real simulated trades). A follow-up attempt to re-tune specifically "
+            "for this universe was tried and REJECTED -- it overfit and lost to v66-as-is on "
+            "holdout, so this reuses v66 exactly unmodified, not a new config. **Real caveats, "
+            "not yet resolved**: current (not point-in-time historical) index membership carries "
+            "some survivorship-bias risk, not independently measured for this universe; zero "
+            "real settled trades yet; small/mid-cap transaction costs aren't modeled beyond this "
+            "project's existing flat cost assumptions. **Never used for capital allocation.**"
+        )
+        if not SMALLMID_WATCHLIST_FILE.exists():
+            st.caption(f"{config_loader.SMALLMID_RSI_LABEL}: unavailable -- watchlist not found "
+                       f"({SMALLMID_WATCHLIST_FILE}).")
+        else:
+            smallmid_tickers = tuple(read_tickers(SMALLMID_WATCHLIST_FILE))
+            smallmid_config, smallmid_source = load_secondary_config(config_loader.SMALLMID_RSI_CONFIG_VERSION)
+            if smallmid_config is None:
+                st.caption(f"{config_loader.SMALLMID_RSI_LABEL}: unavailable -- {smallmid_source}")
+            else:
+                smallmid_bundle, smallmid_market_df, smallmid_fetch_skipped, smallmid_sector_data, _ = (
+                    cached_fetch_smallmid_bundle(smallmid_tickers)
+                )
+                smallmid_sector_lookup = read_ticker_sectors(SMALLMID_WATCHLIST_FILE)
+                render_experimental_section(
+                    f"{config_loader.SMALLMID_RSI_LABEL} (v{config_loader.SMALLMID_RSI_CONFIG_VERSION}, experimental)",
+                    smallmid_config,
+                    smallmid_bundle, smallmid_market_df, smallmid_fetch_skipped,
+                    storage_ok,
+                    sector_lookup=smallmid_sector_lookup, sector_data=smallmid_sector_data,
+                    log_strategy_override=config_loader.SMALLMID_RSI_LOG_STRATEGY,
+                )
 
     with tab2:
         st.subheader("LLM Agent (experimental)")

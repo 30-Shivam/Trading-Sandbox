@@ -254,6 +254,39 @@ EXPERIMENTAL_STRATEGY_VERSIONS = {
     "Momentum Rank": 65,
 }
 
+# RSI Mean-Reversion (Small/Mid-Cap), added 2026-09-01 -- NOT in
+# EXPERIMENTAL_STRATEGY_VERSIONS above, deliberately. A real random-baseline
+# check (improvements.txt item 114) found RSI Mean-Reversion's own v66 config
+# -- already live as a SECONDARY strategy, and separately flagged in
+# SECONDARY_VALIDATION_CAVEATS below for losing to random on the current
+# large-cap watchlist -- shows a genuine, holdout-validated edge (sharpe_like
+# 0.223 vs a random baseline of ~0.05, consistent TUNE/HOLDOUT, 18,000+ real
+# trades) on a completely different universe: S&P 600 SmallCap + S&P 400
+# MidCap (smallmid_watchlist.txt, ~1000 tickers, zero overlap with
+# watchlist.txt). A follow-up attempt to re-tune RSI specifically for this
+# universe (item 115, a real 20-trial Optuna search) was REJECTED -- the
+# fresh candidate overfit TUNE and lost to v66-as-unmodified on holdout
+# (0.121 vs 0.223) -- so this reuses v66 exactly as-is, not a new config.
+#
+# Kept OUT of EXPERIMENTAL_STRATEGY_VERSIONS because that dict's own loop
+# (ingest.py's run_experimental_strategies(), dip_buy_analyzer.py's
+# render_experimental_section() call site) assumes every entry shares the
+# ONE ticker bundle already fetched from watchlist.txt -- no existing
+# strategy has ever needed its own separate universe before this. See
+# ingest.py's run_smallmid_rsi_experimental() / dip_buy_analyzer.py's
+# smallmid section for the dedicated (not generalized-loop) wiring this
+# needs instead. Same "never capital-allocated" treatment as every
+# experimental strategy -- ships here with real, positive backtest evidence,
+# but zero real settled trades yet, so it still starts at the bottom of the
+# same graduated-promotion ladder every other strategy has climbed.
+SMALLMID_RSI_LABEL = "RSI Mean-Reversion (Small/Mid-Cap)"
+SMALLMID_RSI_CONFIG_VERSION = 66
+# Distinct Mongo strategy label -- keeps this universe's real settled-trade
+# track record from ever pooling with RSI Mean-Reversion's own existing
+# (already-caveated) large-cap history, same rationale as
+# SECONDARY_LOG_STRATEGY_OVERRIDES's v17->v66 rename above.
+SMALLMID_RSI_LOG_STRATEGY = "rsi_mean_reversion_smallmid"
+
 
 def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
     try:

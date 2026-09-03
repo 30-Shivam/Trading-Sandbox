@@ -46,6 +46,8 @@ part of the technical signal.
 Usage:
     python ingest.py
     python ingest.py --watchlist my_list.txt --position-budget 500
+    python ingest.py --smallmid-rsi-only  # isolated small/mid-cap RSI variant, see
+                                           # run_smallmid_rsi_experimental()'s own docstring
 """
 
 import argparse
@@ -82,6 +84,7 @@ from watchlist import read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
+SMALLMID_WATCHLIST_FILE = SCRIPT_DIR / "smallmid_watchlist.txt"
 DEFAULT_POSITION_BUDGET = 250.0
 MAX_LLM_CANDIDATES = 10  # same cap as dip_buy_analyzer.py's LLM Agent tab -- cost/rate-limit
                           # control, see llm_agent.py's module docstring
@@ -500,6 +503,78 @@ def run_experimental_strategies(
             print(f"[WARN] {label} (v{version}, experimental) signal logging failed: {exc}", file=sys.stderr)
 
 
+def run_smallmid_rsi_experimental(watchlist_path: Path = SMALLMID_WATCHLIST_FILE) -> None:
+    """Headless automation for the RSI Mean-Reversion (Small/Mid-Cap)
+    experimental variant (config_loader.SMALLMID_RSI_LABEL, 2026-09-01,
+    improvements.txt items 114/115) -- reuses RSI Mean-Reversion's already-
+    tuned System_Config v66 UNMODIFIED against a completely different
+    ticker universe (S&P 600 SmallCap + S&P 400 MidCap, ~1000 tickers,
+    smallmid_watchlist.txt) than every other strategy in this file scans.
+
+    Deliberately NOT folded into run_experimental_strategies()/
+    EXPERIMENTAL_STRATEGY_VERSIONS -- that loop assumes every entry shares
+    the ONE bundle already fetched from the primary watchlist (see its own
+    docstring). This strategy's entire reason for existing is a DIFFERENT
+    universe, so it does its own fetch_ticker_bundle() call here rather than
+    taking `bundle` as a parameter. A deliberate, isolated exception, not a
+    new generalized pattern -- generalize EXPERIMENTAL_STRATEGY_VERSIONS
+    itself only if/when a second strategy also needs its own universe.
+
+    NEVER capital-allocated -- no _size_positions() call, same mechanism as
+    run_experimental_strategies() (explicit zeroed Shares_To_Buy/Est_Cost
+    below, not reliance on storage/signals.py to enforce it). Logs under
+    config_loader.SMALLMID_RSI_LOG_STRATEGY (a swapped TradingConfig, same
+    inline pattern run_secondary_strategy() uses for
+    SECONDARY_LOG_STRATEGY_OVERRIDES) so this universe's real settled-trade
+    track record never pools with RSI Mean-Reversion's own existing
+    large-cap history."""
+    if not watchlist_path.exists():
+        print(f"{config_loader.SMALLMID_RSI_LABEL}: skipped -- watchlist not found ({watchlist_path}).")
+        return
+    tickers = tuple(read_tickers(watchlist_path))
+    if not tickers:
+        print(f"{config_loader.SMALLMID_RSI_LABEL}: skipped -- no tickers found in {watchlist_path}.")
+        return
+    sector_lookup = read_ticker_sectors(watchlist_path)
+
+    config, source = config_loader.load_config_by_version(config_loader.SMALLMID_RSI_CONFIG_VERSION)
+    if config is None:
+        print(f"{config_loader.SMALLMID_RSI_LABEL}: skipped -- {source}")
+        return
+
+    bundle, market_df, fetch_skipped, sector_data, _yield_curve = market_data.fetch_ticker_bundle(
+        tickers, sector_lookup=sector_lookup,
+    )
+    results, score_skipped = market_data.score_bundle_for_strategy(
+        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+    )
+    if not results:
+        print(f"{config_loader.SMALLMID_RSI_LABEL}: no tickers scored today.")
+        return
+
+    results_df = pd.DataFrame(results)
+    results_df = _score_for_strategy(results_df, config)
+    # Never capital-allocated -- explicit zeros, same rationale as
+    # run_experimental_strategies()'s own identical lines.
+    results_df["Shares_To_Buy"] = 0.0
+    results_df["Est_Cost"] = 0.0
+
+    log_config = swingtrade.TradingConfig(
+        **{**config.to_dict(), "strategy": config_loader.SMALLMID_RSI_LOG_STRATEGY}
+    )
+    try:
+        logged = storage.log_trade_signals(results_df, log_config.to_dict())
+        print(f"{config_loader.SMALLMID_RSI_LABEL}: analyzed {len(results_df)}/{len(tickers)} ticker(s), "
+              f"logged {logged['actionable']} actionable + {logged['research']} research signal(s) "
+              "to MongoDB (never capital-allocated).")
+    except Exception as exc:
+        print(f"[WARN] {config_loader.SMALLMID_RSI_LABEL} signal logging failed: {exc}", file=sys.stderr)
+
+    if fetch_skipped or score_skipped:
+        skipped_count = len(fetch_skipped) + len(score_skipped)
+        print(f"{config_loader.SMALLMID_RSI_LABEL}: {skipped_count} ticker(s) could not be analyzed/scored.")
+
+
 def run_best_ideas_strategy(
     strategy_frames: dict[str, pd.DataFrame], regime_picks: list[dict],
     bundle: dict, market_df, sector_lookup: dict[str, str] | None,
@@ -719,7 +794,24 @@ def main():
              "Strong Buy/Buy signal found across all three strategies. Requires GEMINI_API_KEY "
              "(free tier); degrades to a warning if unavailable rather than failing the scan.",
     )
+    parser.add_argument(
+        "--smallmid-rsi-only", action="store_true",
+        help="Run ONLY the RSI Mean-Reversion (Small/Mid-Cap) experimental variant "
+             "(run_smallmid_rsi_experimental()) against smallmid_watchlist.txt, then exit -- "
+             "skips the primary/secondary/market-uptrend pipeline entirely. Meant to be invoked "
+             "as its own isolated process/workflow (see .github/workflows/smallmid_rsi.yml), "
+             "not combined with the main scan -- see config_loader.py's own SMALLMID_RSI_* "
+             "constants for why this strategy is kept structurally separate.",
+    )
     args = parser.parse_args()
+    if args.smallmid_rsi_only:
+        try:
+            storage.ensure_indexes()
+        except storage.MongoNotConfigured as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+        run_smallmid_rsi_experimental()
+        sys.exit(0)
     sys.exit(run(args.watchlist, args.position_budget, args.with_ai_context, args.risk_amount))
 
 
