@@ -127,11 +127,12 @@ def test_squeeze_breakout_sector_filter_is_noop_at_default():
     assert result.loc[0, "Trade_Score"] > 0.0
 
 
-def _ma_crossover_row(sector_relative_strength, yield_curve_spread=None):
+def _ma_crossover_row(sector_relative_strength, yield_curve_spread=None, skew_regime_diff=None):
     return {
         "MA_Crossover_Signal": True, "Catalyst_Warning": False,
         "Sector_Relative_Strength": sector_relative_strength,
         "Yield_Curve_Spread": yield_curve_spread,
+        "Skew_Regime_Diff": skew_regime_diff,
         "RRR": 2.0, "Signal_Strength_Pct": 1.0,
     }
 
@@ -173,6 +174,68 @@ def test_ma_crossover_yield_curve_filter_missing_value_never_excludes():
     config = swingtrade.TradingConfig(**{**CONFIG.to_dict(), "ma_crossover_yield_curve_spread_max": -3.0})
     result = swingtrade.add_ma_crossover_trade_score(df, config)
     assert result.loc[0, "Trade_Score"] > 0.0
+
+
+# --- ma_crossover_skew_regime_min (2026-09-03, benchmark_skew_regime.py) ---
+
+def test_ma_crossover_skew_regime_filter_excludes_below_threshold():
+    # Real finding: ma_crossover's edge is stronger when ^SKEW is ELEVATED
+    # relative to its own trailing-year median -- the field is a FLOOR, same
+    # polarity as the sector filter, opposite polarity from yield curve's
+    # ceiling. A diff of -5.0 below a min of 0.0 must exclude.
+    df = pd.DataFrame([_ma_crossover_row(sector_relative_strength=None, skew_regime_diff=-5.0)])
+    config = swingtrade.TradingConfig(**{**CONFIG.to_dict(), "ma_crossover_skew_regime_min": 0.0})
+    result = swingtrade.add_ma_crossover_trade_score(df, config)
+    assert result.loc[0, "Trade_Score"] == 0.0
+
+
+def test_ma_crossover_skew_regime_filter_is_noop_at_default():
+    df = pd.DataFrame([_ma_crossover_row(sector_relative_strength=None, skew_regime_diff=-99.0)])
+    result = swingtrade.add_ma_crossover_trade_score(df, CONFIG)
+    assert result.loc[0, "Trade_Score"] > 0.0
+
+
+def test_ma_crossover_skew_regime_filter_missing_value_never_excludes():
+    df = pd.DataFrame([_ma_crossover_row(sector_relative_strength=None, skew_regime_diff=None)])
+    config = swingtrade.TradingConfig(**{**CONFIG.to_dict(), "ma_crossover_skew_regime_min": 30.0})
+    result = swingtrade.add_ma_crossover_trade_score(df, config)
+    assert result.loc[0, "Trade_Score"] > 0.0
+
+
+def test_skew_regime_diff_uses_rolling_not_expanding_window():
+    # 2026-09-03 real bug this guards against: an EXPANDING-since-1990
+    # median stays anchored to a stale baseline given ^SKEW's own real
+    # secular drift, misclassifying almost everything recent as "elevated"
+    # (a 5-ticker smoke test split 38 elevated vs 3 normal before this was
+    # fixed -- see benchmark_skew_regime.py's own docstring). Construct a
+    # synthetic SKEW series that drifts from 100 up to 200 over 800 days,
+    # then holds flat at 200 -- an EXPANDING median would keep reading the
+    # flat tail as wildly elevated relative to the early, much-lower
+    # history; a ROLLING (bounded, ~1yr) median should instead read the
+    # flat tail as roughly Skew_Regime_Diff ~= 0 (today's value matches its
+    # own recent past), since the window no longer reaches the low, early
+    # values at all.
+    # Rise for 800 days, THEN a further 600 flat days before the ticker's own
+    # 100-day sample window -- the sample must sit comfortably more than
+    # SKEW_REGIME_ROLLING_WINDOW_DAYS (365) past the end of the rise, or its
+    # own rolling window would still partly reach back into the still-rising
+    # period and legitimately show a real (not spurious) positive diff.
+    n = 1500
+    dates = pd.date_range("2020-01-01", periods=n, freq="D")
+    drift = pd.Series(range(n), index=dates).clip(upper=800) / 800 * 100 + 100  # 100 -> 200 over 800 days, then flat
+    skew_series = pd.Series(drift.values, index=dates)
+
+    ticker_dates = dates[-100:]  # the flat tail, ~600 days after the rise ended
+    ticker_df = pd.DataFrame({
+        "Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Volume": 1_000_000,
+    }, index=ticker_dates)
+
+    frame = swingtrade.levels.precompute_ma_crossover_frame(ticker_df, CONFIG, skew_regime=skew_series)
+    tail_diff = frame["Skew_Regime_Diff"].dropna()
+    assert len(tail_diff) > 0
+    # Rolling: flat tail vs its own recent (also-flat) history -> near zero,
+    # NOT the ~50-100 an expanding-since-day-1 median would have shown.
+    assert tail_diff.abs().max() < 5.0
 
 
 # --- compute_ma_crossover_levels() live-wiring (2026-08-31) -- the live

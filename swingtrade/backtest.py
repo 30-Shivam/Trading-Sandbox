@@ -2700,6 +2700,7 @@ def simulate_ma_crossover_signals(
     sector: str = "Unknown",
     sector_ohlcv: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
+    skew_regime: pd.Series | None = None,
 ) -> list[dict]:
     """Moving-average-crossover counterpart to every other simulate_*_signals()
     this session -- buys the day a short-term SMA crosses ABOVE a
@@ -2740,6 +2741,13 @@ def simulate_ma_crossover_signals(
     ma_crossover_yield_curve_spread_max filter -- see config.py's own
     comment on that field for the real finding motivating it
     (benchmark_macro_regime.py, 2026-08-31).
+
+    `skew_regime` (optional, a single date-indexed Series of RAW CBOE SKEW
+    Index closes shared across every ticker -- see
+    run_backtest.fetch_history() called on ticker "^SKEW") backs the
+    BACKTEST/OPTUNA-ONLY ma_crossover_skew_regime_min filter -- see
+    config.py's own comment on that field for the real finding motivating
+    it (benchmark_skew_regime.py, 2026-09-03).
     """
     window_start = pd.Timestamp(window_start)
     window_end = pd.Timestamp(window_end)
@@ -2755,6 +2763,7 @@ def simulate_ma_crossover_signals(
     # is additive and changes no existing gating behavior.
     frame = precompute_ma_crossover_frame(
         ohlcv, config, market_df=market_ohlcv, sector_df=sector_ohlcv, yield_curve=yield_curve,
+        skew_regime=skew_regime,
     )
 
     for as_of in eligible_dates:
@@ -2780,6 +2789,9 @@ def simulate_ma_crossover_signals(
             continue
         yield_curve_spread = levels.get("Yield_Curve_Spread")
         if yield_curve_spread is not None and yield_curve_spread > config.ma_crossover_yield_curve_spread_max:
+            continue
+        skew_regime_diff = levels.get("Skew_Regime_Diff")
+        if skew_regime_diff is not None and skew_regime_diff < config.ma_crossover_skew_regime_min:
             continue
 
         bars_after_signal = ohlcv[ohlcv.index > as_of]
@@ -2939,6 +2951,7 @@ def run_backtest(
     insider_data: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
+    skew_regime: pd.Series | None = None,
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
@@ -3022,7 +3035,17 @@ def run_backtest(
     through to every ticker's own simulate_ma_crossover_signals() call.
     `None` (default) means no yield-curve data at all -- Yield_Curve_Spread
     then reads None/NaN and the gate never excludes on its own, same
-    convention as every other optional filter here."""
+    convention as every other optional filter here.
+
+    `skew_regime` (optional, a single date-indexed Series of RAW CBOE SKEW
+    Index closes shared across EVERY ticker unchanged -- see
+    run_backtest.fetch_history() called on ticker "^SKEW") backs
+    "ma_crossover"'s BACKTEST/OPTUNA-ONLY ma_crossover_skew_regime_min
+    filter -- same "not resolved per-ticker, passed straight through"
+    treatment as `yield_curve` above. `None` (default) means no SKEW data
+    at all -- Skew_Regime_Diff then reads None/NaN and the gate never
+    excludes on its own, same convention as every other optional filter
+    here."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     sector_data = sector_data or {}
@@ -3081,7 +3104,7 @@ def run_backtest(
             trades = simulate_ma_crossover_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector, sector_ohlcv=sector_ohlcv,
-                yield_curve=yield_curve,
+                yield_curve=yield_curve, skew_regime=skew_regime,
             )
         elif strategy == "pairs":
             trades = simulate_pairs_signals(
@@ -3742,6 +3765,7 @@ def _run_fold_sequential(
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
+    skew_regime: pd.Series | None = None,
 ) -> FoldResult:
     """The actual per-fold work, shared by both the sequential and
     parallel paths of run_walk_forward() -- one fold's in-sample and
@@ -3750,12 +3774,12 @@ def _run_fold_sequential(
     in_trades = run_backtest(
         ticker_data, market_data, fold.in_sample_start, fold.in_sample_end, config,
         earnings_data, sector_lookup, strategy, sector_data, pair_price_panels,
-        momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve,
+        momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve, skew_regime=skew_regime,
     )
     out_trades = run_backtest(
         ticker_data, market_data, fold.out_sample_start, fold.out_sample_end, config,
         earnings_data, sector_lookup, strategy, sector_data, pair_price_panels,
-        momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve,
+        momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve, skew_regime=skew_regime,
     )
     return FoldResult(
         fold=fold,
@@ -3804,6 +3828,11 @@ _worker_momentum_rank_frame: pd.DataFrame | None = None
 # Unlike sector_data/pair_price_panels, this is NOT keyed by anything --
 # the exact same Series object is handed unchanged to every ticker.
 _worker_yield_curve: pd.Series | None = None
+# Shared CBOE SKEW Index Series (raw closes, see run_backtest()'s own
+# docstring) -- same "loaded once per worker, not once per fold" treatment,
+# same "not keyed by anything, handed unchanged to every ticker" shape as
+# _worker_yield_curve above.
+_worker_skew_regime: pd.Series | None = None
 
 
 def _init_worker(
@@ -3812,15 +3841,17 @@ def _init_worker(
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
+    skew_regime: pd.Series | None = None,
 ) -> None:
     global _worker_ticker_data, _worker_market_data, _worker_sector_data, _worker_pair_price_panels
-    global _worker_momentum_rank_frame, _worker_yield_curve
+    global _worker_momentum_rank_frame, _worker_yield_curve, _worker_skew_regime
     _worker_ticker_data = ticker_data
     _worker_market_data = market_data
     _worker_sector_data = sector_data
     _worker_pair_price_panels = pair_price_panels
     _worker_momentum_rank_frame = momentum_rank_frame
     _worker_yield_curve = yield_curve
+    _worker_skew_regime = skew_regime
 
 
 def _run_fold_worker(
@@ -3834,6 +3865,7 @@ def _run_fold_worker(
     return _run_fold_sequential(
         fold, _worker_ticker_data, _worker_market_data, config, earnings_data, sector_lookup, strategy,
         _worker_sector_data, _worker_pair_price_panels, _worker_momentum_rank_frame, _worker_yield_curve,
+        _worker_skew_regime,
     )
 
 
@@ -3851,6 +3883,7 @@ def run_walk_forward(
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
+    skew_regime: pd.Series | None = None,
 ) -> list[FoldResult]:
     """Run the backtest across every fold, in-sample and out-of-sample
     separately. Optuna (Phase 5) evaluates a candidate config by scoring it
@@ -3913,12 +3946,20 @@ def run_walk_forward(
     filter -- threaded through BOTH paths identically to sector_data/
     pair_price_panels (loaded once per worker via the pool initializer on
     the parallel path). None (default) means no yield-curve data at all,
-    identical to every caller from before this parameter existed."""
+    identical to every caller from before this parameter existed.
+
+    `skew_regime` (optional, a single date-indexed Series of RAW CBOE SKEW
+    Index closes shared across every ticker unchanged, see
+    run_backtest.fetch_history() called on ticker "^SKEW") backs
+    "ma_crossover"'s BACKTEST/OPTUNA-ONLY ma_crossover_skew_regime_min
+    filter -- threaded through BOTH paths identically to yield_curve above.
+    None (default) means no SKEW data at all, identical to every caller
+    from before this parameter existed."""
     if not parallel or len(folds) <= 1:
         return [
             _run_fold_sequential(
                 fold, ticker_data, market_data, config, earnings_data, sector_lookup, strategy, sector_data,
-                pair_price_panels, momentum_rank_frame, yield_curve,
+                pair_price_panels, momentum_rank_frame, yield_curve, skew_regime,
             )
             for fold in folds
         ]
@@ -3928,7 +3969,10 @@ def run_walk_forward(
 
     with ProcessPoolExecutor(
         max_workers=max_workers, initializer=_init_worker,
-        initargs=(ticker_data, market_data, sector_data, pair_price_panels, momentum_rank_frame, yield_curve),
+        initargs=(
+            ticker_data, market_data, sector_data, pair_price_panels, momentum_rank_frame, yield_curve,
+            skew_regime,
+        ),
     ) as executor:
         futures = [
             executor.submit(_run_fold_worker, fold, config, earnings_data, sector_lookup, strategy)

@@ -706,6 +706,43 @@ class TradingConfig:
                                            # wired into live production -- a
                                            # deliberate, later decision, not
                                            # bundled into this field's own build.
+    ma_crossover_skew_regime_min: float = -1000.0  # a FLOOR, like the
+                                           # *_relative_strength_min siblings above
+                                           # (not a ceiling like yield_curve_spread_max)
+                                           # -- grounded in a real finding
+                                           # (benchmark_skew_regime.py, 2026-09-03,
+                                           # itself following up on a user-supplied
+                                           # PDF describing a per-stock options-skew
+                                           # map that turned out infeasible to
+                                           # backtest -- no free historical per-
+                                           # contract IV archive exists, only a
+                                           # live/current yfinance snapshot; the CBOE
+                                           # SKEW Index, ^SKEW, is a free, real,
+                                           # historical INDEX-level tail-risk proxy
+                                           # instead, back to 1990): ma_crossover's
+                                           # real edge is meaningfully stronger when
+                                           # ^SKEW is ELEVATED relative to its own
+                                           # trailing 1-year median than when it's
+                                           # normal/low -- holdout sharpe_like 0.122
+                                           # vs -0.011 (net negative), consistent on
+                                           # ALL/TUNE/HOLDOUT. Admits a signal only if
+                                           # Skew_Regime_Diff (today's ^SKEW minus its
+                                           # own trailing-1yr median, NOT the raw
+                                           # level -- see precompute_ma_crossover_frame()
+                                           # for why a raw level has no stable
+                                           # threshold given ^SKEW's real secular
+                                           # drift) is >= this value (or unavailable)
+                                           # -- a tuned, HIGHER min increasingly
+                                           # restricts trading to more-elevated-than-
+                                           # usual regimes; -1000.0 (disabled) is a
+                                           # practical no-op since real Skew_Regime_Diff
+                                           # values never approach it (^SKEW's whole
+                                           # observed range is roughly 101-183, so any
+                                           # real diff is a two-digit number at most).
+                                           # Same BACKTEST/OPTUNA-ONLY scope as yield
+                                           # curve above: reads None/NaN (never
+                                           # excludes on its own) until ^SKEW fetching
+                                           # is separately wired into live production.
 
     # Mean-reversion PAIRS strategy (swingtrade/levels.compute_pairs_levels,
     # swingtrade/backtest.simulate_pairs_signals) -- LONG-ONLY laggard-

@@ -310,6 +310,22 @@ SECTOR_RELATIVE_STRENGTH_RANGE = (-50.0, 15.0)
 # session (roughly -1 to 3 over the last few years); a search can still find "no
 # meaningful filtering" near the upper end if that's actually best.
 YIELD_CURVE_SPREAD_MAX_RANGE = (-3.0, 5.0)
+# ma_crossover_skew_regime_min (2026-09-03, benchmark_skew_regime.py's real
+# finding) -- a FLOOR like SECTOR_RELATIVE_STRENGTH_RANGE, not a ceiling like
+# YIELD_CURVE_SPREAD_MAX_RANGE: ma_crossover's edge was found stronger when
+# ^SKEW is ELEVATED (higher), not lower, relative to its own trailing-year
+# median. Bounds span the real observed Skew_Regime_Diff distribution over
+# the actual 5-year backtest window (min -26.7, max 37.1, std 11.6, fetched
+# this session) with margin at both ends -- permissive enough at the low end
+# for a search to find "no meaningful filtering" if that's actually best,
+# demanding enough at the high end to represent "only trade in genuinely
+# elevated regimes" without being so extreme (near the real max) that it's
+# practically unreachable.
+SKEW_REGIME_MIN_RANGE = (-30.0, 20.0)
+SKEW_FETCH_WARMUP_DAYS = 365 * 2  # extra ^SKEW history fetched before --start, comfortably
+                                   # covers levels.SKEW_REGIME_ROLLING_WINDOW_DAYS before the
+                                   # real search window begins (same reasoning as
+                                   # benchmark_skew_regime.py's own SKEW_WARMUP_DAYS)
 # 0.0 = practical "disabled" (a real ratio is always >= 0); upper bound (3.0)
 # requires today's volume to be 3x the prior average -- a genuinely
 # demanding confirmation threshold. Same "let a real search decide"
@@ -807,7 +823,7 @@ def real_vs_random_ratio_check(
     start: pd.Timestamp, end: pd.Timestamp, sector_lookup: dict[str, str],
     earnings_data: dict | None = None, sector_data: dict | None = None,
     pair_price_panels: dict | None = None, momentum_panel: pd.DataFrame | None = None,
-    yield_curve: pd.Series | None = None,
+    yield_curve: pd.Series | None = None, skew_regime: pd.Series | None = None,
     seed: int = 1,
 ) -> dict:
     """Single-window (not fold-based) REAL-vs-RANDOM comparison for one
@@ -847,7 +863,7 @@ def real_vs_random_ratio_check(
         ticker_data, market_data, start, end, config, earnings_data=earnings_data,
         sector_lookup=sector_lookup, strategy=strategy, sector_data=sector_data,
         pair_price_panels=pair_price_panels, momentum_rank_frame=momentum_rank_frame,
-        yield_curve=yield_curve,
+        yield_curve=yield_curve, skew_regime=skew_regime,
     )
     real_counts: dict[str, int] = {}
     for t in real_trades:
@@ -1023,6 +1039,7 @@ def build_objective(
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_panel: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
+    skew_regime: pd.Series | None = None,
 ):
     """`multi_objective=False` (default) is byte-for-byte the original
     single-scalar-objective behavior -- unchanged, so every existing script/
@@ -1104,7 +1121,15 @@ def build_objective(
     benchmark_macro_regime.py) -- threaded straight through to
     run_walk_forward() the same way sector_data is. None (default, or when
     FRED_API_KEY isn't set) means every trial's Yield_Curve_Spread reads
-    None/NaN, same as before this parameter existed."""
+    None/NaN, same as before this parameter existed.
+
+    `skew_regime` (optional, a single date-indexed Series of RAW CBOE SKEW
+    Index closes, see run_backtest.fetch_history() called on ticker "^SKEW")
+    backs ma_crossover's backtest/Optuna-only ma_crossover_skew_regime_min
+    search dimension (2026-09-03, benchmark_skew_regime.py) -- threaded
+    straight through to run_walk_forward() the same way yield_curve is.
+    None (default) means every trial's Skew_Regime_Diff reads None/NaN,
+    same as before this parameter existed."""
     def objective(trial: optuna.Trial):
         # Shared by every strategy branch below -- hoisted out of the
         # per-strategy dicts (used to be 7 duplicated independent-sampling
@@ -1249,6 +1274,9 @@ def build_objective(
                 "ma_crossover_yield_curve_spread_max": trial.suggest_float(
                     "ma_crossover_yield_curve_spread_max", *YIELD_CURVE_SPREAD_MAX_RANGE
                 ),
+                "ma_crossover_skew_regime_min": trial.suggest_float(
+                    "ma_crossover_skew_regime_min", *SKEW_REGIME_MIN_RANGE
+                ),
                 "atr_take_profit_multiplier": atr_take_profit_multiplier,
                 "stop_loss_atr_multiplier": stop_loss_atr_multiplier,
             }
@@ -1320,6 +1348,7 @@ def build_objective(
             sector_lookup=sector_lookup, strategy=strategy, max_workers=max_workers,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
             momentum_rank_frame=trial_momentum_rank_frame, yield_curve=yield_curve,
+            skew_regime=skew_regime,
         )
         metrics = summarize_weighted(fold_results, end, half_life_days)
         trial.set_user_attr("metrics", metrics)
@@ -1554,6 +1583,23 @@ def main():
         print("Fetching FRED T10Y2Y yield-curve spread for Yield_Curve_Spread...")
         yield_curve = market_data_module.fetch_fred_series("T10Y2Y", start, end)
 
+    # CBOE SKEW Index data (backtest/Optuna-only ma_crossover_skew_regime_min
+    # filter, 2026-09-03, benchmark_skew_regime.py) -- no API key needed
+    # (unlike yield-curve's FRED dependency above), fetched through the same
+    # yfinance path every ticker here already uses. Extra SKEW_FETCH_WARMUP_DAYS
+    # of lead time before `start` so precompute_ma_crossover_frame()'s own
+    # rolling-median transform (see its docstring) has real history to work
+    # with from day one of the actual search window, not an empty warmup gap.
+    skew_regime = None
+    if args.strategy == "ma_crossover":
+        print("Fetching CBOE SKEW Index (^SKEW) for Skew_Regime_Diff...")
+        skew_fetch_start = start - pd.Timedelta(days=SKEW_FETCH_WARMUP_DAYS)
+        skew_df = fetch_history("^SKEW", skew_fetch_start, end)
+        if not skew_df.empty:
+            skew_regime = skew_df["Close"]
+        else:
+            print("  [WARN] No ^SKEW data returned -- Skew_Regime_Diff will read None/NaN.", file=sys.stderr)
+
     ticker_data = {}
     for i, ticker in enumerate(tickers):
         if i > 0:
@@ -1647,6 +1693,7 @@ def main():
         sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
         sector_data=sector_data, pair_price_panels=pair_price_panels,
         momentum_rank_frame=momentum_rank_frame_for(baseline_config), yield_curve=yield_curve,
+        skew_regime=skew_regime,
     )
     baseline_metrics = summarize_weighted(baseline_results, end, args.recency_half_life_days)
     weight_note = (
@@ -1686,6 +1733,7 @@ def main():
             min_win_rate=min_win_rate,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
             momentum_panel=momentum_panel, yield_curve=yield_curve,
+            skew_regime=skew_regime,
         ),
         n_trials=args.trials, show_progress_bar=False,
     )
@@ -1866,6 +1914,7 @@ def main():
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
             momentum_rank_frame=momentum_rank_frame_for(baseline_config), yield_curve=yield_curve,
+            skew_regime=skew_regime,
         )
         holdout_baseline_metrics = summarize_weighted(holdout_baseline_results, end, args.recency_half_life_days)
 
@@ -1874,6 +1923,7 @@ def main():
             sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
             sector_data=sector_data, pair_price_panels=pair_price_panels,
             momentum_rank_frame=momentum_rank_frame_for(candidate_config), yield_curve=yield_curve,
+            skew_regime=skew_regime,
         )
         holdout_candidate_metrics = summarize_weighted(holdout_candidate_results, end, args.recency_half_life_days)
 
@@ -1904,6 +1954,7 @@ def main():
                 sector_lookup=sector_lookup, strategy=args.strategy, max_workers=args.max_workers,
                 sector_data=sector_data, pair_price_panels=pair_price_panels,
                 momentum_rank_frame=momentum_rank_frame_for(live_config), yield_curve=yield_curve,
+                skew_regime=skew_regime,
             )
             holdout_live_metrics = summarize_weighted(holdout_live_results, end, args.recency_half_life_days)
             print(f"  LIVE ({live_label}) on holdout: {holdout_live_metrics}")
@@ -1952,12 +2003,12 @@ def main():
     baseline_rvr = real_vs_random_ratio_check(
         args.strategy, baseline_config, ticker_data, market_data, start, end, sector_lookup,
         earnings_data=earnings_data, sector_data=sector_data, pair_price_panels=pair_price_panels,
-        momentum_panel=momentum_panel, yield_curve=yield_curve,
+        momentum_panel=momentum_panel, yield_curve=yield_curve, skew_regime=skew_regime,
     )
     candidate_rvr = real_vs_random_ratio_check(
         args.strategy, candidate_config, ticker_data, market_data, start, end, sector_lookup,
         earnings_data=earnings_data, sector_data=sector_data, pair_price_panels=pair_price_panels,
-        momentum_panel=momentum_panel, yield_curve=yield_curve,
+        momentum_panel=momentum_panel, yield_curve=yield_curve, skew_regime=skew_regime,
     )
     print(f"  BASELINE  ({args.strategy}, DEFAULT_CONFIG): REAL sharpe_like={baseline_rvr['real'].get('sharpe_like')} "
           f"vs RANDOM sharpe_like={baseline_rvr['random'].get('sharpe_like')}  (gap={baseline_rvr['gap']})")

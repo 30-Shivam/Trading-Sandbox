@@ -2581,12 +2581,19 @@ def compute_adx_trend_entry_levels(
     return adx_trend_entry_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+SKEW_REGIME_ROLLING_WINDOW_DAYS = 365  # ~1 trading year -- see precompute_ma_crossover_frame()'s
+                                        # own docstring for why this must be a BOUNDED window,
+                                        # not an expanding-since-1990 one (real secular-drift bug
+                                        # caught in benchmark_skew_regime.py's own smoke test).
+
+
 def precompute_ma_crossover_frame(
     df: pd.DataFrame,
     config: TradingConfig = DEFAULT_CONFIG,
     market_df: pd.DataFrame | None = None,
     sector_df: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
+    skew_regime: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Vectorized precompute of every column ma_crossover_levels_from_frame()
     needs -- built ON TOP of precompute_breakout_frame() wholesale, like
@@ -2614,7 +2621,27 @@ def precompute_ma_crossover_frame(
     wherever no yield_curve observation exists yet, same missing-data
     convention Sector_Relative_Strength already follows -- never excludes
     a signal on its own (see the scoring/backtest gates, which both treat
-    NaN as "unavailable, don't exclude")."""
+    NaN as "unavailable, don't exclude").
+
+    `skew_regime` (optional, a single date-indexed Series of RAW CBOE SKEW
+    Index closes shared across every ticker, see run_backtest.fetch_history()
+    called on ticker "^SKEW") backs the BACKTEST/OPTUNA-ONLY
+    ma_crossover_skew_regime_min filter (see that field's own comment in
+    config.py for the real finding motivating it, benchmark_skew_regime.py).
+    Unlike Yield_Curve_Spread (a raw level passthrough), this computes a
+    ROLLING-RELATIVE value: `Skew_Regime_Diff = today's ^SKEW minus its own
+    trailing SKEW_REGIME_ROLLING_WINDOW_DAYS median` -- ^SKEW has no stable
+    fixed threshold the way T10Y2Y has a theory-driven zero (real secular
+    drift over its own 36-year history means a fixed/expanding threshold
+    would silently misclassify most of a live run, exactly the bug
+    benchmark_skew_regime.py's own smoke test caught before its real
+    validation run). The rolling median itself is computed on `skew_regime`'s
+    OWN native daily index BEFORE reindexing onto `df` (so a ticker's
+    occasional missing trading day never shrinks the window), then the
+    resulting diff series is forward-filled onto `df`'s own index and
+    `.shift(1)`'d -- identical no-look-ahead treatment to Yield_Curve_Spread
+    above, both the window's own median and the value being classified are
+    always computed from data strictly before the day being scored."""
     df = precompute_breakout_frame(df, config, market_df=market_df, sector_df=sector_df)
     df["MA_Short"] = df["Close"].rolling(window=config.ma_crossover_short_window).mean()
     df["MA_Long"] = df["Close"].rolling(window=config.ma_crossover_long_window).mean()
@@ -2622,6 +2649,9 @@ def precompute_ma_crossover_frame(
     df["MA_Long_Prev"] = df["MA_Long"].shift(1)
     if yield_curve is not None:
         df["Yield_Curve_Spread"] = yield_curve.reindex(df.index, method="ffill").shift(1)
+    if skew_regime is not None:
+        skew_diff = skew_regime - skew_regime.rolling(f"{SKEW_REGIME_ROLLING_WINDOW_DAYS}D").median()
+        df["Skew_Regime_Diff"] = skew_diff.reindex(df.index, method="ffill").shift(1)
     return df
 
 
@@ -2737,6 +2767,15 @@ def ma_crossover_levels_from_frame(
         if pd.notna(ycs_val):
             yield_curve_spread = round(float(ycs_val), 4)
 
+    # Skew_Regime_Diff (backtest/Optuna-only, see config.py's
+    # ma_crossover_skew_regime_min) -- same graceful missing-column/NaN
+    # treatment as Sector_Relative_Strength/Yield_Curve_Spread above.
+    skew_regime_diff = None
+    if "Skew_Regime_Diff" in frame.columns:
+        srd_val = last_row["Skew_Regime_Diff"]
+        if pd.notna(srd_val):
+            skew_regime_diff = round(float(srd_val), 4)
+
     return {
         "Ticker": ticker,
         "As_Of": last_date.date(),
@@ -2746,6 +2785,7 @@ def ma_crossover_levels_from_frame(
         "ADX": adx,
         "Sector_Relative_Strength": sector_relative_strength,
         "Yield_Curve_Spread": yield_curve_spread,
+        "Skew_Regime_Diff": skew_regime_diff,
         "MA_Short": round(ma_short, 2),
         "MA_Long": round(ma_long, 2),
         "MA_Crossover_Signal": crossover_signal,

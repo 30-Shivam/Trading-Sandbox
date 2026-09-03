@@ -652,7 +652,18 @@ def add_ma_crossover_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAU
         df["Yield_Curve_Spread"].isna()
         | (df["Yield_Curve_Spread"] <= config.ma_crossover_yield_curve_spread_max)
     )
-    eligible = df["MA_Crossover_Signal"] & not_near_earnings & sector_strong_enough & yield_curve_ok
+    # Skew_Regime_Diff (backtest/Optuna-only, see config.py's
+    # ma_crossover_skew_regime_min) -- a FLOOR like Sector_Relative_Strength
+    # above (real finding: ma_crossover's edge is stronger when ^SKEW is
+    # ELEVATED relative to its own trailing-year median, not normal/low),
+    # same graceful None/NaN-never-excludes treatment.
+    skew_regime_ok = (
+        df["Skew_Regime_Diff"].isna()
+        | (df["Skew_Regime_Diff"] >= config.ma_crossover_skew_regime_min)
+    )
+    eligible = (
+        df["MA_Crossover_Signal"] & not_near_earnings & sector_strong_enough & yield_curve_ok & skew_regime_ok
+    )
 
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
