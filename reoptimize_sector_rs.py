@@ -70,9 +70,22 @@ MEANINGFUL_IC_MARGIN = 0.02  # a candidate must beat the current lookback's IC b
                               # this session (see improvements.txt item 69's own
                               # seed-sensitivity investigation)
 
+MIN_ABSOLUTE_IC = 0.02  # 2026-09-03 fix (improvements.txt): recommend_lookback() used to
+                         # compare candidates ONLY relative to each other -- no floor on
+                         # whether the WINNING one was itself actually informative. Real
+                         # incident this closes: a full-scale re-run (item 76) found 21d
+                         # IC=-0.0028 (essentially zero, not a real edge) still "won" by
+                         # beating 63d's more-negative IC by more than MEANINGFUL_IC_MARGIN
+                         # -- the mechanical recommendation fired on evidence too thin to
+                         # mean anything either way, a "least-bad of N weak options" trap.
+                         # Reuses MEANINGFUL_IC_MARGIN's own value deliberately -- the same
+                         # magnitude this project already uses as "a real difference" is
+                         # equally reasonable as the floor for "actually informative at all".
+
 
 def recommend_lookback(
     results: list[dict], current_lookback: int = CURRENT_LOOKBACK, margin: float = MEANINGFUL_IC_MARGIN,
+    min_absolute_ic: float = MIN_ABSOLUTE_IC,
 ) -> dict | None:
     """Pure decision logic, factored out for direct unit testing:
     `results` is [{"lookback_days": int, "n": int, "ic": float|None}, ...]
@@ -82,11 +95,20 @@ def recommend_lookback(
     DIFFERENT lookback's IC beats the current one by at least `margin` --
     None otherwise (including when every candidate's IC is undefined, or
     the current lookback already IS the best one). Never recommends
-    "switching" to the same lookback that's already active."""
+    "switching" to the same lookback that's already active.
+
+    Also requires the WINNING candidate's own IC to clear `min_absolute_ic`
+    (see MIN_ABSOLUTE_IC's own docstring for the real incident this fixes)
+    -- a candidate only being LESS BAD than an even weaker current lookback
+    is not, on its own, a real basis to recommend anything. This is an
+    absolute floor on top of (not a replacement for) the relative `margin`
+    check above -- both must pass."""
     current = next((r for r in results if r["lookback_days"] == current_lookback), None)
     current_ic = current["ic"] if current and current["ic"] is not None else None
     best = max((r for r in results if r["ic"] is not None), key=lambda r: r["ic"], default=None)
     if best is None:
+        return None
+    if best["ic"] < min_absolute_ic:
         return None
     if current_ic is None:
         if best["lookback_days"] == current_lookback:
@@ -245,7 +267,10 @@ def main():
     print()
     if recommendation is None:
         print(f"No candidate meaningfully beats the current {CURRENT_LOOKBACK}d lookback "
-              f"(margin required: {MEANINGFUL_IC_MARGIN} IC) -- no change recommended.")
+              f"(margin required: {MEANINGFUL_IC_MARGIN} IC) AND clears the {MIN_ABSOLUTE_IC} "
+              "absolute-informativeness floor (a candidate only being LESS BAD than a weak "
+              "current lookback is not a real basis to recommend anything on its own) -- "
+              "no change recommended.")
     elif recommendation["current_ic"] is None:
         print(f"Current lookback ({CURRENT_LOOKBACK}d) has no defined IC -- "
               f"candidate {recommendation['lookback_days']}d (IC={recommendation['ic']:.4f}) is worth a look. "
