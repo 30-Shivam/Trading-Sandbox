@@ -188,3 +188,79 @@ def test_parse_proposal_response_rejects_missing_rationale():
         '"exit": {"type": "atr_bracket", "take_profit_atr_multiplier": 2.0, "stop_loss_atr_multiplier": 1.0}}}'
     )
     assert lsr._parse_proposal_response(text) is None
+
+
+def test_build_proposal_prompt_nudges_or_logic_after_zero_trade_history():
+    """2026-09-01 fix: the first 5 real research cycles all used "AND" with
+    3-4 conditions and never once tried "OR" or fewer conditions, despite
+    the schema always having supported it -- see
+    swingtrade.evaluate_llm_rule_conditions()'s own "AND"/"OR" logic param.
+    The prompt now explicitly names this pattern and suggests the
+    alternative, rather than silently hoping the LLM discovers it."""
+    prompt = lsr._build_proposal_prompt([])
+    assert '"logic": "OR"' in prompt
+    assert "never OR" in prompt or "OR logic" in prompt.lower() or "logic\": \"OR\"" in prompt
+
+
+def _fake_proposal(**overrides):
+    proposal = {
+        "rule": {
+            "conditions": [{"field": "RSI", "op": "<", "value": 30}],
+            "logic": "AND",
+            "exit": {"type": "atr_bracket", "take_profit_atr_multiplier": 2.0, "stop_loss_atr_multiplier": 1.0},
+        },
+        "rationale": "test",
+        "notes_for_next_time": "",
+        "parent_cycle_id": None,
+    }
+    proposal.update(overrides)
+    return proposal
+
+
+def test_run_daily_cycle_sample_is_not_the_fixed_first_n_tickers(monkeypatch):
+    """2026-09-01 fix: run_daily_cycle() used to always slice tickers[:sample_size]
+    -- the literal first N tickers of watchlist.txt, unrotated across every
+    real cycle. Confirmed via real Mongo data that all 5 real cycles so far
+    tested the identical, extremely homogeneous first-40 slice (NVDA/AAPL/
+    MSFT/AVGO/MU/AMD/...), a highly plausible full explanation for 5
+    straight zero-trade cycles independent of the rule itself. Now
+    date-seeded random.Random.sample() instead."""
+    tickers = [f"T{i:03d}" for i in range(200)]  # ordered so a fixed-slice bug is obvious
+
+    captured = {}
+
+    def fake_fetch_and_backtest(sample_tickers, rule, config, log=print):
+        captured["sample"] = sample_tickers
+        return {"real": {"sharpe_like": None, "win_rate": None}, "random": {"sharpe_like": None, "win_rate": None}, "n_tickers": len(sample_tickers)}
+
+    monkeypatch.setattr(lsr, "_fetch_and_backtest", fake_fetch_and_backtest)
+    monkeypatch.setattr(lsr.storage, "get_recent_cycles", lambda limit=10: [])
+    monkeypatch.setattr(lsr.storage, "write_cycle", lambda doc: 1)
+
+    lsr.run_daily_cycle(tickers, sample_size=40, propose_fn=lambda recent: _fake_proposal())
+
+    assert captured["sample"] != tickers[:40], "sample is still the fixed first-N slice, not randomized"
+    assert len(captured["sample"]) == 40
+    assert len(set(captured["sample"])) == 40  # no duplicates
+    assert set(captured["sample"]) <= set(tickers)
+
+
+def test_run_daily_cycle_sample_is_reproducible_within_the_same_day(monkeypatch):
+    """Date-seeded, not call-seeded -- re-running the same day's cycle twice
+    (e.g. while debugging a crash) must sample the SAME tickers, not a
+    different random draw each time."""
+    tickers = [f"T{i:03d}" for i in range(200)]
+    samples = []
+
+    def fake_fetch_and_backtest(sample_tickers, rule, config, log=print):
+        samples.append(list(sample_tickers))
+        return {"real": {"sharpe_like": None, "win_rate": None}, "random": {"sharpe_like": None, "win_rate": None}, "n_tickers": len(sample_tickers)}
+
+    monkeypatch.setattr(lsr, "_fetch_and_backtest", fake_fetch_and_backtest)
+    monkeypatch.setattr(lsr.storage, "get_recent_cycles", lambda limit=10: [])
+    monkeypatch.setattr(lsr.storage, "write_cycle", lambda doc: 1)
+
+    lsr.run_daily_cycle(tickers, sample_size=40, propose_fn=lambda recent: _fake_proposal())
+    lsr.run_daily_cycle(tickers, sample_size=40, propose_fn=lambda recent: _fake_proposal())
+
+    assert samples[0] == samples[1]

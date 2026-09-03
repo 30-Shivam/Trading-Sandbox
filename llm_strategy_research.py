@@ -172,6 +172,13 @@ def _build_proposal_prompt(recent_cycles: list[dict]) -> str:
         '"time_based" (same two params PLUS max_holding_days, an integer between '
         f"{_MAX_HOLDING_DAYS_BOUNDS[0]} and {_MAX_HOLDING_DAYS_BOUNDS[1]}).\n\n"
         f"Your prior research cycles, most recent first:\n{history_block}\n\n"
+        "If recent cycles show ZERO trades, don't just nudge a numeric threshold on the same "
+        "\"logic\": \"AND\" structure -- every prior real cycle here has done exactly that "
+        "(3-4 AND-combined conditions every time, never OR, never fewer conditions), and "
+        "requiring several specific conditions to align on the SAME day is inherently rare. "
+        "Seriously consider switching to \"logic\": \"OR\" (fires if ANY condition is true, "
+        "not all), or dropping to fewer, more essential conditions, before assuming the "
+        "thresholds alone are the problem.\n\n"
         "Propose today's rule: either a genuine refinement of a promising recent idea "
         "(set parent_cycle_id to that cycle's own id), or something new if recent ideas "
         "plateaued or failed outright. Respond ONLY with a JSON object matching exactly this "
@@ -328,7 +335,19 @@ def run_daily_cycle(
         return {"cycle_id": cycle_id, "escalated": False}
 
     rule = proposal["rule"]
-    sample = tickers[:sample_size]
+    # Randomized per DAY (not per call -- re-running the same day's cycle
+    # twice, e.g. while debugging, gets the same sample), NOT a fixed
+    # tickers[:sample_size] slice -- found 2026-09-01 that every one of the
+    # first 5 real cycles had silently tested the exact same, unrotated
+    # first 40 tickers of watchlist.txt (NVDA/AAPL/MSFT/AVGO/MU/AMD/...),
+    # an extremely homogeneous mega-cap-Technology slice with zero
+    # exploration of the other ~367 tickers. Combined with a rule needing
+    # several conditions to align at once, that alone plausibly explains 5
+    # straight zero-trade cycles regardless of how the rule itself evolved
+    # -- the LLM was never given a chance to see whether its own rule might
+    # have fired elsewhere in the universe. See improvements.txt.
+    sample_rng = random.Random(f"llm-strategy-research-sample-{pd.Timestamp.now().date()}")
+    sample = sample_rng.sample(tickers, k=min(sample_size, len(tickers)))
     log(f"Proposal: {rule}")
     log(f"Rationale: {proposal['rationale']}")
 
