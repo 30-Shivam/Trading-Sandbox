@@ -111,9 +111,24 @@ REQUEST_DELAY_SEC = 0.5  # same pacing every other yfinance-calling loop in
 # Trade_Signals/Trade_Outcomes are untouched and still directly queryable
 # via ic_tracking.methodology_report("squeeze_breakout"), just no longer
 # iterated here, so it can no longer surface as a composite input.
+# regime_switcher/best_ideas_sector_rs REMOVED 2026-09-05, same "real negative
+# IC -> full removal, not just a warning" treatment as squeeze_breakout above --
+# a routine trust-floor check (per explicit user request) found both had cleared
+# ic_tracking.TRUST_FLOOR_TRADES with real, sustained NEGATIVE overall_ic:
+# regime_switcher -0.320 over 26.9 effective trades (essentially identical
+# magnitude/sample size to squeeze_breakout's own -0.28..-0.32/13-34-trade
+# removal threshold), best_ideas_sector_rs -0.238 over 44.7 effective trades.
+# ensemble_weight()'s credibility shrinkage was already discounting both
+# (blend weight ~0.43/~0.31 instead of a full 1.0 neutral prior) rather than
+# zeroing them outright, but that's a softened drag, not a fixed one -- their
+# historical Trade_Signals/Trade_Outcomes are untouched and still directly
+# queryable via ic_tracking.methodology_report(), just no longer iterated
+# here. Note this does NOT change regime_switcher's own status as a live,
+# independently-run/logged strategy (regime_switcher.py) -- only its
+# composite-feed membership here.
 METHODOLOGIES = [
-    "ma_crossover", "rsi_mean_reversion", "pairs", "regime_switcher", "llm_agent",
-    "best_ideas_sector_rs", "best_ideas_qualitative", "best_ideas_meta",
+    "ma_crossover", "rsi_mean_reversion", "pairs", "llm_agent",
+    "best_ideas_qualitative", "best_ideas_meta",
 ]
 
 # Composite/sub-methodology score -> Signal thresholds, all on Best Ideas'
