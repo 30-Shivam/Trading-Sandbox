@@ -1,0 +1,54 @@
+name: Small/Mid-Cap MA Crossover experimental scan
+
+# Runs ingest.py --smallmid-ma-crossover-only on its own schedule/runner --
+# see config_loader.py's SMALLMID_MA_CROSSOVER_* constants and ingest.py's
+# run_smallmid_ma_crossover_experimental() docstring for why this variant
+# needs a completely separate ticker universe (smallmid_watchlist.txt,
+# ~1000 S&P 600/400 tickers) from daily_run.yml's own primary/secondary
+# scan -- same rationale as smallmid_rsi.yml, which this file mirrors
+# exactly.
+#
+# Deliberately a SEPARATE workflow, not a step folded into daily_run.py or
+# smallmid_rsi.yml: ~1000 sequential ticker fetches would meaningfully eat
+# into either workflow's own time budget, and a failure here can't take
+# either of those down (or vice versa) -- same per-workflow isolation
+# rationale smallmid_rsi.yml already established.
+#
+# Built 2026-09-09 (improvements.txt item 121) -- confirm the local smoke
+# test (python ingest.py --smallmid-ma-crossover-only) works end-to-end
+# before relying on this schedule; matches monthly_reoptimize.yml's own
+# "built but not yet enabled until confirmed" precedent.
+
+on:
+  schedule:
+    - cron: "40 21 * * 1-5"  # 5 min after smallmid_rsi.yml's own slot, same weekday/after-close timing
+  workflow_dispatch: {}
+
+jobs:
+  smallmid-ma-crossover-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90  # ~1000 tickers, sequential fetch -- meaningfully longer than
+                          # daily_run.yml's 408-ticker/45-min budget
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python ingest.py --smallmid-ma-crossover-only
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          # No LLM_API_KEY / DISCORD_WEBHOOK_URL needed -- run_smallmid_ma_crossover_experimental()
+          # never calls llm_agent or notifications.notify(), same as
+          # run_smallmid_rsi_experimental()'s own no-notification convention.
+      - name: Notify on early/infra failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          echo "::error title=smallmid_ma_crossover.yml FAILED::A step before or including 'python ingest.py --smallmid-ma-crossover-only' failed -- see the job log above for which one."
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            curl -sS -X POST -H "Content-Type: application/json" \
+              -d "{\"content\": \"[Trading-Sandbox] smallmid_ma_crossover.yml FAILED -- check the Actions run log: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
+              "$DISCORD_WEBHOOK_URL" || true
+          fi

@@ -1595,6 +1595,47 @@ def main():
                     log_strategy_override=config_loader.SMALLMID_RSI_LOG_STRATEGY,
                 )
 
+        st.divider()
+        st.subheader(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL} (experimental)")
+        st.info(
+            "**Different ticker universe, not a different strategy.** ma_crossover's own live "
+            "v71 config, UNCHANGED, scanned against S&P 600 SmallCap + S&P 400 MidCap (~1000 "
+            "tickers) instead of the main watchlist. A real random-baseline check (2026-09-09) "
+            "found a genuine, holdout-validated edge here too (holdout sharpe_like 0.028 vs a "
+            "random baseline of -0.042, win_rate 16.4% vs 14.3%, consistent across ALL/TUNE/"
+            "HOLDOUT cuts, 5,275 real simulated trades) -- no re-tune attempted, v71 shipped "
+            "unmodified since the scoping check itself already cleared the bar. **Real caveats, "
+            "not yet resolved**: current (not point-in-time historical) index membership carries "
+            "some survivorship-bias risk, not independently measured for this universe; zero "
+            "real settled trades yet; the by-year breakdown isn't uniform (loses to random in "
+            "2024/2025, wins decisively in 2021/2023/2026). **Never used for capital allocation "
+            "-- v71's own capital eligibility on the primary watchlist does NOT transfer here.**"
+        )
+        if not SMALLMID_WATCHLIST_FILE.exists():
+            st.caption(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: unavailable -- watchlist not found "
+                       f"({SMALLMID_WATCHLIST_FILE}).")
+        else:
+            smallmid_ma_tickers = tuple(read_tickers(SMALLMID_WATCHLIST_FILE))
+            smallmid_ma_config, smallmid_ma_source = load_secondary_config(
+                config_loader.SMALLMID_MA_CROSSOVER_CONFIG_VERSION
+            )
+            if smallmid_ma_config is None:
+                st.caption(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: unavailable -- {smallmid_ma_source}")
+            else:
+                smallmid_ma_bundle, smallmid_ma_market_df, smallmid_ma_fetch_skipped, smallmid_ma_sector_data, _ = (
+                    cached_fetch_smallmid_bundle(smallmid_ma_tickers)
+                )
+                smallmid_ma_sector_lookup = read_ticker_sectors(SMALLMID_WATCHLIST_FILE)
+                render_experimental_section(
+                    f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL} "
+                    f"(v{config_loader.SMALLMID_MA_CROSSOVER_CONFIG_VERSION}, experimental)",
+                    smallmid_ma_config,
+                    smallmid_ma_bundle, smallmid_ma_market_df, smallmid_ma_fetch_skipped,
+                    storage_ok,
+                    sector_lookup=smallmid_ma_sector_lookup, sector_data=smallmid_ma_sector_data,
+                    log_strategy_override=config_loader.SMALLMID_MA_CROSSOVER_LOG_STRATEGY,
+                )
+
     with tab2:
         st.subheader("LLM Agent (experimental)")
         st.warning(

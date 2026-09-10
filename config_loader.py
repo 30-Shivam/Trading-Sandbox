@@ -287,6 +287,31 @@ SMALLMID_RSI_CONFIG_VERSION = 66
 # SECONDARY_LOG_STRATEGY_OVERRIDES's v17->v66 rename above.
 SMALLMID_RSI_LOG_STRATEGY = "rsi_mean_reversion_smallmid"
 
+# MA Crossover (Small/Mid-Cap), added 2026-09-09 -- same universe-swap
+# pattern as SMALLMID_RSI_* above, NOT in EXPERIMENTAL_STRATEGY_VERSIONS for
+# the identical reason (that loop assumes one shared bundle from
+# watchlist.txt). Per explicit user follow-up ("rate of improvement seems
+# extremely slow... anything in terms of strategy refinement" -> "let's
+# scope this out"), a real random-baseline check (improvements.txt item 121)
+# found ma_crossover's own live v71 config -- already capital-eligible on
+# the primary watchlist -- ALSO shows a genuine, holdout-validated edge on
+# the same smallmid_watchlist.txt universe RSI uses (holdout sharpe_like
+# 0.028 vs a random baseline of -0.042, win_rate 16.4% vs 14.3%, consistent
+# across ALL/TUNE/HOLDOUT cuts, 5,275 real simulated trades). Unlike RSI's
+# variant, no re-tune was even attempted here yet -- straight to shipping
+# v71 unmodified, since the scoping check itself already cleared the bar.
+# Same graduated-promotion floor as every experimental strategy: real,
+# positive backtest evidence, but zero real settled trades on THIS universe
+# yet, so it starts at the bottom of the ladder despite v71 already being
+# capital-eligible on the primary watchlist -- that capital eligibility does
+# NOT transfer to a different ticker universe.
+SMALLMID_MA_CROSSOVER_LABEL = "MA Crossover (Small/Mid-Cap)"
+SMALLMID_MA_CROSSOVER_CONFIG_VERSION = 71
+# Distinct Mongo strategy label -- keeps this universe's real settled-trade
+# track record from ever pooling with ma_crossover's own existing
+# primary-watchlist history, same rationale as SMALLMID_RSI_LOG_STRATEGY.
+SMALLMID_MA_CROSSOVER_LOG_STRATEGY = "ma_crossover_smallmid"
+
 
 def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
     try:

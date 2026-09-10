@@ -48,6 +48,8 @@ Usage:
     python ingest.py --watchlist my_list.txt --position-budget 500
     python ingest.py --smallmid-rsi-only  # isolated small/mid-cap RSI variant, see
                                            # run_smallmid_rsi_experimental()'s own docstring
+    python ingest.py --smallmid-ma-crossover-only  # isolated small/mid-cap MA Crossover variant, see
+                                                    # run_smallmid_ma_crossover_experimental()'s own docstring
 """
 
 import argparse
@@ -575,6 +577,64 @@ def run_smallmid_rsi_experimental(watchlist_path: Path = SMALLMID_WATCHLIST_FILE
         print(f"{config_loader.SMALLMID_RSI_LABEL}: {skipped_count} ticker(s) could not be analyzed/scored.")
 
 
+def run_smallmid_ma_crossover_experimental(watchlist_path: Path = SMALLMID_WATCHLIST_FILE) -> None:
+    """Headless automation for the MA Crossover (Small/Mid-Cap) experimental
+    variant (config_loader.SMALLMID_MA_CROSSOVER_LABEL, 2026-09-09,
+    improvements.txt item 121) -- same universe-swap pattern as
+    run_smallmid_rsi_experimental() above (see that function's own
+    docstring for the full architectural rationale: deliberately NOT folded
+    into run_experimental_strategies()/EXPERIMENTAL_STRATEGY_VERSIONS, its
+    own fetch_ticker_bundle() call against a completely different universe,
+    NEVER capital-allocated, logs under a distinct strategy label so this
+    universe's track record never pools with ma_crossover's own existing
+    primary-watchlist history -- including its capital-eligible one)."""
+    if not watchlist_path.exists():
+        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: skipped -- watchlist not found ({watchlist_path}).")
+        return
+    tickers = tuple(read_tickers(watchlist_path))
+    if not tickers:
+        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: skipped -- no tickers found in {watchlist_path}.")
+        return
+    sector_lookup = read_ticker_sectors(watchlist_path)
+
+    config, source = config_loader.load_config_by_version(config_loader.SMALLMID_MA_CROSSOVER_CONFIG_VERSION)
+    if config is None:
+        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: skipped -- {source}")
+        return
+
+    bundle, market_df, fetch_skipped, sector_data, _yield_curve = market_data.fetch_ticker_bundle(
+        tickers, sector_lookup=sector_lookup,
+    )
+    results, score_skipped = market_data.score_bundle_for_strategy(
+        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+    )
+    if not results:
+        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: no tickers scored today.")
+        return
+
+    results_df = pd.DataFrame(results)
+    results_df = _score_for_strategy(results_df, config)
+    # Never capital-allocated -- explicit zeros, same rationale as
+    # run_experimental_strategies()'s own identical lines.
+    results_df["Shares_To_Buy"] = 0.0
+    results_df["Est_Cost"] = 0.0
+
+    log_config = swingtrade.TradingConfig(
+        **{**config.to_dict(), "strategy": config_loader.SMALLMID_MA_CROSSOVER_LOG_STRATEGY}
+    )
+    try:
+        logged = storage.log_trade_signals(results_df, log_config.to_dict())
+        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: analyzed {len(results_df)}/{len(tickers)} ticker(s), "
+              f"logged {logged['actionable']} actionable + {logged['research']} research signal(s) "
+              "to MongoDB (never capital-allocated).")
+    except Exception as exc:
+        print(f"[WARN] {config_loader.SMALLMID_MA_CROSSOVER_LABEL} signal logging failed: {exc}", file=sys.stderr)
+
+    if fetch_skipped or score_skipped:
+        skipped_count = len(fetch_skipped) + len(score_skipped)
+        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: {skipped_count} ticker(s) could not be analyzed/scored.")
+
+
 def run_best_ideas_strategy(
     strategy_frames: dict[str, pd.DataFrame], regime_picks: list[dict],
     bundle: dict, market_df, sector_lookup: dict[str, str] | None,
@@ -803,6 +863,14 @@ def main():
              "not combined with the main scan -- see config_loader.py's own SMALLMID_RSI_* "
              "constants for why this strategy is kept structurally separate.",
     )
+    parser.add_argument(
+        "--smallmid-ma-crossover-only", action="store_true",
+        help="Run ONLY the MA Crossover (Small/Mid-Cap) experimental variant "
+             "(run_smallmid_ma_crossover_experimental()) against smallmid_watchlist.txt, then "
+             "exit -- same isolated-process convention as --smallmid-rsi-only, see "
+             ".github/workflows/smallmid_ma_crossover.yml and config_loader.py's own "
+             "SMALLMID_MA_CROSSOVER_* constants.",
+    )
     args = parser.parse_args()
     if args.smallmid_rsi_only:
         try:
@@ -811,6 +879,14 @@ def main():
             print(f"[ERROR] {exc}", file=sys.stderr)
             sys.exit(1)
         run_smallmid_rsi_experimental()
+        sys.exit(0)
+    if args.smallmid_ma_crossover_only:
+        try:
+            storage.ensure_indexes()
+        except storage.MongoNotConfigured as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+        run_smallmid_ma_crossover_experimental()
         sys.exit(0)
     sys.exit(run(args.watchlist, args.position_budget, args.with_ai_context, args.risk_amount))
 
