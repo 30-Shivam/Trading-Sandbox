@@ -96,7 +96,13 @@ from .levels import (
     squeeze_breakout_levels_from_frame,
     week52_levels_from_frame,
 )
-from .scoring import add_trade_score
+from .scoring import (
+    add_ma_crossover_trade_score,
+    add_momentum_trade_score,
+    add_pairs_trade_score,
+    add_squeeze_breakout_trade_score,
+    add_trade_score,
+)
 from .settlement import settle_trade, settle_trade_with_trailing
 
 ENTRY_SIGNALS = ("Strong Buy", "Buy")
@@ -1541,6 +1547,18 @@ def simulate_squeeze_breakout_signals(
         if config.squeeze_breakout_earnings_gate and levels["Catalyst_Warning"]:
             continue
 
+        # Computed here purely so backtest trades carry a real trade_score
+        # (see add_squeeze_breakout_trade_score()'s own docstring: kept in
+        # sync with the live gate above by construction) -- never used as a
+        # gate itself, ENTRY_SIGNALS-style, since this strategy's own entry
+        # condition is the boolean Squeeze_Signal plus the optional filters
+        # checked above, not a Trade_Score threshold. Backs a NEW
+        # backtest-time IC check (does Trade_Score actually rank outcomes,
+        # not just "does this strategy beat random on aggregate returns")
+        # this project never had a way to compute before -- see
+        # ic_tracking.backtest_ic_check().
+        scored = add_squeeze_breakout_trade_score(pd.DataFrame([levels]), config).iloc[0]
+
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.squeeze_breakout_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -1570,6 +1588,7 @@ def simulate_squeeze_breakout_signals(
             "entry_date": entry_date.date(),
             "sector": sector,
             "signal": "Squeeze_Breakout",
+            "trade_score": float(scored["Trade_Score"]),
             "atr": atr,
             "buy_price": entry_price,
             "signal_buy_price": levels["Buy_Price"],
@@ -1743,6 +1762,11 @@ def simulate_pairs_signals(
         if not levels["Pair_Signal"]:
             continue
 
+        # See simulate_squeeze_breakout_signals()'s identical comment --
+        # never a gate here either, purely so backtest trades carry a real
+        # trade_score for ic_tracking.backtest_ic_check().
+        scored = add_pairs_trade_score(pd.DataFrame([levels]), config).iloc[0]
+
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.pairs_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -1772,6 +1796,7 @@ def simulate_pairs_signals(
             "entry_date": entry_date.date(),
             "sector": sector,
             "signal": "Pairs",
+            "trade_score": float(scored["Trade_Score"]),
             "atr": atr,
             "buy_price": entry_price,
             "signal_buy_price": levels["Buy_Price"],
@@ -1945,6 +1970,11 @@ def simulate_momentum_signals(
         if not levels["Momentum_Signal"]:
             continue
 
+        # See simulate_squeeze_breakout_signals()'s identical comment --
+        # never a gate here either, purely so backtest trades carry a real
+        # trade_score for ic_tracking.backtest_ic_check().
+        scored = add_momentum_trade_score(pd.DataFrame([levels]), config).iloc[0]
+
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.momentum_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -1974,6 +2004,7 @@ def simulate_momentum_signals(
             "entry_date": entry_date.date(),
             "sector": sector,
             "signal": "Momentum_Rank",
+            "trade_score": float(scored["Trade_Score"]),
             "atr": atr,
             "buy_price": entry_price,
             "signal_buy_price": levels["Buy_Price"],
@@ -2794,6 +2825,11 @@ def simulate_ma_crossover_signals(
         if skew_regime_diff is not None and skew_regime_diff < config.ma_crossover_skew_regime_min:
             continue
 
+        # See simulate_squeeze_breakout_signals()'s identical comment --
+        # never a gate here either, purely so backtest trades carry a real
+        # trade_score for ic_tracking.backtest_ic_check().
+        scored = add_ma_crossover_trade_score(pd.DataFrame([levels]), config).iloc[0]
+
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.ma_crossover_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -2823,6 +2859,7 @@ def simulate_ma_crossover_signals(
             "entry_date": entry_date.date(),
             "sector": sector,
             "signal": "MA_Crossover",
+            "trade_score": float(scored["Trade_Score"]),
             "atr": atr,
             "buy_price": entry_price,
             "signal_buy_price": levels["Buy_Price"],

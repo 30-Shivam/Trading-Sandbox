@@ -143,6 +143,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import ic_tracking
 import storage
 import swingtrade
 from optimize import DEFAULT_HOLDOUT_SEEDS, average_holdout_summary
@@ -564,6 +565,20 @@ def main():
     print("\n=== ALL TICKERS ===")
     print(f"  REAL   ({real_label}): {summarize(real_trades)}")
     print(f"  RANDOM (matched count): {summarize(random_trades)}")
+
+    backtest_ic = ic_tracking.backtest_ic_check(real_trades)
+    print(f"\n=== BACKTEST-TIME IC (does Trade_Score itself rank REAL trades' outcomes, "
+          f"not just beat random on aggregate returns?) ===")
+    if backtest_ic["ic"] is None:
+        print(f"  n={backtest_ic['n']} -- too thin (< {ic_tracking.MIN_TRADES_FOR_BACKTEST_IC}) to trust, "
+              "or every trade_score's strategy doesn't record one yet (see swingtrade/backtest.py).")
+    else:
+        print(f"  n={backtest_ic['n']}  backtest_ic={backtest_ic['ic']:.3f}")
+        print("  This is a DIFFERENT question from the ALL/TUNE/HOLDOUT sharpe_like/win_rate checks "
+              "above -- those ask 'does this beat random on aggregate', this asks 'does the score "
+              "actually rank which specific trades do better or worse'. A strategy can pass the "
+              "former with ~zero real answer to the latter (see improvements.txt for the real "
+              "finding that motivated this check).")
 
     print("\n=== BY YEAR (does the edge hold up over time, or is it concentrated in one stretch?) ===")
     real_by_year = swingtrade.summarize_by_period(real_trades, summarize)

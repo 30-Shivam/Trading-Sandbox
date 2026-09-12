@@ -158,6 +158,7 @@ import optuna
 import pandas as pd
 
 import config_loader
+import ic_tracking
 import market_data as market_data_module
 import storage
 import swingtrade
@@ -884,7 +885,15 @@ def real_vs_random_ratio_check(
     real_sharpe = real_summary.get("sharpe_like")
     random_sharpe = random_summary.get("sharpe_like")
     gap = (real_sharpe - random_sharpe) if real_sharpe is not None and random_sharpe is not None else None
-    return {"real": real_summary, "random": random_summary, "gap": gap}
+    # 2026-09-15: reuses the REAL trades already simulated above (no extra
+    # backtest pass) to also report ic_tracking.backtest_ic_check() -- a
+    # DIFFERENT question from the sharpe_like gap this function already
+    # answers (does entry TIMING beat random) -- does the strategy's own
+    # Trade_Score actually RANK which specific trades do better or worse.
+    # See that function's own docstring for the real finding that motivated
+    # it: this question had never been asked at backtest time before.
+    backtest_ic = ic_tracking.backtest_ic_check(real_trades)
+    return {"real": real_summary, "random": random_summary, "gap": gap, "backtest_ic": backtest_ic}
 
 
 def rrr_scoring_ceiling_check(strategy: str, config: swingtrade.TradingConfig) -> dict:
@@ -2014,6 +2023,21 @@ def main():
           f"vs RANDOM sharpe_like={baseline_rvr['random'].get('sharpe_like')}  (gap={baseline_rvr['gap']})")
     print(f"  CANDIDATE ({args.strategy}, winning trial):  REAL sharpe_like={candidate_rvr['real'].get('sharpe_like')} "
           f"vs RANDOM sharpe_like={candidate_rvr['random'].get('sharpe_like')}  (gap={candidate_rvr['gap']})")
+
+    # 2026-09-15: backtest-time IC (does Trade_Score itself rank REAL trades'
+    # outcomes, not just beat random on aggregate returns) -- a DIFFERENT
+    # question from the sharpe_like gap above, and one this pipeline never
+    # asked before. See ic_tracking.backtest_ic_check()'s own docstring for
+    # the real finding that motivated adding it.
+    print()
+    print("=== Backtest-time IC (does Trade_Score itself rank REAL trades' outcomes?) ===")
+    for label, rvr in (("BASELINE", baseline_rvr), ("CANDIDATE", candidate_rvr)):
+        bic = rvr.get("backtest_ic", {"n": 0, "ic": None})
+        if bic["ic"] is None:
+            print(f"  {label}: n={bic['n']} -- too thin (< {ic_tracking.MIN_TRADES_FOR_BACKTEST_IC}) to trust, "
+                  "or this strategy's simulate_*_signals() doesn't record trade_score yet.")
+        else:
+            print(f"  {label}: n={bic['n']}  backtest_ic={bic['ic']:.3f}")
     if baseline_rvr["gap"] is not None and candidate_rvr["gap"] is not None:
         if candidate_rvr["gap"] <= baseline_rvr["gap"]:
             print(f"  [WARN] Candidate's real-vs-random GAP ({candidate_rvr['gap']:.4f}) did NOT improve on "

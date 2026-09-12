@@ -288,6 +288,70 @@ def information_ratio(ic_values: list[float]) -> float | None:
     return float(s.mean() / std)
 
 
+MIN_TRADES_FOR_BACKTEST_IC = 50  # deliberately the SAME value as optimize.py's own
+                             # MIN_TRADES_FOR_SCORE (not imported directly --
+                             # ic_tracking.py stays a lean module other callers
+                             # like best_ideas.py/ingest.py/dip_buy_analyzer.py
+                             # import cheaply, and pulling in optimize.py would
+                             # drag its own optuna dependency along for no
+                             # reason) -- matches that module's own established
+                             # "well-sampled enough to trust" bar, not the bare
+                             # statistical minimum rank_ic() itself already
+                             # enforces (MIN_TRADES_FOR_ANY_IC=3, "can compute a
+                             # number at all", a much weaker claim).
+
+
+def backtest_ic_check(trades: list[dict], min_trades: int = MIN_TRADES_FOR_BACKTEST_IC) -> dict:
+    """Backtest-time counterpart to methodology_report()'s own `overall_ic` --
+    closes a real, previously-unaddressed gap in this project's OFFLINE
+    validation pipeline (benchmark_random_entry.py/optimize.py), which has
+    only ever checked whether a strategy's aggregate entry TIMING beats a
+    matched-count random-entry baseline on sharpe_like/win_rate. That
+    question is different from whether the strategy's own Trade_Score
+    actually RANKS which specific trades will do better or worse -- the
+    exact skill this module's own `overall_ic` measures live, and the one
+    that's repeatedly diverged from what got a strategy promoted in the
+    first place (see improvements.txt for the finding that motivated this:
+    rsi_mean_reversion showed backtest_ic=-0.013 over 9,256 real backtest
+    trades -- essentially zero -- despite a live pooled overall_ic of
+    +0.605, the two numbers never having been compared before).
+
+    Computes cluster-weighted rank_ic() between each REAL backtest trade's
+    own `trade_score` and its realized `pnl_pct`, reusing
+    swingtrade.compute_cluster_weights() DIRECTLY on the trade dicts (they
+    already carry `entry_date`/`sector` from simulate_*_signals() itself --
+    unlike this module's own `_cluster_weights()` wrapper, no separate
+    sector_lookup join is needed here). No tier weighting -- tiers
+    (actionable/research/research_loosened) are a LIVE Trade_Signals concept
+    (see storage/signals.py); backtest trades have no such distinction, same
+    reasoning reoptimize_sector_rs.py's own backtest-driven IC call already
+    established (rank_ic() with no `weights` at all, in that case -- cluster
+    weighting here is a deliberate strengthening for a formal pipeline gate,
+    not a contradiction of that precedent).
+
+    `trades` should be `swingtrade.run_backtest()`'s own REAL trade list --
+    never its random-baseline twin (a random entry has no meaningful
+    Trade_Score to rank in the first place). Only resolved trades
+    (`status != "OPEN"`) that carry a `trade_score` key are used -- as of
+    2026-09-15, only ma_crossover/squeeze_breakout/pairs/momentum_rank/rsi's
+    own simulate_*_signals() compute one; every other strategy (breakout,
+    pullback, breakout_retest, week52_high, momentum_burst, insider_buying,
+    adx_trend_entry) does not yet, and will report `n=0` here until that's
+    added too.
+
+    Returns {"n": int, "ic": float | None} -- `ic` is None (not 0.0) below
+    `min_trades`, the same "no measurable skill" vs "not enough data to
+    tell" distinction rank_ic() itself already draws, just at a much
+    higher, "actually trust this" bar than rank_ic()'s own bare statistical
+    minimum."""
+    resolved = [t for t in trades if t.get("status") != "OPEN" and t.get("trade_score") is not None]
+    if len(resolved) < min_trades:
+        return {"n": len(resolved), "ic": None}
+    weights = swingtrade.compute_cluster_weights(resolved)
+    ic = rank_ic([t["trade_score"] for t in resolved], [t["pnl_pct"] for t in resolved], weights=weights)
+    return {"n": len(resolved), "ic": ic}
+
+
 def fetch_score_pnl_pairs(strategy: str, score_field: str = "trade_score") -> list[dict]:
     """Join Trade_Signals (has `score_field` at signal time) with
     Trade_Outcomes (has pnl_pct at settlement) for one `strategy` label, on
