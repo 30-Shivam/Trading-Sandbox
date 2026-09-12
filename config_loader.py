@@ -205,9 +205,16 @@ SECONDARY_VALIDATION_CAVEATS: dict[str, str] = {
         "Backtested timing FAILED a fresh random-entry benchmark (2026-08-31): v66 loses to "
         "matched-count random-entry timing on the holdout cut (win_rate 15.0% vs random's 17.9%, "
         "sharpe_like 0.059 vs random's 0.095) -- no demonstrated real edge from entry timing. It was "
-        "only ever validated against its own predecessor (v17), never against random. Real settled-"
-        "trade IC is currently thin-positive (~+0.02, small sample), not negative -- not retired, but "
-        "should not be read as a validated signal right now."
+        "only ever validated against its own predecessor (v17), never against random -- this specific "
+        "backtested finding is fixed historical fact and doesn't change with new data. "
+        "UPDATED 2026-09-09 (was stale -- previously read '~+0.02, small sample'): real settled-trade "
+        "IC has since strengthened substantially to +0.605 over 255 settled / 134.9 effective trades, "
+        "clearing ic_tracking.TRUST_FLOOR_TRADES. Not yet time-stability-validated though -- only 2 "
+        "calendar IC windows exist (need 4 for ensemble_weight() to trust IR over overall_ic), and the "
+        "most recent one is thin and negative (-0.452 over just 8 effective trades) -- too small a "
+        "sample to weigh heavily, but a real reason this isn't a fully settled question yet. Net: "
+        "real IC-based ranking looks genuinely better than the entry-timing backtest alone suggested, "
+        "but treat as still-developing evidence, not a fully validated signal."
     ),
 }
 
