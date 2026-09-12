@@ -50,6 +50,8 @@ Usage:
                                            # run_smallmid_rsi_experimental()'s own docstring
     python ingest.py --smallmid-ma-crossover-only  # isolated small/mid-cap MA Crossover variant, see
                                                     # run_smallmid_ma_crossover_experimental()'s own docstring
+    python ingest.py --smallmid-pairs-only  # isolated small/mid-cap Pairs variant, see
+                                             # run_smallmid_pairs_experimental()'s own docstring
 """
 
 import argparse
@@ -635,6 +637,67 @@ def run_smallmid_ma_crossover_experimental(watchlist_path: Path = SMALLMID_WATCH
         print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: {skipped_count} ticker(s) could not be analyzed/scored.")
 
 
+def run_smallmid_pairs_experimental(watchlist_path: Path = SMALLMID_WATCHLIST_FILE) -> None:
+    """Headless automation for the Mean-Reversion Pairs (Small/Mid-Cap)
+    experimental variant (config_loader.SMALLMID_PAIRS_LABEL, 2026-09-11,
+    improvements.txt item 125) -- same universe-swap pattern as
+    run_smallmid_rsi_experimental()/run_smallmid_ma_crossover_experimental()
+    above (see the former's own docstring for the full architectural
+    rationale). Only real difference from those two: "pairs" needs
+    `pair_price_panels` (per-sector wide Close-price panels, built from this
+    function's OWN fetched bundle via market_data.build_pair_price_panels())
+    threaded into score_bundle_for_strategy() -- without it,
+    simulate_pairs_signals() silently returns zero signals (see
+    reoptimize_sector_rs.py's own real-bug precedent for this exact gap)."""
+    if not watchlist_path.exists():
+        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: skipped -- watchlist not found ({watchlist_path}).")
+        return
+    tickers = tuple(read_tickers(watchlist_path))
+    if not tickers:
+        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: skipped -- no tickers found in {watchlist_path}.")
+        return
+    sector_lookup = read_ticker_sectors(watchlist_path)
+
+    config, source = config_loader.load_config_by_version(config_loader.SMALLMID_PAIRS_CONFIG_VERSION)
+    if config is None:
+        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: skipped -- {source}")
+        return
+
+    bundle, market_df, fetch_skipped, sector_data, _yield_curve = market_data.fetch_ticker_bundle(
+        tickers, sector_lookup=sector_lookup,
+    )
+    pair_price_panels = market_data.build_pair_price_panels(bundle, sector_lookup)
+    results, score_skipped = market_data.score_bundle_for_strategy(
+        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
+        pair_price_panels=pair_price_panels,
+    )
+    if not results:
+        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: no tickers scored today.")
+        return
+
+    results_df = pd.DataFrame(results)
+    results_df = _score_for_strategy(results_df, config)
+    # Never capital-allocated -- explicit zeros, same rationale as
+    # run_experimental_strategies()'s own identical lines.
+    results_df["Shares_To_Buy"] = 0.0
+    results_df["Est_Cost"] = 0.0
+
+    log_config = swingtrade.TradingConfig(
+        **{**config.to_dict(), "strategy": config_loader.SMALLMID_PAIRS_LOG_STRATEGY}
+    )
+    try:
+        logged = storage.log_trade_signals(results_df, log_config.to_dict())
+        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: analyzed {len(results_df)}/{len(tickers)} ticker(s), "
+              f"logged {logged['actionable']} actionable + {logged['research']} research signal(s) "
+              "to MongoDB (never capital-allocated).")
+    except Exception as exc:
+        print(f"[WARN] {config_loader.SMALLMID_PAIRS_LABEL} signal logging failed: {exc}", file=sys.stderr)
+
+    if fetch_skipped or score_skipped:
+        skipped_count = len(fetch_skipped) + len(score_skipped)
+        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: {skipped_count} ticker(s) could not be analyzed/scored.")
+
+
 def run_best_ideas_strategy(
     strategy_frames: dict[str, pd.DataFrame], regime_picks: list[dict],
     bundle: dict, market_df, sector_lookup: dict[str, str] | None,
@@ -871,6 +934,14 @@ def main():
              ".github/workflows/smallmid_ma_crossover.yml and config_loader.py's own "
              "SMALLMID_MA_CROSSOVER_* constants.",
     )
+    parser.add_argument(
+        "--smallmid-pairs-only", action="store_true",
+        help="Run ONLY the Mean-Reversion Pairs (Small/Mid-Cap) experimental variant "
+             "(run_smallmid_pairs_experimental()) against smallmid_watchlist.txt, then exit -- "
+             "same isolated-process convention as --smallmid-rsi-only, see "
+             ".github/workflows/smallmid_pairs.yml and config_loader.py's own "
+             "SMALLMID_PAIRS_* constants.",
+    )
     args = parser.parse_args()
     if args.smallmid_rsi_only:
         try:
@@ -887,6 +958,14 @@ def main():
             print(f"[ERROR] {exc}", file=sys.stderr)
             sys.exit(1)
         run_smallmid_ma_crossover_experimental()
+        sys.exit(0)
+    if args.smallmid_pairs_only:
+        try:
+            storage.ensure_indexes()
+        except storage.MongoNotConfigured as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            sys.exit(1)
+        run_smallmid_pairs_experimental()
         sys.exit(0)
     sys.exit(run(args.watchlist, args.position_budget, args.with_ai_context, args.risk_amount))
 

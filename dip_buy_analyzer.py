@@ -700,6 +700,7 @@ def render_experimental_section(
     sector_data: dict | None = None,
     momentum_panel: pd.DataFrame | None = None,
     yield_curve=None,
+    pair_price_panels: dict | None = None,
     log_strategy_override: str | None = None,
 ) -> pd.DataFrame:
     """Score, log, and display one EXPERIMENTAL strategy's results against
@@ -743,7 +744,15 @@ def render_experimental_section(
     correctly never calls does) -- the log_trade_signals() call below was
     raising a KeyError on every real invocation, silently swallowed by the
     try/except into a st.warning() easy to miss. See ingest.py's
-    run_experimental_strategies() for the headless twin of this same fix."""
+    run_experimental_strategies() for the headless twin of this same fix.
+
+    `pair_price_panels` (2026-09-11, added for Mean-Reversion Pairs
+    (Small/Mid-Cap)): per-sector wide Close-price panels backing the
+    "pairs" strategy's partner-selection mechanism -- see
+    market_data.build_pair_price_panels(). Default None preserves every
+    existing caller's behavior (config.strategy == "pairs" would otherwise
+    silently score zero signals, same real gap
+    run_smallmid_pairs_experimental()'s own docstring flags)."""
     st.subheader(label)
     # Computed fresh from THIS call's own config.momentum_lookback_days, not
     # precomputed once elsewhere -- see optimize.py's build_objective() for
@@ -756,6 +765,7 @@ def render_experimental_section(
     results, score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
         momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve,
+        pair_price_panels=pair_price_panels,
     )
     if not results:
         st.caption("No tickers were successfully analyzed.")
@@ -1634,6 +1644,50 @@ def main():
                     storage_ok,
                     sector_lookup=smallmid_ma_sector_lookup, sector_data=smallmid_ma_sector_data,
                     log_strategy_override=config_loader.SMALLMID_MA_CROSSOVER_LOG_STRATEGY,
+                )
+
+        st.divider()
+        st.subheader(f"{config_loader.SMALLMID_PAIRS_LABEL} (experimental)")
+        st.info(
+            "**Different ticker universe, not a different strategy.** Mean-Reversion Pairs' own "
+            "live v58 config, UNCHANGED, scanned against S&P 600 SmallCap + S&P 400 MidCap (~1000 "
+            "tickers) instead of the main watchlist. A real random-baseline check (2026-09-11) "
+            "found a genuine, holdout-validated edge here too (holdout sharpe_like 0.006 vs a "
+            "random baseline of -0.024, plus a much tighter Monte-Carlo-reshuffled drawdown "
+            "distribution than random's -- mean 10.4% vs 26.7%) -- no re-tune attempted, v58 "
+            "shipped unmodified since the scoping check itself already cleared the bar. **Real "
+            "caveats, not yet resolved**: current (not point-in-time historical) index membership "
+            "carries some survivorship-bias risk, not independently measured for this universe; "
+            "zero real settled trades yet; the by-year breakdown isn't uniform (loses to random in "
+            "2021/2026, wins in 2022-2025). **Never used for capital allocation -- v58's own "
+            "capital eligibility on the primary watchlist does NOT transfer here.**"
+        )
+        if not SMALLMID_WATCHLIST_FILE.exists():
+            st.caption(f"{config_loader.SMALLMID_PAIRS_LABEL}: unavailable -- watchlist not found "
+                       f"({SMALLMID_WATCHLIST_FILE}).")
+        else:
+            smallmid_pairs_tickers = tuple(read_tickers(SMALLMID_WATCHLIST_FILE))
+            smallmid_pairs_config, smallmid_pairs_source = load_secondary_config(
+                config_loader.SMALLMID_PAIRS_CONFIG_VERSION
+            )
+            if smallmid_pairs_config is None:
+                st.caption(f"{config_loader.SMALLMID_PAIRS_LABEL}: unavailable -- {smallmid_pairs_source}")
+            else:
+                (smallmid_pairs_bundle, smallmid_pairs_market_df, smallmid_pairs_fetch_skipped,
+                 smallmid_pairs_sector_data, _) = cached_fetch_smallmid_bundle(smallmid_pairs_tickers)
+                smallmid_pairs_sector_lookup = read_ticker_sectors(SMALLMID_WATCHLIST_FILE)
+                smallmid_pair_price_panels = market_data.build_pair_price_panels(
+                    smallmid_pairs_bundle, smallmid_pairs_sector_lookup
+                )
+                render_experimental_section(
+                    f"{config_loader.SMALLMID_PAIRS_LABEL} "
+                    f"(v{config_loader.SMALLMID_PAIRS_CONFIG_VERSION}, experimental)",
+                    smallmid_pairs_config,
+                    smallmid_pairs_bundle, smallmid_pairs_market_df, smallmid_pairs_fetch_skipped,
+                    storage_ok,
+                    sector_lookup=smallmid_pairs_sector_lookup, sector_data=smallmid_pairs_sector_data,
+                    pair_price_panels=smallmid_pair_price_panels,
+                    log_strategy_override=config_loader.SMALLMID_PAIRS_LOG_STRATEGY,
                 )
 
     with tab2:

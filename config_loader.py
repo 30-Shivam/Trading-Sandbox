@@ -319,6 +319,26 @@ SMALLMID_MA_CROSSOVER_CONFIG_VERSION = 71
 # primary-watchlist history, same rationale as SMALLMID_RSI_LOG_STRATEGY.
 SMALLMID_MA_CROSSOVER_LOG_STRATEGY = "ma_crossover_smallmid"
 
+# Mean-Reversion Pairs (Small/Mid-Cap), added 2026-09-11 -- same universe-swap
+# pattern as SMALLMID_RSI_*/SMALLMID_MA_CROSSOVER_* above, NOT in
+# EXPERIMENTAL_STRATEGY_VERSIONS for the identical shared-bundle reason. Per
+# explicit user follow-up (item 121's own recommended next step -- finish the
+# universe-expansion sweep across every live/experimental mechanical
+# strategy), a real random-baseline check (improvements.txt item 125) found
+# Mean-Reversion Pairs' own live v58 config -- already capital-eligible on
+# the primary watchlist -- ALSO shows a genuine, holdout-validated edge on
+# smallmid_watchlist.txt (holdout sharpe_like 0.006 vs a random baseline of
+# -0.024, plus a much tighter Monte-Carlo-reshuffled drawdown distribution
+# than random's, 10.35% mean vs 26.65%). `momentum_rank` (v65) was tested in
+# the SAME sweep and did NOT clear the bar (ties/trails random on every cut)
+# -- deliberately NOT given this treatment.
+SMALLMID_PAIRS_LABEL = "Mean-Reversion Pairs (Small/Mid-Cap)"
+SMALLMID_PAIRS_CONFIG_VERSION = 58
+# Distinct Mongo strategy label -- keeps this universe's real settled-trade
+# track record from ever pooling with Mean-Reversion Pairs' own existing
+# primary-watchlist history, same rationale as SMALLMID_MA_CROSSOVER_LOG_STRATEGY.
+SMALLMID_PAIRS_LOG_STRATEGY = "pairs_smallmid"
+
 
 def load_active_config() -> tuple[swingtrade.TradingConfig, str]:
     try:
