@@ -232,6 +232,24 @@ def summarize(trades: list[dict]) -> dict:
     return swingtrade.summarize_trades_weighted(resolved, weights)
 
 
+def _average_by_key(per_seed_dicts: list[dict]) -> dict:
+    """Averages a list of {key: summary} dicts (one per random-baseline
+    seed, e.g. summarize_by_period()'s own year->summary shape) into one
+    {key: averaged_summary} -- the BY YEAR/BY VOLATILITY REGIME counterpart
+    to optimize.average_summaries() (2026-09-13, improvements.txt item 141),
+    which only averages a single flat summary, not a dict of them keyed by
+    year/regime. A key missing from some seeds (e.g. a year with zero
+    random trades under an unlucky seed) is averaged over however many
+    seeds actually produced it, not treated as 0 or excluded entirely."""
+    all_keys = set()
+    for d in per_seed_dicts:
+        all_keys.update(d.keys())
+    return {
+        key: average_summaries([d[key] for d in per_seed_dicts if key in d])
+        for key in all_keys
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -652,20 +670,22 @@ def main():
           f"(entry-fill realized: {len(real_trades)}). "
           f"Random baseline (matched count per ticker): {len(random_trades)} entries filled.")
 
-    # Multi-seed-averaged RANDOM baseline for the ALL-TICKERS headline number
-    # specifically (2026-09-13, improvements.txt item 132) -- a single random
-    # draw (the `random_trades` above, from --seed alone) carries the same
-    # sampling-noise risk --holdout-seeds already fixed for ticker-holdout
-    # splits, just never applied to the random-ENTRY draw itself. Reuses
-    # `random_trades`'s own seed (args.seed) as one of the seeds averaged
-    # over, if it's already in random_baseline_seeds, rather than wastefully
-    # re-simulating it. BY YEAR/TUNE/HOLDOUT/MONTE CARLO below still use the
-    # single `random_trades` draw -- a known, not-yet-extended gap (see
-    # --random-baseline-seeds' own help text).
-    random_all_summaries = []
+    # Multi-seed-averaged RANDOM baseline (2026-09-13, improvements.txt items
+    # 132/141) -- a single random draw (the `random_trades` above, from
+    # --seed alone) carries the same sampling-noise risk --holdout-seeds
+    # already fixed for ticker-holdout splits, just never applied to the
+    # random-ENTRY draw itself. Reuses `random_trades`'s own seed (args.seed)
+    # as one of the seeds averaged over, if it's already in
+    # random_baseline_seeds, rather than wastefully re-simulating it.
+    # Originally (item 132) this only covered the ALL-TICKERS headline;
+    # item 141 extended it to BY YEAR/TUNE/HOLDOUT/MONTE CARLO below too, by
+    # keeping each seed's own raw trades (not just its summary) so every
+    # section can reuse the identical per-seed draws rather than each
+    # picking its own single seed independently.
+    per_seed_random_trades = []
     for s in random_baseline_seeds:
         if s == args.seed:
-            random_all_summaries.append(summarize(random_trades))
+            per_seed_random_trades.append(random_trades)
             continue
         seed_rng = random.Random(s)
         seed_random_trades = []
@@ -676,8 +696,8 @@ def main():
                 **earnings_kwargs(ticker), sector=sector,
             )
             seed_random_trades.extend(rand)
-        random_all_summaries.append(summarize(seed_random_trades))
-    random_all_avg = average_summaries(random_all_summaries)
+        per_seed_random_trades.append(seed_random_trades)
+    random_all_avg = average_summaries([summarize(t) for t in per_seed_random_trades])
 
     print("\n=== ALL TICKERS ===")
     print(f"  REAL   ({real_label}): {summarize(real_trades)}")
@@ -716,12 +736,14 @@ def main():
         print("  LOW p_value = the observed gap would be unusual/rare under 'no real timing skill' -- "
               "real evidence of a genuine edge, not just a single favorably-framed comparison.")
 
-    print("\n=== BY YEAR (does the edge hold up over time, or is it concentrated in one stretch?) ===")
+    print(f"\n=== BY YEAR (does the edge hold up over time, or is it concentrated in one stretch? "
+          f"RANDOM avg of {len(random_baseline_seeds)} seeds) ===")
     real_by_year = swingtrade.summarize_by_period(real_trades, summarize)
-    random_by_year = swingtrade.summarize_by_period(random_trades, summarize)
-    for year in sorted(set(real_by_year) | set(random_by_year)):
+    per_seed_by_year = [swingtrade.summarize_by_period(t, summarize) for t in per_seed_random_trades]
+    random_by_year_avg = _average_by_key(per_seed_by_year)
+    for year in sorted(set(real_by_year) | set(random_by_year_avg)):
         print(f"  {year}  REAL   ({real_label}): {real_by_year.get(year)}")
-        print(f"  {year}  RANDOM (matched count): {random_by_year.get(year)}")
+        print(f"  {year}  RANDOM (matched count): {random_by_year_avg.get(year)}")
 
     # 2026-09-13 (improvements.txt item 134) -- a DIFFERENT regime axis from
     # BY YEAR above: EVERY simulate_*_signals() function already hard-gates
@@ -733,43 +755,73 @@ def main():
     # population every strategy actually trades in. See
     # swingtrade.compute_volatility_regime_series()'s own docstring.
     volatility_regime = swingtrade.compute_volatility_regime_series(market_data)
-    print("\n=== BY VOLATILITY REGIME (does the edge hold in both calm and turbulent "
-          "markets, or is it concentrated in one?) ===")
+    print(f"\n=== BY VOLATILITY REGIME (does the edge hold in both calm and turbulent "
+          f"markets, or is it concentrated in one? RANDOM avg of {len(random_baseline_seeds)} seeds) ===")
     real_by_regime = swingtrade.summarize_by_volatility_regime(real_trades, volatility_regime, summarize)
-    random_by_regime = swingtrade.summarize_by_volatility_regime(random_trades, volatility_regime, summarize)
+    per_seed_by_regime = [
+        swingtrade.summarize_by_volatility_regime(t, volatility_regime, summarize) for t in per_seed_random_trades
+    ]
+    random_by_regime_avg = _average_by_key(per_seed_by_regime)
     for regime in ("elevated", "normal"):
         print(f"  {regime:9s}  REAL   ({real_label}): {real_by_regime.get(regime)}")
-        print(f"  {regime:9s}  RANDOM (matched count): {random_by_regime.get(regime)}")
+        print(f"  {regime:9s}  RANDOM (matched count): {random_by_regime_avg.get(regime)}")
 
     if args.holdout_frac > 0:
         real_tune_avg, real_holdout_avg = average_holdout_summary(
             real_trades, sector_lookup, args.holdout_frac, holdout_seeds, summarize
         )
-        random_tune_avg, random_holdout_avg = average_holdout_summary(
-            random_trades, sector_lookup, args.holdout_frac, holdout_seeds, summarize
-        )
+        # RANDOM's TUNE/HOLDOUT is now averaged over BOTH axes (2026-09-13,
+        # item 141): for EACH random-baseline seed's own trades, re-split by
+        # ticker-holdout across `holdout_seeds` (cheap -- average_holdout_summary()
+        # only re-partitions already-simulated trades, no re-simulation), then
+        # average those per-seed TUNE/HOLDOUT results across the random-baseline
+        # seeds too -- closing the "known, not-yet-extended gap" item 132's own
+        # help text flagged (BY YEAR/TUNE/HOLDOUT/MONTE CARLO previously stuck
+        # on the single --seed draw even after ALL-TICKERS got multi-seed
+        # averaging).
+        per_seed_tune, per_seed_holdout = [], []
+        for t in per_seed_random_trades:
+            tune, holdout = average_holdout_summary(t, sector_lookup, args.holdout_frac, holdout_seeds, summarize)
+            per_seed_tune.append(tune)
+            per_seed_holdout.append(holdout)
+        random_tune_avg = average_summaries(per_seed_tune)
+        random_holdout_avg = average_summaries(per_seed_holdout)
 
-        print(f"\n=== TUNE (avg of {len(holdout_seeds)} seeds) ===")
+        print(f"\n=== TUNE (REAL avg of {len(holdout_seeds)} holdout seeds; "
+              f"RANDOM avg of {len(holdout_seeds)} holdout seeds x {len(random_baseline_seeds)} baseline seeds) ===")
         print(f"  REAL   ({real_label}): {real_tune_avg}")
         print(f"  RANDOM (matched count): {random_tune_avg}")
 
-        print(f"\n=== HOLDOUT (avg of {len(holdout_seeds)} seeds) ===")
+        print(f"\n=== HOLDOUT (REAL avg of {len(holdout_seeds)} holdout seeds; "
+              f"RANDOM avg of {len(holdout_seeds)} holdout seeds x {len(random_baseline_seeds)} baseline seeds) ===")
         print(f"  REAL   ({real_label}): {real_holdout_avg}")
         print(f"  RANDOM (matched count): {random_holdout_avg}")
 
-    print("\n=== MONTE CARLO DRAWDOWN (1000 reshuffles of each's own trade order) ===")
+    print(f"\n=== MONTE CARLO DRAWDOWN (1000 reshuffles of each's own trade order; "
+          f"RANDOM avg of {len(random_baseline_seeds)} seeds) ===")
+    per_seed_mc = [swingtrade.monte_carlo_drawdown(t) for t in per_seed_random_trades]
+    random_mc_avg = average_summaries([d for d in per_seed_mc if d is not None])
     print(f"  REAL   ({real_label}): {swingtrade.monte_carlo_drawdown(real_trades)}")
-    print(f"  RANDOM (matched count): {swingtrade.monte_carlo_drawdown(random_trades)}")
+    print(f"  RANDOM (matched count): {random_mc_avg}")
 
     print(f"\n=== PORTFOLIO-CONSTRAINED REPLAY (${args.portfolio_starting_capital:,.0f} capital, "
           f"${args.portfolio_position_budget:,.0f}/position, sector cap {config.max_sector_allocation_pct*100:.0f}%"
-          f"{f', portfolio cap {config.max_total_deployed_pct*100:.0f}%' if config.max_total_deployed_pct else ''}) ===")
+          f"{f', portfolio cap {config.max_total_deployed_pct*100:.0f}%' if config.max_total_deployed_pct else ''}"
+          f", RANDOM avg of {len(random_baseline_seeds)} seeds) ===")
     print("  A different question from every check above: of every signal generated, how many could a REAL,")
     print("  single, finite-capital account actually have AFFORDED to take, and what does that account's own")
     print("  dollar equity curve/drawdown/CAGR look like -- vs. every prior metric pooling every signal as if")
     print("  capital were unlimited. See swingtrade.simulate_portfolio_constrained()'s own docstring.")
+    per_seed_portfolio = [
+        swingtrade.simulate_portfolio_constrained(
+            t, args.portfolio_starting_capital, args.portfolio_position_budget,
+            config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup,
+        )
+        for t in per_seed_random_trades
+    ]
+    random_portfolio_avg = average_summaries(per_seed_portfolio)
     print(f"  REAL   ({real_label}): {swingtrade.simulate_portfolio_constrained(real_trades, args.portfolio_starting_capital, args.portfolio_position_budget, config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup)}")
-    print(f"  RANDOM (matched count): {swingtrade.simulate_portfolio_constrained(random_trades, args.portfolio_starting_capital, args.portfolio_position_budget, config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup)}")
+    print(f"  RANDOM (matched count): {random_portfolio_avg}")
 
     print()
     print(f"If REAL's sharpe_like/win_rate isn't meaningfully better than RANDOM's (same trade")
