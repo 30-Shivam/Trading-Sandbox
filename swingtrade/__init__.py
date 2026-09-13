@@ -57,6 +57,7 @@ from .backtest import (
 from .config import DEFAULT_CONFIG, TradingConfig, loosened_breakout_config
 from .levels import (
     KNOWN_INDICATOR_FIELDS,
+    audit_no_lookahead,
     classify_insider_transaction,
     compute_adx_trend_entry_levels,
     compute_breakout_levels,
@@ -120,6 +121,7 @@ __all__ = [
     "rule_exit_to_config",
     "KNOWN_INDICATOR_FIELDS",
     "is_market_uptrend",
+    "audit_no_lookahead",
     "review_holding",
     "add_trade_score",
     "add_breakout_trade_score",

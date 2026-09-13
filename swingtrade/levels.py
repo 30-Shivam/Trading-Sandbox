@@ -3106,3 +3106,101 @@ def review_holding(
         "Unrealized_PnL_Pct": unrealized_pnl_pct,
         "Recommendation": recommendation,
     }
+
+
+def audit_no_lookahead(
+    precompute_fn,
+    df: pd.DataFrame,
+    as_of_dates,
+    config: TradingConfig = DEFAULT_CONFIG,
+    extra_series: dict | None = None,
+) -> dict:
+    """Direct, empirical look-ahead-bias check for any `precompute_*_frame()`
+    function (2026-09-13, per the user's "make the backtest fully
+    comprehensive of all variables" directive) -- this project's no-look-
+    ahead discipline has, until now, relied entirely on manual code review
+    (every precompute function's own docstring states its intent, but
+    nothing ever TESTED it directly). The test: a row's own indicator
+    values at `as_of` must be IDENTICAL whether computed from the full
+    history or from history truncated right after `as_of` -- a genuine
+    look-ahead leak (some rolling/shift computation reaching past `as_of`)
+    would make truncating the future change that row's own values, since a
+    correct point-in-time computation for day `as_of` never needs to know
+    what happens after it.
+
+    `precompute_fn` is called as `precompute_fn(truncated_df, config=config,
+    **truncated_extras)` -- every `precompute_*_frame()` function in this
+    module accepts `config` as a keyword and any additional date-indexed
+    inputs (market_df/sector_df/peer_prices/rank_column/etc.) as further
+    keywords, so a single generic harness covers all of them without
+    needing to know each one's internal logic.
+
+    `extra_series` (optional) maps kwarg name -> date-indexed pd.Series/
+    pd.DataFrame that `precompute_fn` also takes (e.g. `market_df=...`) --
+    these are independently truncated at each `as_of` too, since a market/
+    sector/peer series can leak future information just as easily as `df`
+    itself. A non-date-indexed value (e.g. `rule` for
+    precompute_llm_strategy_frame, a plain dict) is passed through
+    unchanged, never truncated -- caller's responsibility to know which of
+    its own extra kwargs are actually time series.
+
+    Only compares columns present in BOTH the full and truncated frames
+    (a truncated frame can legitimately be missing trailing-window-derived
+    columns near the very end of its own shorter history -- that's
+    insufficient-history, not look-ahead, and is excluded from the
+    comparison rather than flagged). `as_of` values not present in either
+    frame's index are skipped (can't compare what wasn't computed).
+
+    Returns `{"dates_checked": int, "mismatches": [(as_of, column,
+    full_value, truncated_value), ...]}` -- an EMPTY `mismatches` list is
+    the passing case. A non-empty one is a genuine, previously undetected
+    look-ahead bug: the exact column and date pinpoint where to look.
+
+    KNOWN CAVEAT (found while building this): some indicator libraries
+    (pandas_ta's `ta.rsi()` confirmed) gate on the TOTAL length of the
+    array passed in, not just how much trailing history precedes a given
+    row -- a `truncated_df` shorter than roughly that indicator's own
+    window will get NaN across the board even at rows where a real
+    backtest would never actually be this early (every real caller already
+    keeps a long leading buffer -- see backtest.py's LOOKBACK_BUFFER_BARS).
+    This shows up as an apparent "mismatch" for `as_of` dates very close to
+    the start of `df`, but is a warmup-length artifact, NOT a look-ahead
+    leak -- confirmed by checking that values match exactly again as soon
+    as the truncated array clears that same absolute-length threshold (see
+    tests/test_no_lookahead_bias_audit.py's own dedicated test for this).
+    Sample `as_of` dates from well past every relevant window's own length
+    for a meaningful audit, same as any real backtest already does."""
+    extra_series = extra_series or {}
+    full_frame = precompute_fn(df, config=config, **extra_series)
+
+    mismatches = []
+    dates_checked = 0
+    for as_of in as_of_dates:
+        if as_of not in full_frame.index:
+            continue
+        truncated_df = df.loc[:as_of]
+        truncated_extras = {}
+        for name, series in extra_series.items():
+            if isinstance(series, (pd.Series, pd.DataFrame)):
+                truncated_extras[name] = series.loc[:as_of]
+            else:
+                truncated_extras[name] = series
+        truncated_frame = precompute_fn(truncated_df, config=config, **truncated_extras)
+        if as_of not in truncated_frame.index:
+            continue
+        dates_checked += 1
+
+        full_row = full_frame.loc[as_of]
+        truncated_row = truncated_frame.loc[as_of]
+        shared_cols = [c for c in full_frame.columns if c in truncated_frame.columns]
+        for col in shared_cols:
+            full_value, truncated_value = full_row[col], truncated_row[col]
+            if pd.isna(full_value) and pd.isna(truncated_value):
+                continue
+            if isinstance(full_value, (int, float)) and isinstance(truncated_value, (int, float)):
+                if not np.isclose(float(full_value), float(truncated_value), rtol=1e-9, atol=1e-9):
+                    mismatches.append((as_of, col, full_value, truncated_value))
+            elif full_value != truncated_value:
+                mismatches.append((as_of, col, full_value, truncated_value))
+
+    return {"dates_checked": dates_checked, "mismatches": mismatches}
