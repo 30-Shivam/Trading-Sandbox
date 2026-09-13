@@ -142,6 +142,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
+import yfinance as yf
 
 import ic_tracking
 import storage
@@ -368,6 +369,17 @@ def main():
              "earnings_dates) -- a no-op flag for every other --strategy value. Off by default, "
              "same convention as run_backtest.py's own --with-catalyst.",
     )
+    parser.add_argument(
+        "--with-dividend-drag", action="store_true",
+        help="Fetch real dividend history (one extra yfinance call per ticker, see "
+             "yfinance.Ticker(ticker).dividends) and run swingtrade.audit_dividend_drag() against "
+             "the REAL trades (2026-09-13, improvements.txt item 143) -- quantifies how much this "
+             "backtest's pnl_pct understates real total return by never crediting dividends paid "
+             "during a holding period. Pure measurement, adds a report section only -- never "
+             "changes pnl_pct itself. Off by default (extra network cost); most informative for "
+             "higher-dividend-yield universes (adr_watchlist.txt, smallmid financials/REITs/utilities) "
+             "-- negligible for this project's own low-dividend primary watchlist.",
+    )
     args = parser.parse_args()
 
     holdout_seeds = (
@@ -506,6 +518,20 @@ def main():
             earnings_data[ticker] = fetch_earnings_dates(ticker)
         found = sum(1 for d in earnings_data.values() if len(d) > 0)
         print(f"Got earnings history for {found}/{len(ticker_data)} ticker(s).")
+
+    dividend_history: dict = {}
+    if args.with_dividend_drag:
+        print(f"\nFetching real dividend history for {len(ticker_data)} ticker(s)...")
+        for i, ticker in enumerate(ticker_data):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_SEC)
+            try:
+                divs = yf.Ticker(ticker).dividends
+                if len(divs) > 0:
+                    dividend_history[ticker] = divs
+            except Exception as exc:
+                print(f"  [WARN] {ticker} dividends: {exc}", file=sys.stderr)
+        print(f"Got dividend history for {len(dividend_history)}/{len(ticker_data)} ticker(s).")
 
     sector_data: dict[str, pd.DataFrame] = {}
     if args.strategy in SECTOR_AWARE_STRATEGIES:
@@ -822,6 +848,16 @@ def main():
     random_portfolio_avg = average_summaries(per_seed_portfolio)
     print(f"  REAL   ({real_label}): {swingtrade.simulate_portfolio_constrained(real_trades, args.portfolio_starting_capital, args.portfolio_position_budget, config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup)}")
     print(f"  RANDOM (matched count): {random_portfolio_avg}")
+
+    if args.with_dividend_drag:
+        print("\n=== DIVIDEND DRAG (does pnl_pct understate real total return by never crediting "
+              "dividends paid during a holding period? see improvements.txt item 143) ===")
+        dividend_result = swingtrade.audit_dividend_drag(real_trades, dividend_history)
+        print(f"  REAL ({real_label}): {dividend_result}")
+        if dividend_result["avg_missed_pct_all_trades"]:
+            print(f"  On average, this backtest understates real total return by "
+                  f"{dividend_result['avg_missed_pct_all_trades']}pp per trade on this universe "
+                  "(pure measurement -- pnl_pct itself is unchanged).")
 
     print()
     print(f"If REAL's sharpe_like/win_rate isn't meaningfully better than RANDOM's (same trade")
