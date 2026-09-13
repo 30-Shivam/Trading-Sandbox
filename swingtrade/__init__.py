@@ -47,6 +47,7 @@ from .backtest import (
     simulate_week52_signals,
     compute_volatility_regime_series,
     permutation_test_gap,
+    simulate_portfolio_constrained,
     summarize_by_catalyst,
     summarize_by_period,
     summarize_by_volatility_regime,
@@ -183,6 +184,7 @@ __all__ = [
     "compute_k_ratio",
     "compute_max_drawdown",
     "monte_carlo_drawdown",
+    "simulate_portfolio_constrained",
     "flatten_out_sample_trades",
     "run_walk_forward",
 ]

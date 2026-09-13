@@ -328,6 +328,20 @@ def main():
              "never has status=active at all. Default: the active config (today's default behavior).",
     )
     parser.add_argument(
+        "--portfolio-starting-capital", type=float, default=10_000.0,
+        help="Starting capital for the new PORTFOLIO-CONSTRAINED REPLAY section (2026-09-13, "
+             "swingtrade.simulate_portfolio_constrained()) -- replays REAL trades through a single, "
+             "finite-capital account (flat --portfolio-position-budget per trade, "
+             "config.max_sector_allocation_pct/max_total_deployed_pct caps) instead of treating every "
+             "signal as independently takeable. Default: $10,000 (an illustrative figure, not derived "
+             "from any real account).",
+    )
+    parser.add_argument(
+        "--portfolio-position-budget", type=float, default=250.0,
+        help="Flat $ per position for the portfolio-constrained replay -- matches ingest.py's own "
+             "DEFAULT_POSITION_BUDGET (the live flat-sizing default when no --risk-amount is given).",
+    )
+    parser.add_argument(
         "--with-catalyst", action="store_true",
         help="Fetch historical earnings dates (one extra yfinance call per ticker, see "
              "run_backtest.fetch_earnings_dates) so Catalyst_Warning is computed honestly "
@@ -746,6 +760,16 @@ def main():
     print("\n=== MONTE CARLO DRAWDOWN (1000 reshuffles of each's own trade order) ===")
     print(f"  REAL   ({real_label}): {swingtrade.monte_carlo_drawdown(real_trades)}")
     print(f"  RANDOM (matched count): {swingtrade.monte_carlo_drawdown(random_trades)}")
+
+    print(f"\n=== PORTFOLIO-CONSTRAINED REPLAY (${args.portfolio_starting_capital:,.0f} capital, "
+          f"${args.portfolio_position_budget:,.0f}/position, sector cap {config.max_sector_allocation_pct*100:.0f}%"
+          f"{f', portfolio cap {config.max_total_deployed_pct*100:.0f}%' if config.max_total_deployed_pct else ''}) ===")
+    print("  A different question from every check above: of every signal generated, how many could a REAL,")
+    print("  single, finite-capital account actually have AFFORDED to take, and what does that account's own")
+    print("  dollar equity curve/drawdown/CAGR look like -- vs. every prior metric pooling every signal as if")
+    print("  capital were unlimited. See swingtrade.simulate_portfolio_constrained()'s own docstring.")
+    print(f"  REAL   ({real_label}): {swingtrade.simulate_portfolio_constrained(real_trades, args.portfolio_starting_capital, args.portfolio_position_budget, config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup)}")
+    print(f"  RANDOM (matched count): {swingtrade.simulate_portfolio_constrained(random_trades, args.portfolio_starting_capital, args.portfolio_position_budget, config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup)}")
 
     print()
     print(f"If REAL's sharpe_like/win_rate isn't meaningfully better than RANDOM's (same trade")

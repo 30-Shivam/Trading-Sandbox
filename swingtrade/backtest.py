@@ -4124,6 +4124,176 @@ def permutation_test_gap(
     }
 
 
+def simulate_portfolio_constrained(
+    trades: list[dict],
+    starting_capital: float,
+    position_budget: float,
+    max_sector_allocation_pct: float | None = None,
+    max_total_deployed_pct: float | None = None,
+    sector_lookup: dict[str, str] | None = None,
+) -> dict:
+    """Replays already-simulated signals through a REAL, single, finite-
+    capital account -- the question nothing before this checked (2026-09-13,
+    per allocation.allocate_capital()'s own long-standing docstring caveat:
+    "a per-ticker walk-forward backtest doesn't model simultaneous
+    cross-ticker exposure either"). Every other metric in this module
+    (sharpe_like, k_ratio, compute_max_drawdown's own concurrency-weighted
+    equity curve) treats every signal a strategy ever generates as if it
+    got taken -- fine for asking "does this signal carry timing
+    information," but silent about a different, equally real question: of
+    every signal generated, how many could ONE real account, with a fixed
+    starting_capital and a flat position_budget per trade (same flat-sizing
+    convention ingest.py's own live default uses when no --risk-amount is
+    given), have actually AFFORDED to take, and what does that account's
+    own dollar equity curve/drawdown/CAGR look like once capital
+    constraints are respected rather than pooling every trade's % return as
+    if capital were unlimited?
+
+    Reuses allocation.allocate_capital()'s exact three real-world
+    constraints (funds/sector-cap/portfolio-cap), applied here as a
+    chronological REPLAY across the whole backtest window instead of a
+    single day's greedy walk -- trades are processed in entry_date order;
+    a trade whose cost can't currently be funded is marked "taken": False
+    with a `reason` (mirrors allocate_capital()'s own "Insufficient Funds"/
+    "Sector Limit Reached"/"Portfolio Limit Reached" signal relabeling, same
+    non-consuming "keep walking, don't stop the whole backtest" semantics)
+    rather than crashing or silently still counting it. `max_sector_allocation_pct`/
+    `max_total_deployed_pct` are both expressed as a fraction of
+    `starting_capital` (NOT a dynamically growing portfolio value) --
+    a deliberate simplification, documented below.
+
+    Capital is committed at a trade's entry_date and released back
+    (at its REALIZED dollar pnl, not just the cost basis) at its exit_date
+    -- same entry/exit-date concurrency convention compute_max_drawdown()
+    already established, reused here instead of inventing a second one.
+    A same-day exit is assumed to free capital in time to fund a same-day
+    new entry (closed-interval release-before-commit ordering) -- the same
+    "no intraday fill-sequencing data across tickers" limitation
+    compute_max_drawdown() already documents, not a new one.
+
+    Known, deliberate simplifications (mirroring compute_max_drawdown()'s
+    own documented gaps, not fixed here either):
+      - No daily mark-to-market -- the equity curve only gets a new sample
+        at each entry/exit EVENT, never between them, so unrealized
+        drawdown of a still-open position is invisible until it resolves.
+      - Sector/portfolio caps are a fraction of `starting_capital`, not a
+        dynamically growing/shrinking current portfolio value -- caps
+        don't loosen as the account compounds gains (a conservative
+        simplification, not an attempt at dollar-exact realism).
+      - Ties at the same entry_date are resolved in `trades`' own original
+        order (stable sort) -- there is no Trade_Score available here to
+        break ties by signal quality (not every strategy's trade dicts
+        carry one, see ic_tracking.backtest_ic_check()'s own docstring),
+        unlike the live dashboard's Trade_Score-sorted allocate_capital()
+        call.
+
+    Trades missing entry_date/exit_date are silently excluded from the
+    replay entirely (same degrade-gracefully convention compute_max_drawdown()
+    uses) -- not counted in n_signals, not skippable, not takeable.
+
+    Returns a dict: `starting_capital`, `ending_equity`, `total_return_pct`,
+    `cagr_pct` (None if the date span is under a day), `max_drawdown_pct`,
+    `n_signals` (resolved trades actually eligible for replay), `n_taken`,
+    `n_skipped_insufficient_capital`, `n_skipped_sector_limit`,
+    `n_skipped_portfolio_limit`, `pct_signals_taken` (n_taken/n_signals as a
+    %, None if n_signals is 0)."""
+    sector_lookup = sector_lookup or {}
+    eligible = [t for t in trades if t.get("status") != "OPEN" and "entry_date" in t and "exit_date" in t]
+    n_signals = len(eligible)
+    if n_signals == 0:
+        return {
+            "starting_capital": starting_capital, "ending_equity": starting_capital,
+            "total_return_pct": 0.0, "cagr_pct": None, "max_drawdown_pct": None,
+            "n_signals": 0, "n_taken": 0, "n_skipped_insufficient_capital": 0,
+            "n_skipped_sector_limit": 0, "n_skipped_portfolio_limit": 0, "pct_signals_taken": None,
+        }
+
+    ordered = sorted(eligible, key=lambda t: t["entry_date"])
+    sector_cap_dollars = (
+        max_sector_allocation_pct * starting_capital
+        if max_sector_allocation_pct and max_sector_allocation_pct > 0 else None
+    )
+    total_deployed_cap_dollars = (
+        max_total_deployed_pct * starting_capital
+        if max_total_deployed_pct and max_total_deployed_pct > 0 else None
+    )
+
+    cash = starting_capital
+    open_positions: list[dict] = []  # {"exit_date":, "cost":, "sector":, "pnl_pct":}
+    deployed_now = 0.0
+    sector_spent: dict[str, float] = defaultdict(float)
+    equity_curve: list[tuple] = [(ordered[0]["entry_date"], starting_capital)]
+    n_taken = n_skipped_funds = n_skipped_sector = n_skipped_portfolio = 0
+
+    def _release_through(as_of) -> None:
+        nonlocal cash, deployed_now
+        still_open = []
+        for p in open_positions:
+            if p["exit_date"] <= as_of:
+                cash += p["cost"] * (1 + p["pnl_pct"] / 100)
+                deployed_now -= p["cost"]
+                sector_spent[p["sector"]] -= p["cost"]
+                equity_curve.append((p["exit_date"], cash + deployed_now))
+            else:
+                still_open.append(p)
+        open_positions[:] = still_open
+
+    for t in ordered:
+        _release_through(t["entry_date"])
+        sector = sector_lookup.get(t.get("ticker"), t.get("sector", "Unknown"))
+        cost = position_budget
+
+        if cost > cash:
+            n_skipped_funds += 1
+            continue
+        if sector_cap_dollars is not None and sector_spent[sector] + cost > sector_cap_dollars:
+            n_skipped_sector += 1
+            continue
+        if total_deployed_cap_dollars is not None and deployed_now + cost > total_deployed_cap_dollars:
+            n_skipped_portfolio += 1
+            continue
+
+        cash -= cost
+        deployed_now += cost
+        sector_spent[sector] += cost
+        open_positions.append({"exit_date": t["exit_date"], "cost": cost, "sector": sector, "pnl_pct": t["pnl_pct"]})
+        n_taken += 1
+        equity_curve.append((t["entry_date"], cash + deployed_now))
+
+    # Release whatever's still open at the very end so ending_equity is fully realized.
+    if open_positions:
+        _release_through(max(p["exit_date"] for p in open_positions))
+
+    ending_equity = cash
+    equity_curve.sort(key=lambda e: e[0])
+    peak = starting_capital
+    max_dd = 0.0
+    for _, eq in equity_curve:
+        peak = max(peak, eq)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - eq) / peak)
+
+    span_days = (ordered[-1]["exit_date"] - ordered[0]["entry_date"]).days if n_taken else 0
+    cagr_pct = None
+    if span_days > 0 and ending_equity > 0 and starting_capital > 0:
+        years = span_days / 365.25
+        cagr_pct = round(((ending_equity / starting_capital) ** (1 / years) - 1) * 100, 2)
+
+    return {
+        "starting_capital": starting_capital,
+        "ending_equity": round(ending_equity, 2),
+        "total_return_pct": round((ending_equity / starting_capital - 1) * 100, 2),
+        "cagr_pct": cagr_pct,
+        "max_drawdown_pct": round(max_dd * 100, 2),
+        "n_signals": n_signals,
+        "n_taken": n_taken,
+        "n_skipped_insufficient_capital": n_skipped_funds,
+        "n_skipped_sector_limit": n_skipped_sector,
+        "n_skipped_portfolio_limit": n_skipped_portfolio,
+        "pct_signals_taken": round(n_taken / n_signals * 100, 2),
+    }
+
+
 def compute_k_ratio(trades: list[dict]) -> float | None:
     """K-ratio: how CONSISTENTLY an equity curve compounds over calendar
     time, distinct from sharpe_like (mean/stdev of per-trade returns) which
