@@ -4131,6 +4131,7 @@ def simulate_portfolio_constrained(
     max_sector_allocation_pct: float | None = None,
     max_total_deployed_pct: float | None = None,
     sector_lookup: dict[str, str] | None = None,
+    group_key: str | None = None,
 ) -> dict:
     """Replays already-simulated signals through a REAL, single, finite-
     capital account -- the question nothing before this checked (2026-09-13,
@@ -4180,35 +4181,55 @@ def simulate_portfolio_constrained(
         dynamically growing/shrinking current portfolio value -- caps
         don't loosen as the account compounds gains (a conservative
         simplification, not an attempt at dollar-exact realism).
-      - Ties at the same entry_date are resolved in `trades`' own original
-        order (stable sort) -- there is no Trade_Score available here to
-        break ties by signal quality (not every strategy's trade dicts
-        carry one, see ic_tracking.backtest_ic_check()'s own docstring),
-        unlike the live dashboard's Trade_Score-sorted allocate_capital()
-        call.
+      - Ties at the same entry_date break by `trade_score` DESCENDING when
+        present (mirrors the live dashboard's own Trade_Score-sorted
+        `allocate_capital()` greedy walk -- the highest-conviction signal
+        gets first claim on the limited capital) -- trades missing a
+        `trade_score` (not every strategy's trade dicts carry one, see
+        ic_tracking.backtest_ic_check()'s own docstring) fall back to a
+        neutral 0 and, among themselves, `trades`' own original order
+        (Python's sort is stable). This matters most when POOLING trades
+        from multiple strategies into one shared account (2026-09-13,
+        improvements.txt item 142) -- a single strategy's own signals
+        rarely collide on the exact same entry_date/ticker, but a real
+        multi-strategy portfolio does exactly this competition every day.
 
     Trades missing entry_date/exit_date are silently excluded from the
     replay entirely (same degrade-gracefully convention compute_max_drawdown()
     uses) -- not counted in n_signals, not skippable, not takeable.
+
+    `group_key` (optional, e.g. `"signal"`, present on every trade dict
+    every `simulate_*_signals()` function already appends -- 2026-09-13,
+    improvements.txt item 142) -- when given, also returns `taken_by_group`
+    (a `{group value: count actually taken}` dict) alongside the usual
+    aggregate stats. Built for POOLING trades from multiple strategies into
+    one shared account (see `benchmark_multi_strategy_portfolio.py`) --
+    without this, a pooled multi-strategy run tells you the combined
+    capital-constrained outcome but not which strategy's signals actually
+    won the limited capital versus got crowded out. None (default)
+    preserves the exact original return shape.
 
     Returns a dict: `starting_capital`, `ending_equity`, `total_return_pct`,
     `cagr_pct` (None if the date span is under a day), `max_drawdown_pct`,
     `n_signals` (resolved trades actually eligible for replay), `n_taken`,
     `n_skipped_insufficient_capital`, `n_skipped_sector_limit`,
     `n_skipped_portfolio_limit`, `pct_signals_taken` (n_taken/n_signals as a
-    %, None if n_signals is 0)."""
+    %, None if n_signals is 0), plus `taken_by_group` if `group_key` was given."""
     sector_lookup = sector_lookup or {}
     eligible = [t for t in trades if t.get("status") != "OPEN" and "entry_date" in t and "exit_date" in t]
     n_signals = len(eligible)
     if n_signals == 0:
-        return {
+        result = {
             "starting_capital": starting_capital, "ending_equity": starting_capital,
             "total_return_pct": 0.0, "cagr_pct": None, "max_drawdown_pct": None,
             "n_signals": 0, "n_taken": 0, "n_skipped_insufficient_capital": 0,
             "n_skipped_sector_limit": 0, "n_skipped_portfolio_limit": 0, "pct_signals_taken": None,
         }
+        if group_key:
+            result["taken_by_group"] = {}
+        return result
 
-    ordered = sorted(eligible, key=lambda t: t["entry_date"])
+    ordered = sorted(eligible, key=lambda t: (t["entry_date"], -t.get("trade_score", 0.0)))
     sector_cap_dollars = (
         max_sector_allocation_pct * starting_capital
         if max_sector_allocation_pct and max_sector_allocation_pct > 0 else None
@@ -4224,6 +4245,7 @@ def simulate_portfolio_constrained(
     sector_spent: dict[str, float] = defaultdict(float)
     equity_curve: list[tuple] = [(ordered[0]["entry_date"], starting_capital)]
     n_taken = n_skipped_funds = n_skipped_sector = n_skipped_portfolio = 0
+    taken_by_group: dict = defaultdict(int) if group_key else None
 
     def _release_through(as_of) -> None:
         nonlocal cash, deployed_now
@@ -4258,6 +4280,8 @@ def simulate_portfolio_constrained(
         sector_spent[sector] += cost
         open_positions.append({"exit_date": t["exit_date"], "cost": cost, "sector": sector, "pnl_pct": t["pnl_pct"]})
         n_taken += 1
+        if group_key:
+            taken_by_group[t.get(group_key, "Unknown")] += 1
         equity_curve.append((t["entry_date"], cash + deployed_now))
 
     # Release whatever's still open at the very end so ending_equity is fully realized.
@@ -4279,7 +4303,7 @@ def simulate_portfolio_constrained(
         years = span_days / 365.25
         cagr_pct = round(((ending_equity / starting_capital) ** (1 / years) - 1) * 100, 2)
 
-    return {
+    result = {
         "starting_capital": starting_capital,
         "ending_equity": round(ending_equity, 2),
         "total_return_pct": round((ending_equity / starting_capital - 1) * 100, 2),
@@ -4292,6 +4316,9 @@ def simulate_portfolio_constrained(
         "n_skipped_portfolio_limit": n_skipped_portfolio,
         "pct_signals_taken": round(n_taken / n_signals * 100, 2),
     }
+    if group_key:
+        result["taken_by_group"] = dict(taken_by_group)
+    return result
 
 
 def compute_k_ratio(trades: list[dict]) -> float | None:

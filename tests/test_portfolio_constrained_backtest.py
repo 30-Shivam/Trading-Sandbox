@@ -21,11 +21,15 @@ from swingtrade.backtest import simulate_portfolio_constrained
 D = datetime.date
 
 
-def _trade(ticker, entry_date, exit_date, pnl_pct, sector="Tech", status="WIN"):
-    return {
+def _trade(ticker, entry_date, exit_date, pnl_pct, sector="Tech", status="WIN", trade_score=None, **extra):
+    trade = {
         "ticker": ticker, "entry_date": entry_date, "exit_date": exit_date,
         "pnl_pct": pnl_pct, "sector": sector, "status": status,
     }
+    if trade_score is not None:
+        trade["trade_score"] = trade_score
+    trade.update(extra)
+    return trade
 
 
 def test_empty_trades_returns_zero_signal_baseline():
@@ -151,3 +155,87 @@ def test_sector_lookup_overrides_trade_own_sector_tag():
     )
     assert result["n_taken"] == 2
     assert result["n_skipped_sector_limit"] == 0
+
+
+def test_same_day_ties_break_by_trade_score_descending():
+    # $1,000 capital, $1,000/position -- only ONE of these same-day trades
+    # can be funded. B has the higher trade_score (80 vs 30) and should win
+    # the capital, mirroring the live dashboard's Trade_Score-sorted
+    # allocate_capital() greedy walk -- highest conviction gets first claim,
+    # not whichever happened to be first in the input list. Distinguishing
+    # pnl_pct (A +50%, B -50%) makes WHICH one was actually taken visible
+    # in ending_equity, since the return dict has no per-trade detail.
+    trades = [
+        _trade("A", D(2022, 1, 1), D(2022, 1, 10), 50.0, trade_score=30.0),
+        _trade("B", D(2022, 1, 1), D(2022, 1, 10), -50.0, trade_score=80.0),
+    ]
+    result = simulate_portfolio_constrained(trades, starting_capital=1_000.0, position_budget=1_000.0)
+    assert result["n_taken"] == 1
+    assert result["n_skipped_insufficient_capital"] == 1
+    # If B (higher score) won: 1000 - 1000 + 1000*(1-0.5) = 500.
+    # If A had won instead: 1000 - 1000 + 1000*(1+0.5) = 1500.
+    assert result["ending_equity"] == 500.0
+
+
+def test_missing_trade_score_falls_back_to_original_order():
+    # Neither trade carries a trade_score (matches most of this project's
+    # strategies -- only 5 of 14 record one) -- ties should fall back to
+    # `trades`' own input order (Python's stable sort), same as before this
+    # feature existed. A (first in the list) should win the capital.
+    trades = [
+        _trade("A", D(2022, 1, 1), D(2022, 1, 10), 50.0),
+        _trade("B", D(2022, 1, 1), D(2022, 1, 10), -50.0),
+    ]
+    result = simulate_portfolio_constrained(trades, starting_capital=1_000.0, position_budget=1_000.0)
+    assert result["n_taken"] == 1
+    # A (first, +50%) should win: 1000 - 1000 + 1000*1.5 = 1500.
+    assert result["ending_equity"] == 1500.0
+
+
+def test_scored_trades_beat_unscored_trades_on_the_same_day():
+    # A carries no trade_score (defaults to 0 for ranking purposes), B
+    # carries a real, even mediocre, trade_score (10.0) -- B should still
+    # win, since ANY real signal-quality information beats none.
+    trades = [
+        _trade("A", D(2022, 1, 1), D(2022, 1, 10), 50.0),
+        _trade("B", D(2022, 1, 1), D(2022, 1, 10), -50.0, trade_score=10.0),
+    ]
+    result = simulate_portfolio_constrained(trades, starting_capital=1_000.0, position_budget=1_000.0)
+    assert result["n_taken"] == 1
+    # B (scored, -50%) should win over A (unscored): 1000 - 1000 + 1000*0.5 = 500.
+    assert result["ending_equity"] == 500.0
+
+
+def test_group_key_none_preserves_original_return_shape():
+    # Backward compatibility: omitting group_key must NOT add taken_by_group.
+    trades = [_trade("A", D(2022, 1, 1), D(2022, 1, 10), 10.0)]
+    result = simulate_portfolio_constrained(trades, starting_capital=10_000.0, position_budget=1_000.0)
+    assert "taken_by_group" not in result
+
+
+def test_group_key_tracks_taken_counts_per_strategy():
+    # Simulates pooling two different strategies' trades into one shared
+    # account (2026-09-13, improvements.txt item 142) -- $1,000 capital,
+    # $1,000/position, tagged "signal" like every real simulate_*_signals()
+    # trade dict already carries. Only 1 of 2 same-day trades can be
+    # funded; taken_by_group should attribute it to the actual winner
+    # (MA_Crossover, higher trade_score), not double-count or miscount.
+    trades = [
+        _trade("A", D(2022, 1, 1), D(2022, 1, 10), 10.0, trade_score=30.0, signal="Pairs"),
+        _trade("B", D(2022, 1, 1), D(2022, 1, 10), 10.0, trade_score=80.0, signal="MA_Crossover"),
+        _trade("C", D(2022, 2, 1), D(2022, 2, 10), 5.0, signal="MA_Crossover"),
+    ]
+    result = simulate_portfolio_constrained(
+        trades, starting_capital=1_000.0, position_budget=1_000.0, group_key="signal",
+    )
+    assert result["n_taken"] == 2
+    assert result["taken_by_group"] == {"MA_Crossover": 2}
+
+
+def test_group_key_empty_dict_when_nothing_taken():
+    trades = [_trade("A", D(2022, 1, 1), D(2022, 1, 10), 10.0, signal="Pairs")]
+    result = simulate_portfolio_constrained(
+        trades, starting_capital=100.0, position_budget=1_000.0, group_key="signal",
+    )
+    assert result["n_taken"] == 0
+    assert result["taken_by_group"] == {}
