@@ -293,6 +293,14 @@ def main():
              "for live-status checks, which this flag isn't for.",
     )
     parser.add_argument("--tickers", default=None, help="Comma-separated tickers to override watchlist.txt.")
+    parser.add_argument(
+        "--watchlist-file", type=Path, default=None,
+        help="Use a different watchlist JSON file instead of watchlist.txt (e.g. smallmid_watchlist.txt, "
+             "adr_watchlist.txt) -- same schema, read via watchlist.read_tickers()/read_ticker_sectors(). "
+             "Ignored if --tickers is also given. Lets this script validate a strategy's edge against a "
+             "genuinely different universe without a one-off script per universe (2026-09-13, item 137 -- "
+             "the third-universe generalization test).",
+    )
     parser.add_argument("--seed", type=int, default=1, help="Seed for the random-entry day selection.")
     parser.add_argument(
         "--random-baseline-seeds", default=None,
@@ -349,14 +357,15 @@ def main():
         end = pd.Timestamp.now().normalize()
     start = pd.Timestamp(args.start) if args.start else end - pd.Timedelta(days=365 * 5)
 
+    watchlist_file = args.watchlist_file if args.watchlist_file else WATCHLIST_FILE
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     else:
-        if not WATCHLIST_FILE.exists():
-            print(f"[ERROR] Watchlist file not found: {WATCHLIST_FILE}", file=sys.stderr)
+        if not watchlist_file.exists():
+            print(f"[ERROR] Watchlist file not found: {watchlist_file}", file=sys.stderr)
             sys.exit(1)
-        tickers = read_tickers(WATCHLIST_FILE)
-    sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
+        tickers = read_tickers(watchlist_file)
+    sector_lookup = read_ticker_sectors(watchlist_file) if watchlist_file.exists() else {}
 
     config, config_label = load_config_to_test(args.config_version)
     if args.breakout_lookback_days is not None:
