@@ -708,3 +708,69 @@ def add_ma_crossover_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAU
     df["Trade_Score"] = raw_score.where(eligible, 0.0).round(1)
     df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
     return df
+
+
+def audit_cap_calibration(values: list[float], cap: float, target_percentile: float = 90.0) -> dict:
+    """Data-driven check for a `*_strength_cap_pct`/`*_strength_cap` config
+    field (2026-09-13) -- every `add_*_trade_score()` function in this
+    module clips its own `Signal_Strength_Pct` at one of these caps and
+    normalizes it as `clipped / cap`, so a badly-calibrated cap silently
+    breaks scoring in one of two directions without ever raising an
+    error: set too HIGH relative to what real signals actually achieve,
+    almost every real observation earns only a tiny fraction of this
+    component's points (the confirmed real incident: `ma_crossover`'s
+    original `ma_crossover_strength_cap_pct=2.0` against a real p90 of
+    only 0.52%, which on its own was enough to make Buy/Strong Buy
+    STRUCTURALLY UNREACHABLE -- see improvements.txt item 97, fixed by
+    lowering the cap to 0.5). Set too LOW, most/many real signals already
+    clip to the SAME maximum score, losing differentiation among
+    genuinely different-strength signals at the top end. Point 19 of the
+    strategy-validation pipeline had long flagged this as a known,
+    unbuilt gap (`rrr_scoring_ceiling_check()` catches RRR-vs-threshold
+    unreachability but not THIS failure mode) -- this closes it with a
+    REUSABLE, data-driven check instead of the one-off manual
+    investigation item 97 originally required.
+
+    `values` should be real, historical `Signal_Strength_Pct` observations
+    -- ideally from every day a strategy's own boolean signal condition
+    was True across a real backtest run, not every day regardless of
+    whether the strategy would have fired (this function has no opinion
+    on how `values` was gathered; that's the caller's job, see
+    audit_strength_cap_calibration.py for the real backtest-driven
+    version). `target_percentile` (default 90th, matching the actual
+    threshold item 97's real re-calibration was judged against) is the
+    "typical strong signal" reference point.
+
+    Returns `{"n":, "cap":, "median":, "p90"/"p99"/"max" (real percentiles
+    of `values`), "pct_of_cap_used_at_target_percentile" (what fraction of
+    the scoring component's available points a TYPICAL good real signal
+    -- at `target_percentile` -- actually earns; item 97's real ma_crossover
+    incident measured 26% here before the fix), "pct_values_saturating_cap"
+    (fraction of real observations that would clip to the max score --
+    high here means LOW differentiation among strong signals), "likely_too_high"
+    (bool, `pct_of_cap_used_at_target_percentile` < 50 -- mirrors the exact
+    failure mode item 97 found), "likely_too_low" (bool,
+    `pct_values_saturating_cap` > 30)}`. Returns `n=0`/all-None if `values`
+    is empty."""
+    if not values:
+        return {
+            "n": 0, "cap": cap, "median": None, "p90": None, "p99": None, "max": None,
+            "pct_of_cap_used_at_target_percentile": None, "pct_values_saturating_cap": None,
+            "likely_too_high": None, "likely_too_low": None,
+        }
+    series = pd.Series(values, dtype=float)
+    target_value = float(series.quantile(target_percentile / 100))
+    pct_of_cap_used = round(min(max(target_value, 0.0), cap) / cap * 100, 2) if cap > 0 else None
+    pct_saturating = round(float((series >= cap).mean()) * 100, 2)
+    return {
+        "n": len(series),
+        "cap": cap,
+        "median": round(float(series.median()), 3),
+        "p90": round(float(series.quantile(0.90)), 3),
+        "p99": round(float(series.quantile(0.99)), 3),
+        "max": round(float(series.max()), 3),
+        f"pct_of_cap_used_at_p{int(target_percentile)}": pct_of_cap_used,
+        "pct_values_saturating_cap": pct_saturating,
+        "likely_too_high": bool(pct_of_cap_used is not None and pct_of_cap_used < 50),
+        "likely_too_low": bool(pct_saturating > 30),
+    }

@@ -93,6 +93,7 @@ from .scoring import (
     add_squeeze_breakout_trade_score,
     add_trade_score,
     add_week52_trade_score,
+    audit_cap_calibration,
     signal_for_score,
 )
 from .settlement import settle_trade, settle_trade_with_trailing
@@ -136,6 +137,7 @@ __all__ = [
     "add_pead_trade_score",
     "add_momentum_trade_score",
     "add_insider_buying_trade_score",
+    "audit_cap_calibration",
     "signal_for_score",
     "allocate_capital",
     "size_by_risk",
