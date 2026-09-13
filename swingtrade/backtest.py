@@ -4321,6 +4321,115 @@ def simulate_portfolio_constrained(
     return result
 
 
+def audit_dividend_drag(trades: list[dict], dividend_history: dict) -> dict:
+    """Quantifies a real, previously entirely unexamined gap in this
+    project's backtest realism (2026-09-13, per the user's "fully
+    comprehensive of all variables" directive): every settled trade's
+    `pnl_pct` is computed purely from price movement (buy_price vs.
+    exit_price, see settlement.py) -- a real position that happened to be
+    held THROUGH a stock's ex-dividend date would, in reality, also
+    receive that dividend payment, which this backtest currently credits
+    nowhere. Slippage/commission already model costs you didn't actually
+    avoid; this is the mirror-image gap -- income you actually WOULD have
+    received but this backtest never counts, a one-directional bias that
+    always UNDERSTATES real returns for dividend-paying tickers, never
+    overstates them.
+
+    For growth/tech-heavy universes with low-or-no dividend yields (this
+    project's own primary `watchlist.txt`), the effect is expected to be
+    negligible. For higher-yield names (utilities/REITs/financials in
+    `smallmid_watchlist.txt`, and especially the international ADRs in
+    `adr_watchlist.txt` -- several yield 4-8%+), it may not be.
+
+    `trades` should be resolved trades (status != "OPEN") with `ticker`,
+    `entry_date`, `exit_date`, `buy_price`, `pnl_pct` -- every field every
+    `settle_trade()`/`settle_trade_with_trailing()` trade dict already
+    carries. `dividend_history` maps ticker -> a date-indexed pd.Series of
+    per-share $ dividend amounts (see `yfinance.Ticker(ticker).dividends`,
+    the same real data source `run_backtest.py`'s other fetch_* helpers
+    already use elsewhere in this project) -- a ticker missing from this
+    dict is treated as having no dividend history (0 missed, same
+    "missing optional data never fabricates a worse OR better outcome"
+    convention as every other optional field in this codebase). Each
+    Series' own index is normalized to a tz-naive calendar DATE internally
+    (yfinance's own `.dividends` index is tz-aware with a same-day
+    09:30:00 exchange-local timestamp, which would otherwise crash a
+    naive comparison against this project's own plain-date entry_date/
+    exit_date trade fields) -- callers don't need to pre-clean this.
+
+    For each trade, sums every dividend whose ex-date falls in
+    `(entry_date, exit_date]` (the standard convention: you must have
+    HELD the position as of the ex-date, i.e. bought before it, to
+    receive that payment -- a same-day entry ON the ex-date itself
+    already missed it) and expresses it as a % of `buy_price`, directly
+    comparable to `pnl_pct`.
+
+    PURE MEASUREMENT ONLY -- does not modify `pnl_pct` or any other trade
+    field, and is never called from settle_trade()/simulate_*_signals()
+    itself. Changing how real settled pnl_pct is computed is a much more
+    invasive, precedent-setting change than an additive audit and is
+    deliberately NOT done here without explicit user sign-off, same
+    posture the strength-cap-calibration finding (item 140) took toward
+    ma_crossover's own live config.
+
+    Returns `{"n_trades": total trades checked, "n_affected": how many
+    spanned at least one real ex-dividend date, "pct_affected": that as a
+    %, "avg_missed_pct_all_trades": mean missed-dividend-% averaged across
+    EVERY trade (0 for unaffected ones -- the honest expected-value drag),
+    "avg_missed_pct_affected_only": mean missed-dividend-% averaged only
+    across the trades actually affected (the size of the miss WHEN it
+    happens), "total_missed_dollars_per_position_budget_dollar"}` --
+    the last figure answers "for every $1 nominally invested across these
+    trades, how many cents of real dividend income does this backtest
+    never count," directly usable as a comparison against slippage/
+    commission's own documented cost-sensitivity magnitude (item 130)."""
+    dividend_history = dividend_history or {}
+    resolved = [t for t in trades if t.get("status") != "OPEN" and "entry_date" in t and "exit_date" in t]
+    n_trades = len(resolved)
+    if n_trades == 0:
+        return {
+            "n_trades": 0, "n_affected": 0, "pct_affected": None,
+            "avg_missed_pct_all_trades": None, "avg_missed_pct_affected_only": None,
+            "total_missed_dollars_per_position_budget_dollar": None,
+        }
+
+    normalized_divs_cache: dict = {}
+
+    def _normalized_divs(ticker):
+        if ticker not in normalized_divs_cache:
+            divs = dividend_history.get(ticker)
+            if divs is not None and len(divs) > 0:
+                idx = divs.index
+                idx = idx.tz_localize(None) if idx.tz is not None else idx
+                divs = divs.set_axis(idx.normalize())
+            normalized_divs_cache[ticker] = divs
+        return normalized_divs_cache[ticker]
+
+    missed_pcts = []
+    for t in resolved:
+        divs = _normalized_divs(t["ticker"])
+        missed_dollars = 0.0
+        if divs is not None and len(divs) > 0:
+            entry_date = pd.Timestamp(t["entry_date"]).normalize()
+            exit_date = pd.Timestamp(t["exit_date"]).normalize()
+            in_window = divs[(divs.index > entry_date) & (divs.index <= exit_date)]
+            missed_dollars = float(in_window.sum())
+        buy_price = t.get("buy_price")
+        missed_pcts.append(missed_dollars / buy_price * 100 if buy_price else 0.0)
+
+    n_affected = sum(1 for m in missed_pcts if m > 0)
+    return {
+        "n_trades": n_trades,
+        "n_affected": n_affected,
+        "pct_affected": round(n_affected / n_trades * 100, 2),
+        "avg_missed_pct_all_trades": round(sum(missed_pcts) / n_trades, 4),
+        "avg_missed_pct_affected_only": (
+            round(sum(missed_pcts) / n_affected, 4) if n_affected else 0.0
+        ),
+        "total_missed_dollars_per_position_budget_dollar": round(sum(missed_pcts) / n_trades / 100, 5),
+    }
+
+
 def compute_k_ratio(trades: list[dict]) -> float | None:
     """K-ratio: how CONSISTENTLY an equity curve compounds over calendar
     time, distinct from sharpe_like (mean/stdev of per-trade returns) which

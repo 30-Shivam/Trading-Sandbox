@@ -8,6 +8,7 @@ from .backtest import (
     Fold,
     FoldResult,
     _find_entry_fill as find_entry_fill,
+    audit_dividend_drag,
     compute_cluster_weights,
     compute_k_ratio,
     compute_max_drawdown,
@@ -189,6 +190,7 @@ __all__ = [
     "compute_max_drawdown",
     "monte_carlo_drawdown",
     "simulate_portfolio_constrained",
+    "audit_dividend_drag",
     "flatten_out_sample_trades",
     "run_walk_forward",
 ]
