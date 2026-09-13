@@ -675,12 +675,48 @@ def main():
               "former with ~zero real answer to the latter (see improvements.txt for the real "
               "finding that motivated this check).")
 
+    # 2026-09-13 (improvements.txt item 135) -- a REAL confidence figure on
+    # the gap itself, not just eyeballing whether REAL's sharpe_like number
+    # looks bigger than RANDOM's. See swingtrade.permutation_test_gap()'s
+    # own docstring for the full method (a standard permutation/shuffle
+    # test) and how this differs from DSR (selection bias across MANY
+    # Optuna trials, not sampling uncertainty within this ONE comparison).
+    perm_test = swingtrade.permutation_test_gap(real_trades, random_trades, summarize)
+    print("\n=== PERMUTATION TEST (how likely is this GAP by pure chance, if REAL/RANDOM were truly interchangeable?) ===")
+    if perm_test["p_value"] is None:
+        print(f"  observed_gap={perm_test['observed_gap']} -- p_value undefined (too few resolved trades "
+              "for a meaningful shuffle, or every shuffle produced an undefined sharpe_like).")
+    else:
+        print(f"  observed_gap={perm_test['observed_gap']}  p_value={perm_test['p_value']:.4f}  "
+              f"(null distribution: mean={perm_test['null_mean']}, std={perm_test['null_std']}, "
+              f"{perm_test['n_permutations']} shuffles)")
+        print("  LOW p_value = the observed gap would be unusual/rare under 'no real timing skill' -- "
+              "real evidence of a genuine edge, not just a single favorably-framed comparison.")
+
     print("\n=== BY YEAR (does the edge hold up over time, or is it concentrated in one stretch?) ===")
     real_by_year = swingtrade.summarize_by_period(real_trades, summarize)
     random_by_year = swingtrade.summarize_by_period(random_trades, summarize)
     for year in sorted(set(real_by_year) | set(random_by_year)):
         print(f"  {year}  REAL   ({real_label}): {real_by_year.get(year)}")
         print(f"  {year}  RANDOM (matched count): {random_by_year.get(year)}")
+
+    # 2026-09-13 (improvements.txt item 134) -- a DIFFERENT regime axis from
+    # BY YEAR above: EVERY simulate_*_signals() function already hard-gates
+    # on market_uptrend_from_frame() (SPY Close >= its own SMA_TREND), so a
+    # bull-vs-bear breakdown would be moot here (bear days are excluded by
+    # construction for every strategy). Volatility regime is NOT excluded
+    # by that gate -- a confirmed uptrend can still be realized-volatility
+    # elevated or subdued -- making it the informative axis within the
+    # population every strategy actually trades in. See
+    # swingtrade.compute_volatility_regime_series()'s own docstring.
+    volatility_regime = swingtrade.compute_volatility_regime_series(market_data)
+    print("\n=== BY VOLATILITY REGIME (does the edge hold in both calm and turbulent "
+          "markets, or is it concentrated in one?) ===")
+    real_by_regime = swingtrade.summarize_by_volatility_regime(real_trades, volatility_regime, summarize)
+    random_by_regime = swingtrade.summarize_by_volatility_regime(random_trades, volatility_regime, summarize)
+    for regime in ("elevated", "normal"):
+        print(f"  {regime:9s}  REAL   ({real_label}): {real_by_regime.get(regime)}")
+        print(f"  {regime:9s}  RANDOM (matched count): {random_by_regime.get(regime)}")
 
     if args.holdout_frac > 0:
         real_tune_avg, real_holdout_avg = average_holdout_summary(

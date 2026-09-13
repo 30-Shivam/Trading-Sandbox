@@ -916,11 +916,14 @@ def real_vs_random_ratio_check(
 
     seeds_to_use = seeds if seeds is not None else DEFAULT_HOLDOUT_SEEDS
     random_summaries = []
+    first_seed_random_trades = None
     for s in seeds_to_use:
         random_trades = swingtrade.run_random_backtest(
             ticker_data, market_data, start, end, real_counts, random.Random(s), config,
             earnings_data=earnings_data, sector_lookup=sector_lookup, strategy=strategy,
         )
+        if first_seed_random_trades is None:
+            first_seed_random_trades = random_trades  # kept for permutation_test_gap() below
         random_summaries.append(_summarize(random_trades))
     random_summary = average_summaries(random_summaries)
     random_sharpe = random_summary.get("sharpe_like")
@@ -941,9 +944,17 @@ def real_vs_random_ratio_check(
     # See that function's own docstring for the real finding that motivated
     # it: this question had never been asked at backtest time before.
     backtest_ic = ic_tracking.backtest_ic_check(real_trades)
+    # 2026-09-13: a REAL confidence figure on the gap itself (against the
+    # FIRST seed's own random trades -- a permutation test needs actual
+    # trade-level data, not the already-averaged summary) -- see
+    # swingtrade.permutation_test_gap()'s own docstring for the full method
+    # and how it differs from DSR (selection bias across trials, not
+    # sampling uncertainty within this one comparison).
+    perm_test = swingtrade.permutation_test_gap(real_trades, first_seed_random_trades, _summarize)
     return {
         "real": real_summary, "random": random_summary, "gap": gap,
         "_gap_min": gap_min, "_gap_max": gap_max, "backtest_ic": backtest_ic,
+        "permutation_test": perm_test,
     }
 
 
@@ -2119,6 +2130,18 @@ def main():
             print(f"  Candidate's real-vs-random GAP ({candidate_rvr['gap']:.4f}) improved on baseline's "
                   f"({baseline_rvr['gap']:.4f}) -- a real, if modest, sign the tuning found genuine timing "
                   "value, not just a reshaped payoff bracket.")
+
+    # 2026-09-13: permutation-test p_value on each gap -- see
+    # swingtrade.permutation_test_gap()'s own docstring for the full method.
+    print()
+    print("=== Permutation test (how likely is each GAP by pure chance?) ===")
+    for label, rvr in (("BASELINE", baseline_rvr), ("CANDIDATE", candidate_rvr)):
+        pt = rvr.get("permutation_test", {"p_value": None})
+        if pt["p_value"] is None:
+            print(f"  {label}: p_value undefined (too few resolved trades for a meaningful shuffle).")
+        else:
+            print(f"  {label}: observed_gap={pt['observed_gap']}  p_value={pt['p_value']:.4f} "
+                  f"({pt['n_permutations']} shuffles)")
     real_vs_random_check = {"baseline": baseline_rvr, "candidate": candidate_rvr}
 
     best_sharpe = best.values[0] if args.multi_objective else best.value

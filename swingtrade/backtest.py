@@ -57,6 +57,7 @@ combines with the existing recency weighting.
 
 import math
 import os
+import random
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -3727,6 +3728,87 @@ def summarize_by_period(trades: list[dict], summarize_fn=None) -> dict:
     return {str(year): summarize_fn(bucket) for year, bucket in sorted(buckets.items())}
 
 
+VOLATILITY_REGIME_ROLLING_WINDOW_DAYS = 365  # same rolling-not-expanding convention
+                                               # levels.SKEW_REGIME_ROLLING_WINDOW_DAYS
+                                               # already established (2026-09-03) and the
+                                               # same real lesson that motivated it: an
+                                               # EXPANDING-since-day-1 baseline stays
+                                               # anchored to a stale historical average as
+                                               # markets secularly drift, understating how
+                                               # "elevated" a recent vol spike really is
+                                               # relative to what's actually been typical
+                                               # lately. A bounded trailing window instead.
+VOLATILITY_REALIZED_WINDOW_DAYS = 20  # trading days of daily returns used for the
+                                       # realized-volatility measure itself (roughly
+                                       # one calendar month) -- short enough to react to
+                                       # a real regime shift, long enough not to be
+                                       # dominated by one or two outlier days
+
+
+def compute_volatility_regime_series(
+    market_ohlcv: pd.DataFrame,
+    realized_window_days: int = VOLATILITY_REALIZED_WINDOW_DAYS,
+    rolling_median_days: int = VOLATILITY_REGIME_ROLLING_WINDOW_DAYS,
+) -> pd.Series:
+    """Date-indexed Series of "elevated"/"normal" market-volatility-regime
+    labels, computed from the market-uptrend proxy's (SPY by convention,
+    see MARKET_INDEX_TICKER) OWN realized volatility -- purely a DIAGNOSTIC
+    breakdown axis (see summarize_by_volatility_regime() below), not a new
+    strategy gate/filter anywhere.
+
+    Motivated by a real, structural fact about this whole codebase: EVERY
+    simulate_*_signals() function hard-gates on market_uptrend_from_frame()
+    (Close >= SMA_TREND) before ever considering a signal, so a simple
+    "bull vs bear" regime breakdown would be moot here -- bear-market days
+    are already fully excluded by construction for every strategy. The
+    volatility dimension is NOT excluded by that gate (a market can be in a
+    confirmed uptrend while realized volatility is elevated or subdued),
+    making it the more informative axis for "does this edge hold up in
+    different market conditions" within the population every strategy
+    actually trades in.
+
+    `realized_window_days` (default 20, ~1 trading month) of trailing daily
+    return std defines "how volatile has the market been LATELY"; whether
+    that reads as "elevated" or "normal" on any given day is relative to
+    its OWN trailing `rolling_median_days` (default 365) median -- a
+    BOUNDED rolling window, not an expanding-since-inception one, same
+    "avoid a stale, secularly-drifted baseline" reasoning
+    SKEW_REGIME_ROLLING_WINDOW_DAYS already established (2026-09-03) for
+    the CBOE SKEW regime filter. Days before enough history exists for
+    either window read "normal" (conservative default, matches every
+    other optional-data-dependent field's "missing data never fabricates
+    a signal" convention elsewhere in this codebase)."""
+    daily_returns = market_ohlcv["Close"].pct_change()
+    realized_vol = daily_returns.rolling(realized_window_days).std()
+    rolling_baseline = realized_vol.rolling(f"{rolling_median_days}D").median()
+    elevated = realized_vol > rolling_baseline
+    return elevated.map({True: "elevated", False: "normal"}).fillna("normal")
+
+
+def summarize_by_volatility_regime(
+    trades: list[dict], regime_series: pd.Series, summarize_fn=None,
+) -> dict:
+    """Split summarize_trades()-style output by each trade's own entry_date
+    volatility regime (see compute_volatility_regime_series()) -- the
+    volatility-axis counterpart to summarize_by_period()'s calendar-year
+    split, same shape/conventions exactly (including the same
+    `summarize_fn` override pattern). A trade whose entry_date isn't found
+    in `regime_series` (shouldn't happen given the market data covers the
+    full backtest window, but this is a read path, not a gate) is treated
+    as "normal" rather than skipped or crashing."""
+    if summarize_fn is None:
+        summarize_fn = summarize_trades
+    regime_by_date = regime_series.to_dict()
+    buckets: dict[str, list[dict]] = {"elevated": [], "normal": []}
+    for t in trades:
+        entry_date = t.get("entry_date")
+        if entry_date is None:
+            continue
+        regime = regime_by_date.get(pd.Timestamp(entry_date), "normal")
+        buckets[regime].append(t)
+    return {regime: summarize_fn(bucket) for regime, bucket in buckets.items()}
+
+
 def _concurrency_at_entry(resolved: list[dict]) -> list[int]:
     """For each trade in `resolved` (same order as input), how many trades
     -- including itself -- had an OPEN `[entry_date, exit_date]` interval
@@ -3936,6 +4018,84 @@ def monte_carlo_drawdown(trades: list[dict], n_simulations: int = 1000, seed: in
         "monte_carlo_median": round(float(np.median(max_dd_pct)), 2),
         "monte_carlo_p95": round(float(np.percentile(max_dd_pct, 95)), 2),
         "monte_carlo_worst": round(float(max_dd_pct.max()), 2),
+    }
+
+
+def permutation_test_gap(
+    real_trades: list[dict], random_trades: list[dict], summarize_fn=None,
+    n_permutations: int = 1000, seed: int = 42,
+) -> dict:
+    """Quantifies a REAL confidence figure on the real-vs-random GAP itself
+    (2026-09-13, improvements.txt item 135) -- a different question from
+    every existing check: DSR (optimize.deflated_sharpe_ratio()) corrects
+    for selection bias across MANY Optuna trials; this asks, for ONE
+    already-fixed real-vs-random comparison, how likely a gap this large
+    would be to occur by pure chance if REAL and RANDOM trades were
+    actually interchangeable (the null hypothesis: no genuine timing
+    skill, real_trades and random_trades differ only by labeling).
+
+    Standard permutation test: pools real_trades + random_trades together,
+    then repeatedly reshuffles that pool into two groups of the SAME sizes
+    as the real actual real/random split, recomputing the identical gap
+    statistic (real sharpe_like minus random sharpe_like, via
+    `summarize_fn`) on each shuffle to build a null distribution -- valid
+    for a ratio statistic like sharpe_like, not just a plain mean (a
+    permutation test makes no distributional assumption about the test
+    statistic itself, unlike the closed-form DSR math). `p_value` is the
+    fraction of null-distribution gaps that meet or exceed the OBSERVED
+    gap (one-sided -- this project only ever cares whether REAL beats
+    RANDOM, never the reverse) -- a LOW p_value means the observed gap
+    would be unusual/rare if there were truly no timing skill, i.e. real
+    evidence of a genuine edge, not just favorable framing of a single
+    lucky comparison.
+
+    `summarize_fn` defaults to the plain unweighted summarize_trades() --
+    pass a cluster-weighted closure (same pattern summarize_by_period()'s
+    own `summarize_fn` override uses) to match whatever weighting the
+    caller's own headline gap already used, for a fully apples-to-apples
+    p-value.
+
+    Returns {"observed_gap":, "p_value": float in [0,1] or None if either
+    summary's own sharpe_like was undefined, "null_mean":, "null_std":,
+    "n_permutations": how many shuffles actually produced a defined gap
+    (can be fewer than requested if a shuffle's own random split happens
+    to produce an all-identical-pnl group with undefined sharpe_like)}."""
+    if summarize_fn is None:
+        summarize_fn = summarize_trades
+
+    real_summary = summarize_fn(real_trades)
+    random_summary = summarize_fn(random_trades)
+    real_sharpe = real_summary.get("sharpe_like")
+    random_sharpe = random_summary.get("sharpe_like")
+    if real_sharpe is None or random_sharpe is None:
+        return {"observed_gap": None, "p_value": None, "null_mean": None, "null_std": None, "n_permutations": 0}
+    observed_gap = real_sharpe - random_sharpe
+
+    pooled = list(real_trades) + list(random_trades)
+    n_real = len(real_trades)
+    rng = random.Random(seed)
+    null_gaps = []
+    for _ in range(n_permutations):
+        shuffled = pooled[:]
+        rng.shuffle(shuffled)
+        perm_real_summary = summarize_fn(shuffled[:n_real])
+        perm_random_summary = summarize_fn(shuffled[n_real:])
+        perm_real_sharpe = perm_real_summary.get("sharpe_like")
+        perm_random_sharpe = perm_random_summary.get("sharpe_like")
+        if perm_real_sharpe is not None and perm_random_sharpe is not None:
+            null_gaps.append(perm_real_sharpe - perm_random_sharpe)
+
+    if not null_gaps:
+        return {"observed_gap": round(observed_gap, 4), "p_value": None, "null_mean": None, "null_std": None, "n_permutations": 0}
+
+    p_value = sum(1 for g in null_gaps if g >= observed_gap) / len(null_gaps)
+    null_series = pd.Series(null_gaps)
+    return {
+        "observed_gap": round(observed_gap, 4),
+        "p_value": round(p_value, 4),
+        "null_mean": round(float(null_series.mean()), 4),
+        "null_std": round(float(null_series.std()), 4) if len(null_gaps) > 1 else None,
+        "n_permutations": len(null_gaps),
     }
 
 
