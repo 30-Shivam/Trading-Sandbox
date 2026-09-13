@@ -5,6 +5,7 @@ backtest loop replaying years of historical bars.
 """
 
 import operator
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -2097,6 +2098,199 @@ def compute_insider_buying_levels(
     frame = precompute_insider_buying_frame(df, insider_purchases, config)
     as_of = frame.index[-1]
     return insider_buying_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
+def precompute_pead_frame(
+    df: pd.DataFrame,
+    earnings_surprises: pd.DataFrame | None = None,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> pd.DataFrame:
+    """Vectorized precompute of the PEAD (post-earnings-announcement drift)
+    strategy's columns -- built on top of precompute_breakout_frame()
+    (reused wholesale for SMA_TREND/ATR/AvgVolume/etc., the same
+    macro-uptrend/liquidity gates every strategy shares). Mirrors
+    precompute_insider_buying_frame()'s own vectorized (days x events)
+    window-matrix shape exactly, adapted to PEAD's own event schema.
+
+    `earnings_surprises`, if given, should be
+    run_backtest.fetch_earnings_surprises()'s own output: a DataFrame with
+    columns ["effective_date", "surprise_pct"], one row per real reported
+    quarter -- see that function's own EXPLICIT point-in-time-integrity
+    caveat before trusting this.
+
+    For each trading day, takes the MAX surprise_pct among events whose
+    effective_date falls within the trailing config.pead_signal_window_days
+    CALENDAR days (inclusive) -- normally at most one earnings report can
+    plausibly fall in a multi-day window (quarterly cadence), so "max" is
+    simple and correct rather than an arbitrary aggregation choice; NaN
+    (no qualifying event in window) if none."""
+    df = precompute_breakout_frame(df, config)
+    df["PEAD_Surprise_Pct"] = np.nan
+
+    if earnings_surprises is None or earnings_surprises.empty:
+        return df
+
+    # earnings_surprises["effective_date"] is tz-aware UTC (see
+    # fetch_earnings_surprises()); df.index is tz-naive (every OHLCV frame
+    # in this codebase is) -- normalize to naive-UTC to match, rather than
+    # touching df.index itself. Same handling precompute_insider_buying_frame()
+    # already established.
+    event_dates_idx = pd.DatetimeIndex(earnings_surprises["effective_date"])
+    if event_dates_idx.tz is not None:
+        event_dates_idx = event_dates_idx.tz_convert("UTC").tz_localize(None)
+
+    day_index = df.index.values
+    event_dates = event_dates_idx.values
+    event_surprises = earnings_surprises["surprise_pct"].to_numpy(dtype=float)
+
+    window = np.timedelta64(config.pead_signal_window_days, "D")
+    # window: this day is within pead_signal_window_days AFTER the report
+    # -- i.e. the report is still "fresh" as of this day. A report
+    # timestamped after that same day's close naturally excludes that same
+    # calendar day (midnight < close-time timestamp), so the signal only
+    # starts counting from the NEXT trading day onward -- see
+    # fetch_earnings_surprises()'s own docstring for why this needs no
+    # separate lag parameter the way insider Form-4 filings do.
+    in_window = (
+        (day_index[:, None] >= event_dates[None, :])
+        & (day_index[:, None] <= (event_dates[None, :] + window))
+    )
+
+    masked = np.where(in_window, event_surprises[None, :], np.nan)
+    with warnings.catch_warnings():
+        # nanmax's own RuntimeWarning for an all-NaN row (no qualifying
+        # event that day -- the overwhelmingly common case day-to-day,
+        # given quarterly reporting cadence) is expected here, not a real
+        # numerical error -- np.errstate() does NOT suppress this (it only
+        # covers floating-point exceptions, not Python's warnings module).
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered", category=RuntimeWarning)
+        df["PEAD_Surprise_Pct"] = np.nanmax(masked, axis=1)
+
+    return df
+
+
+def pead_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract the PEAD strategy's dict for one row of a frame already
+    built by precompute_pead_frame() -- the O(1)-per-row counterpart a
+    walk-forward loop calls once per `as_of`. Same macro-uptrend/liquidity
+    gates every strategy shares (via precompute_breakout_frame(), reused
+    wholesale)."""
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, rsi = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"], last_row["RSI"],
+    )
+    surprise_pct = last_row["PEAD_Surprise_Pct"]
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+
+    last_close, sma_trend, atr, avg_volume = float(last_close), float(sma_trend), float(atr), float(avg_volume)
+    # Informational only, not used for gating (this strategy's trigger is
+    # an earnings surprise, not RSI) -- same treatment squeeze_breakout/
+    # breakout/ma_crossover/pairs/insider_buying already give it.
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    surprise_pct = float(surprise_pct) if not pd.isna(surprise_pct) else None
+    pead_signal = bool(surprise_pct is not None and surprise_pct >= config.pead_surprise_pct_min)
+    # How far past the minimum the surprise was, in PERCENTAGE-POINT units
+    # (NOT a % of the minimum) -- same "distance past the trigger"
+    # differentiating-term role Signal_Strength_Pct plays for every other
+    # strategy, see add_pead_trade_score().
+    signal_strength_pct = (
+        round(surprise_pct - config.pead_surprise_pct_min, 2) if pead_signal else 0.0
+    )
+
+    # Buy_Price = today's own Close -- same "already happening, buy near
+    # market" convention squeeze_breakout/pairs/insider_buying use, not a
+    # discount-limit like RSI's structural-support wait. Distance_to_Buy_Pct
+    # is therefore always 0 by construction, same schema-compatible
+    # treatment those strategies already established. config.pead_entry_fill
+    # (default "next_open", NOT "limit" -- see its own config.py comment)
+    # is what actually determines the real fill price/day downstream.
+    buy_price = round(last_close, 2)
+    distance_to_buy_pct = 0.0
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "PEAD_Surprise_Pct": round(surprise_pct, 2) if surprise_pct is not None else None,
+        "PEAD_Signal": pead_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": distance_to_buy_pct,
+        "Signal_Strength_Pct": signal_strength_pct,
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_pead_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+    earnings_surprises: pd.DataFrame | None = None,
+) -> dict:
+    """Compute PEAD levels for one ticker's OHLCV history -- see
+    precompute_pead_frame()'s own docstring for the full mechanism (AND its
+    own linked EXPLICIT data-integrity caveat). Thin wrapper over
+    precompute_pead_frame()/pead_levels_from_frame() -- kept as a
+    single-call convenience for the live dashboard, matching every other
+    strategy's same rationale (see compute_squeeze_breakout_levels()).
+
+    `earnings_surprises` should be run_backtest.fetch_earnings_surprises()'s
+    own output for this ticker. Without it, PEAD_Signal always reads False
+    (no surprise data)."""
+    frame = precompute_pead_frame(df, earnings_surprises, config)
+    as_of = frame.index[-1]
+    return pead_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
 # LLM-invented strategy research (2026-08-22, improvements.txt item 93) --

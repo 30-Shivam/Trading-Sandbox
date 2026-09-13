@@ -162,7 +162,9 @@ import ic_tracking
 import market_data as market_data_module
 import storage
 import swingtrade
-from run_backtest import LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history
+from run_backtest import (
+    LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, RESEARCH_HOLDOUT_CUTOFF, fetch_earnings_dates, fetch_history,
+)
 from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -702,6 +704,50 @@ def split_tickers_holdout(
 DEFAULT_HOLDOUT_SEEDS = [42, 1, 5, 7, 13, 99, 123, 2024, 2025, 777]
 
 
+def average_summaries(per_seed_summaries: list[dict]) -> dict:
+    """Averages a list of already-computed summarize_trades_weighted()-shaped
+    dicts (one per seed) into one -- extracted out of
+    average_holdout_summary()'s own original inline `_average_bucket()`
+    (2026-09-13, improvements.txt item 132) so real_vs_random_ratio_check()'s
+    own multi-seed RANDOM baseline can reuse the identical averaging/spread-
+    reporting logic instead of a second, divergence-prone copy.
+
+    A key is "numeric" if every value seen for it, across every seed, is
+    either None or a real number -- so a field that's legitimately None in
+    EVERY seed (e.g. sharpe_like on an empty holdout) still gets included
+    and averages to None, while a genuinely non-numeric field (a label
+    string, say) is excluded entirely even if it's None in some seeds.
+
+    Returns every numeric field averaged across seeds (None values
+    skipped, not treated as 0), PLUS `_sharpe_like_min`/`_sharpe_like_max`/
+    `_k_ratio_min`/`_k_ratio_max`/`_seeds_used` so the spread itself stays
+    visible -- hiding the instability behind one averaged number would
+    repeat the exact mistake averaging was built to fix at one more level
+    of abstraction (see average_holdout_summary()'s own docstring for the
+    real k_ratio incident that motivated keeping the spread visible)."""
+    candidate_keys, excluded_keys = set(), set()
+    for s in per_seed_summaries:
+        for k, v in s.items():
+            if v is None or (isinstance(v, (int, float)) and not isinstance(v, bool)):
+                candidate_keys.add(k)
+            else:
+                excluded_keys.add(k)
+    numeric_keys = candidate_keys - excluded_keys
+
+    averaged = {}
+    for key in numeric_keys:
+        values = [s[key] for s in per_seed_summaries if s.get(key) is not None]
+        averaged[key] = round(sum(values) / len(values), 4) if values else None
+    sharpe_values = [s["sharpe_like"] for s in per_seed_summaries if s.get("sharpe_like") is not None]
+    averaged["_sharpe_like_min"] = round(min(sharpe_values), 4) if sharpe_values else None
+    averaged["_sharpe_like_max"] = round(max(sharpe_values), 4) if sharpe_values else None
+    k_ratio_values = [s["k_ratio"] for s in per_seed_summaries if s.get("k_ratio") is not None]
+    averaged["_k_ratio_min"] = round(min(k_ratio_values), 4) if k_ratio_values else None
+    averaged["_k_ratio_max"] = round(max(k_ratio_values), 4) if k_ratio_values else None
+    averaged["_seeds_used"] = len(per_seed_summaries)
+    return averaged
+
+
 def average_holdout_summary(
     trades: list[dict], sector_lookup: dict, holdout_frac: float, seeds: list[int], summarize_fn,
 ) -> tuple[dict, dict]:
@@ -734,37 +780,9 @@ def average_holdout_summary(
     checked seed (42) alone came back strongly POSITIVE (+55.8) -- the
     averaged k_ratio alone couldn't distinguish "consistently negative
     across seeds" from "wildly seed-dependent, averaging out negative by
-    coincidence" until this min/max was added (improvements.txt item 80)."""
-
-    def _average_bucket(per_seed_summaries: list[dict]) -> dict:
-        # A key is "numeric" if every value seen for it, across every seed,
-        # is either None or a real number -- so a field that's legitimately
-        # None in EVERY seed (e.g. sharpe_like on an empty holdout) still
-        # gets included and averages to None, while a genuinely non-numeric
-        # field (a label string, say) is excluded entirely even if it's
-        # None in some seeds.
-        candidate_keys, excluded_keys = set(), set()
-        for s in per_seed_summaries:
-            for k, v in s.items():
-                if v is None or (isinstance(v, (int, float)) and not isinstance(v, bool)):
-                    candidate_keys.add(k)
-                else:
-                    excluded_keys.add(k)
-        numeric_keys = candidate_keys - excluded_keys
-
-        averaged = {}
-        for key in numeric_keys:
-            values = [s[key] for s in per_seed_summaries if s.get(key) is not None]
-            averaged[key] = round(sum(values) / len(values), 4) if values else None
-        sharpe_values = [s["sharpe_like"] for s in per_seed_summaries if s.get("sharpe_like") is not None]
-        averaged["_sharpe_like_min"] = round(min(sharpe_values), 4) if sharpe_values else None
-        averaged["_sharpe_like_max"] = round(max(sharpe_values), 4) if sharpe_values else None
-        k_ratio_values = [s["k_ratio"] for s in per_seed_summaries if s.get("k_ratio") is not None]
-        averaged["_k_ratio_min"] = round(min(k_ratio_values), 4) if k_ratio_values else None
-        averaged["_k_ratio_max"] = round(max(k_ratio_values), 4) if k_ratio_values else None
-        averaged["_seeds_used"] = len(per_seed_summaries)
-        return averaged
-
+    coincidence" until this min/max was added (improvements.txt item 80).
+    Averaging itself is now shared via average_summaries() (see that
+    function's own docstring), not a local copy."""
     tune_summaries = []
     holdout_summaries = []
     for seed in seeds:
@@ -777,7 +795,7 @@ def average_holdout_summary(
         tune_summaries.append(summarize_fn(tune_trades))
         holdout_summaries.append(summarize_fn(holdout_trades))
 
-    return _average_bucket(tune_summaries), _average_bucket(holdout_summaries)
+    return average_summaries(tune_summaries), average_summaries(holdout_summaries)
 
 
 def fold_weight(fold: swingtrade.Fold, end: pd.Timestamp, half_life_days: float) -> float:
@@ -825,7 +843,7 @@ def real_vs_random_ratio_check(
     earnings_data: dict | None = None, sector_data: dict | None = None,
     pair_price_panels: dict | None = None, momentum_panel: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None, skew_regime: pd.Series | None = None,
-    seed: int = 1,
+    seed: int = 1, seeds: list[int] | None = None,
 ) -> dict:
     """Single-window (not fold-based) REAL-vs-RANDOM comparison for one
     config -- the same methodology benchmark_random_entry.py uses on its
@@ -854,8 +872,26 @@ def real_vs_random_ratio_check(
     own methodology exactly, deliberately NOT fold-based, since this
     compares two already-fixed configs rather than tuning anything itself.
 
-    Returns {"real": <cluster-weighted summary>, "random": <same>, "gap":
-    real sharpe_like - random sharpe_like, or None if either is None}."""
+    Returns {"real": <cluster-weighted summary>, "random": <multi-seed-
+    averaged summary, see below>, "gap": real sharpe_like - averaged random
+    sharpe_like (or None if either is None), "_gap_min"/"_gap_max": the gap
+    computed against each individual seed's own random draw, "backtest_ic":
+    see below}.
+
+    `seeds` (2026-09-13, improvements.txt item 132): the RANDOM baseline
+    used to be a SINGLE fixed draw (`seed`, default 1) -- the exact same
+    sampling-noise problem point 14 of [[feedback_strategy_validation_pipeline]]
+    already found and fixed for ticker-holdout splits, never applied here.
+    A single unlucky/lucky random-entry draw could flip whether a real
+    edge looks like it beats random at all. Defaults to
+    DEFAULT_HOLDOUT_SEEDS (10 seeds, same list ticker-holdout averaging
+    already uses) -- REAL is deterministic (simulated once), only RANDOM is
+    re-drawn and averaged per seed via average_summaries(), which also
+    keeps the min/max spread visible rather than hiding seed-to-seed
+    instability behind one averaged number, same discipline as
+    average_holdout_summary(). Pass `seeds=[seed]` (a single-element list)
+    to reproduce the old one-draw behavior exactly, e.g. for a fast smoke
+    test where the extra draws' cost isn't worth it."""
     momentum_rank_frame = (
         swingtrade.compute_momentum_rank_frame(momentum_panel, config.momentum_lookback_days)
         if momentum_panel is not None else None
@@ -870,21 +906,33 @@ def real_vs_random_ratio_check(
     for t in real_trades:
         real_counts[t["ticker"]] = real_counts.get(t["ticker"], 0) + 1
 
-    random_trades = swingtrade.run_random_backtest(
-        ticker_data, market_data, start, end, real_counts, random.Random(seed), config,
-        earnings_data=earnings_data, sector_lookup=sector_lookup, strategy=strategy,
-    )
-
     def _summarize(trades):
         resolved = [t for t in trades if t["status"] != "OPEN"]
         weights = swingtrade.compute_cluster_weights(resolved)
         return swingtrade.summarize_trades_weighted(resolved, weights)
 
     real_summary = _summarize(real_trades)
-    random_summary = _summarize(random_trades)
     real_sharpe = real_summary.get("sharpe_like")
+
+    seeds_to_use = seeds if seeds is not None else DEFAULT_HOLDOUT_SEEDS
+    random_summaries = []
+    for s in seeds_to_use:
+        random_trades = swingtrade.run_random_backtest(
+            ticker_data, market_data, start, end, real_counts, random.Random(s), config,
+            earnings_data=earnings_data, sector_lookup=sector_lookup, strategy=strategy,
+        )
+        random_summaries.append(_summarize(random_trades))
+    random_summary = average_summaries(random_summaries)
     random_sharpe = random_summary.get("sharpe_like")
+
     gap = (real_sharpe - random_sharpe) if real_sharpe is not None and random_sharpe is not None else None
+    gap_values = [
+        real_sharpe - s["sharpe_like"] for s in random_summaries
+        if real_sharpe is not None and s.get("sharpe_like") is not None
+    ]
+    gap_min = round(min(gap_values), 4) if gap_values else None
+    gap_max = round(max(gap_values), 4) if gap_values else None
+
     # 2026-09-15: reuses the REAL trades already simulated above (no extra
     # backtest pass) to also report ic_tracking.backtest_ic_check() -- a
     # DIFFERENT question from the sharpe_like gap this function already
@@ -893,7 +941,10 @@ def real_vs_random_ratio_check(
     # See that function's own docstring for the real finding that motivated
     # it: this question had never been asked at backtest time before.
     backtest_ic = ic_tracking.backtest_ic_check(real_trades)
-    return {"real": real_summary, "random": random_summary, "gap": gap, "backtest_ic": backtest_ic}
+    return {
+        "real": real_summary, "random": random_summary, "gap": gap,
+        "_gap_min": gap_min, "_gap_max": gap_max, "backtest_ic": backtest_ic,
+    }
 
 
 def rrr_scoring_ceiling_check(strategy: str, config: swingtrade.TradingConfig) -> dict:
@@ -1449,6 +1500,15 @@ def main():
     parser.add_argument("--trials", type=int, default=50)
     parser.add_argument("--start", default=None, help="Backtest window start (YYYY-MM-DD). Default: 1y before --end.")
     parser.add_argument("--end", default=None, help="Backtest window end (YYYY-MM-DD). Default: today.")
+    parser.add_argument(
+        "--use-research-cutoff", action="store_true",
+        help="Use run_backtest.RESEARCH_HOLDOUT_CUTOFF instead of today as --end's default "
+             "(ignored if --end is also given explicitly) -- see that constant's own docstring: "
+             "reserves every day after the cutoff as genuine, never-yet-tuned-against future "
+             "data, meant to be checked ONCE, right before a final live-promotion decision. Use "
+             "this for any NEW strategy tuning/search -- the plain today-default remains fine "
+             "for live-status checks, which this flag isn't for.",
+    )
     parser.add_argument("--in-sample-days", type=int, default=182)
     parser.add_argument("--out-sample-days", type=int, default=30)
     parser.add_argument("--step-days", type=int, default=30)
@@ -1545,7 +1605,14 @@ def main():
         print(f"[ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
 
-    end = pd.Timestamp(args.end) if args.end else pd.Timestamp.now().normalize()
+    if args.end:
+        end = pd.Timestamp(args.end)
+    elif args.use_research_cutoff:
+        end = RESEARCH_HOLDOUT_CUTOFF
+        print(f"Using research holdout cutoff as --end: {end.date()} "
+              "(see run_backtest.RESEARCH_HOLDOUT_CUTOFF's own docstring).")
+    else:
+        end = pd.Timestamp.now().normalize()
     start = pd.Timestamp(args.start) if args.start else end - pd.Timedelta(days=365)
 
     if args.tickers:
@@ -2020,9 +2087,13 @@ def main():
         momentum_panel=momentum_panel, yield_curve=yield_curve, skew_regime=skew_regime,
     )
     print(f"  BASELINE  ({args.strategy}, DEFAULT_CONFIG): REAL sharpe_like={baseline_rvr['real'].get('sharpe_like')} "
-          f"vs RANDOM sharpe_like={baseline_rvr['random'].get('sharpe_like')}  (gap={baseline_rvr['gap']})")
+          f"vs RANDOM sharpe_like={baseline_rvr['random'].get('sharpe_like')} (avg of "
+          f"{baseline_rvr['random'].get('_seeds_used')} seeds)  (gap={baseline_rvr['gap']}, "
+          f"seed spread {baseline_rvr['_gap_min']}..{baseline_rvr['_gap_max']})")
     print(f"  CANDIDATE ({args.strategy}, winning trial):  REAL sharpe_like={candidate_rvr['real'].get('sharpe_like')} "
-          f"vs RANDOM sharpe_like={candidate_rvr['random'].get('sharpe_like')}  (gap={candidate_rvr['gap']})")
+          f"vs RANDOM sharpe_like={candidate_rvr['random'].get('sharpe_like')} (avg of "
+          f"{candidate_rvr['random'].get('_seeds_used')} seeds)  (gap={candidate_rvr['gap']}, "
+          f"seed spread {candidate_rvr['_gap_min']}..{candidate_rvr['_gap_max']})")
 
     # 2026-09-15: backtest-time IC (does Trade_Score itself rank REAL trades'
     # outcomes, not just beat random on aggregate returns) -- a DIFFERENT

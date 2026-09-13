@@ -146,13 +146,16 @@ import pandas as pd
 import ic_tracking
 import storage
 import swingtrade
-from optimize import DEFAULT_HOLDOUT_SEEDS, average_holdout_summary
+from optimize import DEFAULT_HOLDOUT_SEEDS, average_holdout_summary, average_summaries
 from run_backtest import (
-    LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, fetch_earnings_dates, fetch_history, fetch_insider_purchases,
+    LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, RESEARCH_HOLDOUT_CUTOFF, fetch_earnings_dates,
+    fetch_earnings_surprises, fetch_history, fetch_insider_purchases,
 )
 from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
-EARNINGS_AWARE_STRATEGIES = ("squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank")  # the only
+EARNINGS_AWARE_STRATEGIES = (
+    "squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank", "pead",
+)  # the only
                                                                    # simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
                                                                    # accept earnings_dates -- see
@@ -177,10 +180,23 @@ MOMENTUM_AWARE_STRATEGIES = ("momentum_rank",)  # the only REAL simulate_*_signa
                                                                    # whether TIMING adds value"
                                                                    # precedent as PAIR_AWARE_STRATEGIES
                                                                    # above) that accepts rank_column
+PEAD_AWARE_STRATEGIES = ("pead",)  # the only REAL simulate_*_signals() (not the random
+                                                                   # baseline -- same reasoning as
+                                                                   # INSIDER_AWARE_STRATEGIES above) that
+                                                                   # accepts earnings_surprises
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 REQUEST_DELAY_SEC = 0.5
+RANDOM_BASELINE_SEEDS = [1, 42, 7, 99, 2024]  # deliberately fewer than DEFAULT_HOLDOUT_SEEDS'
+                                               # 10 -- each extra seed here re-runs a full
+                                               # random-entry simulation pass across every
+                                               # ticker (real compute cost), unlike ticker-
+                                               # holdout re-partitioning (free, just relabels
+                                               # already-computed trades) -- 5 seeds already
+                                               # captures most of the variance-reduction
+                                               # benefit for the ALL-TICKERS headline number
+                                               # this backs (see --random-baseline-seeds)
 
 
 def load_config_to_test(version: int | None = None) -> tuple[swingtrade.TradingConfig, str]:
@@ -223,7 +239,7 @@ def main():
         choices=[
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
             "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover", "pairs",
-            "insider_buying", "momentum_rank",
+            "insider_buying", "momentum_rank", "pead",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -267,8 +283,29 @@ def main():
     )
     parser.add_argument("--start", default=None, help="Backtest window start (YYYY-MM-DD). Default: 5y before --end.")
     parser.add_argument("--end", default=None, help="Backtest window end (YYYY-MM-DD). Default: today.")
+    parser.add_argument(
+        "--use-research-cutoff", action="store_true",
+        help="Use run_backtest.RESEARCH_HOLDOUT_CUTOFF instead of today as --end's default "
+             "(ignored if --end is also given explicitly) -- see that constant's own docstring: "
+             "reserves every day after the cutoff as genuine, never-yet-tuned-against future "
+             "data, meant to be checked ONCE, right before a final live-promotion decision. Use "
+             "this for any NEW strategy validation run -- the plain today-default remains fine "
+             "for live-status checks, which this flag isn't for.",
+    )
     parser.add_argument("--tickers", default=None, help="Comma-separated tickers to override watchlist.txt.")
     parser.add_argument("--seed", type=int, default=1, help="Seed for the random-entry day selection.")
+    parser.add_argument(
+        "--random-baseline-seeds", default=None,
+        help="Comma-separated seeds to average the RANDOM baseline's OWN ALL-TICKERS summary over, "
+             "instead of trusting a single draw (2026-09-13, improvements.txt item 132) -- the same "
+             "sampling-noise problem --holdout-seeds already fixed for ticker-holdout splits, never "
+             "applied to the random-entry draw itself until now. Real trades are unaffected (they're "
+             "deterministic). Default: 5 seeds. Pass a single seed (e.g. '1') to reproduce the old "
+             "one-draw ALL-TICKERS behavior exactly, e.g. for a fast smoke test. NOTE: only the "
+             "ALL-TICKERS section below is multi-seed-averaged this way -- BY YEAR/TUNE/HOLDOUT/"
+             "MONTE CARLO still use the single --seed draw (a known, not-yet-extended gap, see "
+             "[[feedback_strategy_validation_pipeline]] point 21b).",
+    )
     parser.add_argument("--holdout-frac", type=float, default=0.25, help="Same ticker-holdout split as optimize.py. 0 disables.")
     parser.add_argument(
         "--holdout-seeds", default=None,
@@ -297,8 +334,19 @@ def main():
         [int(s.strip()) for s in args.holdout_seeds.split(",") if s.strip()]
         if args.holdout_seeds else list(DEFAULT_HOLDOUT_SEEDS)
     )
+    random_baseline_seeds = (
+        [int(s.strip()) for s in args.random_baseline_seeds.split(",") if s.strip()]
+        if args.random_baseline_seeds else list(RANDOM_BASELINE_SEEDS)
+    )
 
-    end = pd.Timestamp(args.end) if args.end else pd.Timestamp.now().normalize()
+    if args.end:
+        end = pd.Timestamp(args.end)
+    elif args.use_research_cutoff:
+        end = RESEARCH_HOLDOUT_CUTOFF
+        print(f"Using research holdout cutoff as --end: {end.date()} "
+              "(see run_backtest.RESEARCH_HOLDOUT_CUTOFF's own docstring).")
+    else:
+        end = pd.Timestamp.now().normalize()
     start = pd.Timestamp(args.start) if args.start else end - pd.Timedelta(days=365 * 5)
 
     if args.tickers:
@@ -441,6 +489,19 @@ def main():
         total_events = sum(len(d) for d in insider_data.values())
         print(f"Got {total_events} real purchase event(s) across {found}/{len(ticker_data)} ticker(s).")
 
+    earnings_surprise_data: dict[str, pd.DataFrame] = {}
+    if args.strategy in PEAD_AWARE_STRATEGIES:
+        print(f"\nFetching earnings-surprise history for {len(ticker_data)} ticker(s)... "
+              "(see run_backtest.fetch_earnings_surprises()'s own EXPLICIT point-in-time-integrity "
+              "caveat -- read it before trusting any result below)")
+        for i, ticker in enumerate(ticker_data):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_SEC)
+            earnings_surprise_data[ticker] = fetch_earnings_surprises(ticker)
+        found = sum(1 for d in earnings_surprise_data.values() if len(d) > 0)
+        total_events = sum(len(d) for d in earnings_surprise_data.values())
+        print(f"Got {total_events} real reported quarter(s) across {found}/{len(ticker_data)} ticker(s).")
+
     sector_price_panels: dict[str, pd.DataFrame] = {}
     if args.strategy in PAIR_AWARE_STRATEGIES:
         # No new network fetch -- every ticker's OHLCV is already in
@@ -509,6 +570,9 @@ def main():
     elif args.strategy == "momentum_rank":
         real_fn, random_fn = swingtrade.simulate_momentum_signals, swingtrade.simulate_random_momentum_entries
         real_label = "Momentum_Rank-timed"
+    elif args.strategy == "pead":
+        real_fn, random_fn = swingtrade.simulate_pead_signals, swingtrade.simulate_random_pead_entries
+        real_label = "PEAD-timed"
     else:
         real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
         real_label = "MA_Crossover-timed"
@@ -535,6 +599,9 @@ def main():
     insider_kwargs = lambda ticker: (  # noqa: E731 -- see INSIDER_AWARE_STRATEGIES
         {"insider_purchases": insider_data.get(ticker)} if args.strategy in INSIDER_AWARE_STRATEGIES else {}
     )
+    pead_kwargs = lambda ticker: (  # noqa: E731 -- see PEAD_AWARE_STRATEGIES
+        {"earnings_surprises": earnings_surprise_data.get(ticker)} if args.strategy in PEAD_AWARE_STRATEGIES else {}
+    )
     def momentum_kwargs(ticker):
         if args.strategy not in MOMENTUM_AWARE_STRATEGIES:
             return {}
@@ -546,7 +613,7 @@ def main():
         real = real_fn(
             ticker, ohlcv, market_data, start, end, config,
             **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker), **peer_kwargs(ticker),
-            **insider_kwargs(ticker), **momentum_kwargs(ticker),
+            **insider_kwargs(ticker), **momentum_kwargs(ticker), **pead_kwargs(ticker),
         )
         real_trades.extend(real)
         real_counts[ticker] = len(real)
@@ -562,9 +629,37 @@ def main():
           f"(entry-fill realized: {len(real_trades)}). "
           f"Random baseline (matched count per ticker): {len(random_trades)} entries filled.")
 
+    # Multi-seed-averaged RANDOM baseline for the ALL-TICKERS headline number
+    # specifically (2026-09-13, improvements.txt item 132) -- a single random
+    # draw (the `random_trades` above, from --seed alone) carries the same
+    # sampling-noise risk --holdout-seeds already fixed for ticker-holdout
+    # splits, just never applied to the random-ENTRY draw itself. Reuses
+    # `random_trades`'s own seed (args.seed) as one of the seeds averaged
+    # over, if it's already in random_baseline_seeds, rather than wastefully
+    # re-simulating it. BY YEAR/TUNE/HOLDOUT/MONTE CARLO below still use the
+    # single `random_trades` draw -- a known, not-yet-extended gap (see
+    # --random-baseline-seeds' own help text).
+    random_all_summaries = []
+    for s in random_baseline_seeds:
+        if s == args.seed:
+            random_all_summaries.append(summarize(random_trades))
+            continue
+        seed_rng = random.Random(s)
+        seed_random_trades = []
+        for ticker, ohlcv in ticker_data.items():
+            sector = sector_lookup.get(ticker, "Unknown")
+            rand = random_fn(
+                ticker, ohlcv, market_data, start, end, real_counts.get(ticker, 0), seed_rng, config,
+                **earnings_kwargs(ticker), sector=sector,
+            )
+            seed_random_trades.extend(rand)
+        random_all_summaries.append(summarize(seed_random_trades))
+    random_all_avg = average_summaries(random_all_summaries)
+
     print("\n=== ALL TICKERS ===")
     print(f"  REAL   ({real_label}): {summarize(real_trades)}")
-    print(f"  RANDOM (matched count): {summarize(random_trades)}")
+    print(f"  RANDOM (matched count, avg of {len(random_baseline_seeds)} seeds {random_baseline_seeds}): "
+          f"{random_all_avg}")
 
     backtest_ic = ic_tracking.backtest_ic_check(real_trades)
     print(f"\n=== BACKTEST-TIME IC (does Trade_Score itself rank REAL trades' outcomes, "

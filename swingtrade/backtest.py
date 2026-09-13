@@ -72,6 +72,7 @@ from .levels import (
     breakout_retest_levels_from_frame,
     insider_buying_levels_from_frame,
     levels_from_rsi_frame,
+    pead_levels_from_frame,
     llm_strategy_levels_from_frame,
     ma_crossover_levels_from_frame,
     market_uptrend_from_frame,
@@ -86,6 +87,7 @@ from .levels import (
     precompute_momentum_burst_frame,
     precompute_momentum_frame,
     precompute_pairs_frame,
+    precompute_pead_frame,
     precompute_pullback_frame,
     precompute_rsi_frame,
     precompute_squeeze_breakout_frame,
@@ -100,6 +102,7 @@ from .scoring import (
     add_ma_crossover_trade_score,
     add_momentum_trade_score,
     add_pairs_trade_score,
+    add_pead_trade_score,
     add_squeeze_breakout_trade_score,
     add_trade_score,
 )
@@ -2319,6 +2322,223 @@ def simulate_random_insider_buying_entries(
     return trades
 
 
+def simulate_pead_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+    earnings_surprises: pd.DataFrame | None = None,
+) -> list[dict]:
+    """PEAD (post-earnings-announcement drift) counterpart to
+    simulate_signals()/simulate_squeeze_breakout_signals()/
+    simulate_insider_buying_signals()/etc. -- buys a ticker within
+    pead_signal_window_days of a real, confirmed earnings SURPRISE
+    (Reported EPS clearing Estimate by pead_surprise_pct_min or more), in a
+    confirmed macro uptrend. See swingtrade/config.py's pead_* fields and
+    swingtrade/levels.precompute_pead_frame() for the full mechanism, and
+    run_backtest.fetch_earnings_surprises() for the data source and its OWN
+    EXPLICIT point-in-time-integrity caveat -- read that before trusting
+    any backtested result from this function.
+
+    A genuinely different signal FAMILY from every other strategy in this
+    codebase: an accounting/fundamental EVENT (does reality beat what
+    analysts expected), not a price pattern -- built specifically after a
+    real finding (ic_tracking.backtest_ic_check()) that every price-pattern
+    strategy tried so far shows ~zero real backtest-time ranking skill.
+
+    Same no-look-ahead discipline, same entry-timing realism.
+    config.pead_entry_fill selects the fill model -- defaults to
+    "next_open" (NOT "limit", unlike every sibling strategy's own default;
+    see that field's own config.py comment for why a resting limit order
+    is a poor fit for a "chase the continuation" premise).
+
+    `earnings_surprises` should be run_backtest.fetch_earnings_surprises()'s
+    own output for this ticker. Without it, PEAD_Signal is always False (no
+    surprise data, degrades to "never fires," same convention as every
+    other optional-data-dependent strategy)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_pead_frame(ohlcv, earnings_surprises, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = pead_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        if not levels["PEAD_Signal"]:
+            continue
+
+        # Computed here purely so backtest trades carry a real trade_score
+        # from day one (see ic_tracking.backtest_ic_check() -- the real
+        # gap found this session that motivated building this check BEFORE
+        # a new strategy shipped without one, not after). Never used as a
+        # gate itself -- this strategy's own entry condition is PEAD_Signal
+        # plus the shared macro/liquidity gates above, not a Trade_Score
+        # threshold.
+        scored = add_pead_trade_score(pd.DataFrame([levels]), config).iloc[0]
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.pead_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "PEAD",
+            "trade_score": float(scored["Trade_Score"]),
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_pead_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_pead_signals() -- same idea as
+    the other simulate_random_*_entries() functions, using this strategy's
+    own gates (macro uptrend, liquidity via pead_levels_from_frame) and the
+    SAME config.pead_entry_fill-selected fill mechanic, so it isolates
+    whether earnings-surprise TIMING adds value over a random day using the
+    identical Buy_Price formula (that day's own Close) and entry/exit
+    structure. `n_trades` should be simulate_pead_signals()'s real signal
+    count for this ticker/window, so trade volume is matched. This is the
+    critical validation gate for this strategy -- see
+    benchmark_random_entry.py.
+
+    Deliberately does NOT take `earnings_surprises` -- called with
+    earnings_surprises=None, so PEAD_Signal is always False, but the
+    candidate pool is every day that passed the shared macro/liquidity
+    gates regardless (same "answers whether TIMING adds value, not whether
+    this filter helps" precedent every other random baseline follows -- see
+    simulate_random_insider_buying_entries()'s identical reasoning)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_pead_frame(ohlcv, None, config)
+
+    candidates = []  # (as_of, buy_price, atr, catalyst_warning) for every day that passed the macro/liquidity gates, PEAD signal or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = pead_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr, catalyst_warning in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.pead_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_PEAD",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": catalyst_warning,
+            **result,
+        })
+
+    return trades
+
+
 def simulate_llm_strategy_signals(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -2989,6 +3209,7 @@ def run_backtest(
     momentum_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
     skew_regime: pd.Series | None = None,
+    earnings_surprise_data: dict[str, pd.DataFrame] | None = None,
 ) -> list[dict]:
     """Simulate signals for every ticker in ticker_data over
     [window_start, window_end), settling each against its own subsequent
@@ -3082,12 +3303,24 @@ def run_backtest(
     treatment as `yield_curve` above. `None` (default) means no SKEW data
     at all -- Skew_Regime_Diff then reads None/NaN and the gate never
     excludes on its own, same convention as every other optional filter
-    here."""
+    here.
+
+    `earnings_surprise_data` (optional, ticker ->
+    run_backtest.fetch_earnings_surprises()'s own per-ticker output) backs
+    the "pead" strategy -- resolved per ticker directly, same shape/
+    resolution convention as `insider_data`. `None` (default) means no
+    surprise data at all -- PEAD_Signal then always reads False, same
+    convention as insider_data/pair_price_panels/sector_data. NOTE: same
+    limitation as insider_data -- not yet threaded through
+    run_walk_forward()'s multiprocessing path, only this single-call
+    sequential path, since no Optuna tuning pass for this strategy exists
+    yet either."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     sector_data = sector_data or {}
     pair_price_panels = pair_price_panels or {}
     insider_data = insider_data or {}
+    earnings_surprise_data = earnings_surprise_data or {}
     all_trades = []
     for ticker, ohlcv in ticker_data.items():
         sector = sector_lookup.get(ticker, "Unknown")
@@ -3097,6 +3330,7 @@ def run_backtest(
             pair_panel.drop(columns=[ticker]) if pair_panel is not None and ticker in pair_panel.columns else None
         )
         insider_purchases = insider_data.get(ticker)
+        earnings_surprises = earnings_surprise_data.get(ticker)
         rank_column = (
             momentum_rank_frame[ticker]
             if momentum_rank_frame is not None and ticker in momentum_rank_frame.columns
@@ -3158,12 +3392,17 @@ def run_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector, rank_column=rank_column,
             )
+        elif strategy == "pead":
+            trades = simulate_pead_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector, earnings_surprises=earnings_surprises,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
                 "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
-                "'insider_buying', or 'momentum_rank')"
+                "'insider_buying', 'momentum_rank', or 'pead')"
             )
         all_trades.extend(trades)
     return all_trades
@@ -3274,12 +3513,17 @@ def run_random_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector,
             )
+        elif strategy == "pead":
+            trades = simulate_random_pead_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
                 "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
-                "'insider_buying', or 'momentum_rank')"
+                "'insider_buying', 'momentum_rank', or 'pead')"
             )
         all_trades.extend(trades)
     return all_trades

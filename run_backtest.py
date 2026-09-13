@@ -56,6 +56,44 @@ LOOKBACK_BUFFER_DAYS = 420  # calendar-day buffer before window start -- sized f
 REQUEST_DELAY_SEC = 0.5
 EARNINGS_HISTORY_LIMIT = 40  # ~10 years of quarterly reports
 
+# Research holdout cutoff (2026-09-13, improvements.txt item 132) -- per
+# explicit user request to make this project's backtesting "iron proof."
+# Every strategy tuning/selection/comparison run this project has EVER done
+# (including everything this whole session) has used `end=today` by
+# default -- meaning there is no longer any stretch of calendar time that
+# hasn't already been looked at, directly or indirectly, while deciding
+# which strategies to trust. This constant draws a line, starting NOW: any
+# NEW strategy-selection work (a fresh Optuna search, a real-vs-random
+# validation run, a "does this candidate beat the live config" comparison)
+# should pass `--use-research-cutoff` (optimize.py/benchmark_random_entry.py)
+# so it only ever sees data up to this date -- reserving everything AFTER
+# it as genuine, never-yet-tuned-against future data.
+#
+# The whole point only holds if this discipline is actually followed:
+# checking data after this cutoff should happen EXACTLY ONCE, immediately
+# before a final live-promotion decision for whatever candidate survives
+# every other step -- not repeatedly "peeked at" as new real dates accrue,
+# which would silently recreate the exact whole-program data-snooping
+# problem this constant exists to prevent (see
+# [[feedback_strategy_validation_pipeline]] point 21's own docstring for
+# the fuller argument: point 17's Deflated Sharpe Ratio corrects for many
+# trials WITHIN one search; nothing before this corrected for many
+# DIFFERENT strategy families all being iterated against the same,
+# ever-more-thoroughly-examined historical window across an entire
+# research program).
+#
+# Deliberately NOT the default for `--end` everywhere -- live-status
+# monitoring, trust-floor sweeps, and smoke tests all have a legitimate
+# reason to use today's real date, and forcing this cutoff on those would
+# just be confusing, not safer. This is opt-in, for tuning/selection work
+# specifically, via `--use-research-cutoff`.
+#
+# Update this value only when a genuine final promotion check against
+# everything after the current cutoff has actually been run -- moving it
+# forward "just because time passed" without that check defeats the
+# purpose.
+RESEARCH_HOLDOUT_CUTOFF = pd.Timestamp("2026-09-13")
+
 
 def fetch_history(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     buffered_start = start - pd.Timedelta(days=LOOKBACK_BUFFER_DAYS)
@@ -131,6 +169,73 @@ def fetch_insider_purchases(ticker: str, config: swingtrade.TradingConfig = swin
         "effective_date": effective_date.values,
         "value": purchases["Value"].astype(float).values,
         "insider": purchases["Insider"].values,
+    })
+
+
+def fetch_earnings_surprises(ticker: str) -> pd.DataFrame:
+    """Real historical earnings-surprise events for the "pead" (post-
+    earnings-announcement drift) strategy -- see swingtrade/config.py's
+    pead_* fields and swingtrade/levels.precompute_pead_frame() for how
+    this feeds it. Reuses the SAME yfinance endpoint fetch_earnings_dates()
+    already calls (get_earnings_dates(limit=EARNINGS_HISTORY_LIMIT)), but
+    -- unlike that function, which deliberately discards everything except
+    the calendar date -- this one keeps the "EPS Estimate"/"Reported EPS"/
+    "Surprise(%)" columns too, since PEAD's entire signal IS the surprise
+    magnitude.
+
+    CRITICAL, EXPLICIT DATA-INTEGRITY CAVEAT, not a silent assumption:
+    fetch_earnings_dates()'s own docstring notes the calendar date is a
+    fixed fact (once scheduled, it doesn't get revised) but explicitly
+    calls the EPS/Surprise columns "genuinely forward-looking" for a
+    reason -- this project has NOT independently verified that yfinance's
+    historical "EPS Estimate" figure for an OLD quarter reflects what the
+    consensus estimate actually was right before that report (point-in-
+    time), versus some vendor-side backfill/revision after the fact (a
+    known general risk with free financial data, unlike raw OHLCV, which
+    never gets revised). If this data is NOT point-in-time, backtesting
+    against it would introduce real look-ahead leakage this project's own
+    no-look-ahead discipline otherwise guards against everywhere else.
+    Shipped anyway, same "best available free data, explicit assumption,
+    not a silent one" posture run_backtest.fetch_insider_purchases() itself
+    already takes for its own effective_date ambiguity -- but flag this
+    caveat plainly whenever reporting a backtested PEAD result, and treat
+    an implausibly strong result (bigger than the modest effect size the
+    academic PEAD literature documents) as a reason to suspect this leak
+    specifically, not as confirmation of a great strategy.
+
+    `effective_date` is the raw earnings-report timestamp itself (tz-aware
+    UTC) -- deliberately NO added lag (unlike fetch_insider_purchases()'s
+    Start-Date ambiguity): a report timestamped after that day's market
+    close naturally excludes that same calendar day from
+    precompute_pead_frame()'s own day-index comparison (midnight < that
+    day's close-time timestamp), so the signal only starts counting from
+    the NEXT trading day onward -- correctly modeling "you can't react
+    until the market can," with no separate before/after-market lag
+    parameter needed the way insider Form-4 filings need one.
+
+    Degrades to an empty DataFrame (same shape, zero rows) rather than
+    crashing when a ticker has no earnings-surprise data at all -- same
+    convention fetch_earnings_dates()/fetch_insider_purchases() already
+    follow. Rows with a NaN Surprise(%) (unreported estimate, or a report
+    still pending) are dropped."""
+    columns = ["effective_date", "surprise_pct"]
+    try:
+        raw = yf.Ticker(ticker).get_earnings_dates(limit=EARNINGS_HISTORY_LIMIT)
+    except Exception:
+        raw = None
+    if raw is None or raw.empty or "Surprise(%)" not in raw.columns:
+        return pd.DataFrame(columns=columns)
+
+    reported = raw[raw["Surprise(%)"].notna()].copy()
+    if reported.empty:
+        return pd.DataFrame(columns=columns)
+
+    effective_date = pd.DatetimeIndex(reported.index)
+    effective_date = effective_date.tz_localize("UTC") if effective_date.tz is None else effective_date.tz_convert("UTC")
+
+    return pd.DataFrame({
+        "effective_date": effective_date,
+        "surprise_pct": reported["Surprise(%)"].astype(float).values,
     })
 
 

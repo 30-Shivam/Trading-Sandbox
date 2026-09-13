@@ -866,6 +866,44 @@ class TradingConfig:
     insider_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle every
                                            # other strategy has
 
+    # Post-earnings-announcement drift (PEAD) (2026-09-12, per explicit user
+    # request after a real finding: every price-pattern strategy tried so
+    # far shows ~zero real backtest-time ranking skill -- see
+    # ic_tracking.backtest_ic_check() -- so this deliberately reuses NONE of
+    # them, buying instead a real, confirmed earnings SURPRISE, a genuinely
+    # different signal family (an accounting/fundamental event, not a price
+    # pattern), well documented in the academic literature as an anomaly
+    # orthogonal to momentum/mean-reversion. See
+    # run_backtest.fetch_earnings_surprises() for the data source (yfinance's
+    # get_earnings_dates(), real historical EPS Estimate/Reported EPS/
+    # Surprise%) and its own EXPLICIT point-in-time-integrity caveat -- read
+    # that caveat before trusting any backtested PEAD result.
+    pead_surprise_pct_min: float = 5.0  # minimum EPS surprise (Reported vs
+                                           # Estimate, %) required -- a real,
+                                           # meaningful beat, not noise
+    pead_signal_window_days: int = 3  # how many calendar days after a
+                                           # qualifying report a signal stays
+                                           # "fresh" enough to still enter --
+                                           # same role as insider_lookback_days,
+                                           # prevents entering on a stale,
+                                           # already-drifted-out beat
+    pead_strength_cap_pct: float = 10.0  # same role as squeeze_breakout_
+                                           # strength_cap_pct -- Signal_Strength_Pct
+                                           # (surprise % beyond pead_surprise_pct_min)
+                                           # earns full credit at this many EXTRA points
+    pead_entry_fill: str = "next_open"  # deliberately DIFFERENT default from
+                                           # every other strategy's "limit" -- a
+                                           # resting limit order at the reaction
+                                           # day's own Close would often never
+                                           # fill for a stock that gapped up and
+                                           # kept running (see [[strategy-
+                                           # validation-pipeline]]'s own
+                                           # documented "price that keeps
+                                           # running never gets touched" issue),
+                                           # a poor default for a strategy whose
+                                           # entire premise IS chasing a
+                                           # continuation
+
     # Which signal this config represents -- "rsi" (simulate_signals,
     # mean-reversion), "breakout" (simulate_breakout_signals,
     # trend-following), "pullback" (simulate_pullback_signals,
