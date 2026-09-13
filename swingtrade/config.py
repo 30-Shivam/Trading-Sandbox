@@ -107,6 +107,38 @@ class TradingConfig:
                                             # US-equity brokers -- override if yours
                                             # charges per-share/flat fees
 
+    # Liquidity-tiered slippage (2026-09-13, improvements.txt item 136) --
+    # `slippage_pct` above is a single FLAT haircut regardless of how liquid
+    # the ticker actually was on the day it stopped out; a thin, barely-
+    # above-`min_dollar_volume` name realistically slips more than a mega-cap.
+    # Deliberately OPT-IN (`slippage_liquidity_scaling=False` by default) --
+    # every existing backtest/live result stays byte-for-byte unchanged
+    # unless a caller explicitly turns this on. When enabled,
+    # settlement._effective_slippage_pct() scales `slippage_pct` by one of
+    # two multipliers based on the trade's own `dollar_volume` (AvgVolume x
+    # Last_Close, already computed by every *_levels_from_frame() for the
+    # existing min_dollar_volume gate) relative to that SAME
+    # `min_dollar_volume` floor -- reusing a threshold this codebase already
+    # treats as the "is this even tradeable" boundary, not a new, separate
+    # absolute dollar figure invented for this feature alone. Below
+    # `min_dollar_volume * slippage_liquidity_low_tier_multiple`: the LOW
+    # tier (most illiquid still-tradeable names, gets the biggest haircut).
+    # Below `min_dollar_volume * slippage_liquidity_mid_tier_multiple` (but
+    # at/above the low-tier floor): the MID tier. At/above the mid-tier
+    # floor: full liquidity, `slippage_pct` unchanged (1.0x). A trade with no
+    # `dollar_volume` data available (an older call site that hasn't been
+    # wired to pass it yet) also gets 1.0x -- same "missing optional data
+    # never fabricates a worse outcome" convention every other optional
+    # field in this codebase follows.
+    slippage_liquidity_scaling: bool = False
+    slippage_liquidity_low_tier_multiple: float = 3.0    # dollar_volume below
+                                           # min_dollar_volume * this -> LOW tier
+    slippage_liquidity_mid_tier_multiple: float = 10.0   # dollar_volume below
+                                           # min_dollar_volume * this (but >=
+                                           # the low-tier floor) -> MID tier
+    slippage_liquidity_low_tier_factor: float = 2.5   # LOW tier's slippage_pct multiplier
+    slippage_liquidity_mid_tier_factor: float = 1.5   # MID tier's slippage_pct multiplier
+
     # Trailing-stop exit (swingtrade/settlement.settle_trade_with_trailing) --
     # shared exit infrastructure, not a per-strategy filter, so ONE pair of
     # fields applies uniformly to whichever strategy's simulate_*_signals()

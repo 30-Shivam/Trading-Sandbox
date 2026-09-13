@@ -202,6 +202,7 @@ def levels_from_rsi_frame(
         "Top_Headline": top_headline,
         "Oversold_Streak_Days": oversold_streak_days,
         "Extended_Decline_Warning": extended_decline_warning,
+        "Dollar_Volume": round(dollar_volume, 2),
     }
 
 
@@ -1437,6 +1438,7 @@ def squeeze_breakout_levels_from_frame(
         "Next_Earnings_Date": next_earnings_date_out,
         "Catalyst_Warning": catalyst_warning,
         "Top_Headline": top_headline,
+        "Dollar_Volume": round(dollar_volume, 2),
     }
 
 
@@ -1660,6 +1662,7 @@ def pairs_levels_from_frame(
         "Next_Earnings_Date": next_earnings_date_out,
         "Catalyst_Warning": catalyst_warning,
         "Top_Headline": top_headline,
+        "Dollar_Volume": round(dollar_volume, 2),
     }
 
 
@@ -1852,6 +1855,7 @@ def momentum_levels_from_frame(
         "Next_Earnings_Date": next_earnings_date_out,
         "Catalyst_Warning": catalyst_warning,
         "Top_Headline": top_headline,
+        "Dollar_Volume": round(dollar_volume, 2),
     }
 
 
@@ -2992,6 +2996,7 @@ def ma_crossover_levels_from_frame(
         "Next_Earnings_Date": next_earnings_date_out,
         "Catalyst_Warning": catalyst_warning,
         "Top_Headline": top_headline,
+        "Dollar_Volume": round(dollar_volume, 2),
     }
 
 

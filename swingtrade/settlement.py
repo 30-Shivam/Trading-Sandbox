@@ -27,16 +27,49 @@ import pandas as pd
 from .config import DEFAULT_CONFIG, TradingConfig
 
 
+def _effective_slippage_pct(dollar_volume: float | None, config: TradingConfig) -> float:
+    """Scales `config.slippage_pct` by a liquidity-tier multiplier -- see
+    that field's own config.py docstring for the full rationale (a thin,
+    barely-above-`min_dollar_volume` name realistically slips more than a
+    mega-cap; deliberately opt-in via `slippage_liquidity_scaling`).
+
+    Returns `slippage_pct` UNCHANGED (1.0x) when scaling is disabled, or
+    `dollar_volume` is None (no liquidity data available at this call
+    site -- same "missing optional data never fabricates a worse outcome"
+    convention as every other optional field here), or `dollar_volume`
+    already clears the mid-tier floor (full liquidity). Tier floors are
+    both expressed as multiples of `config.min_dollar_volume` -- the SAME
+    absolute threshold every strategy's own liquidity gate already uses,
+    not a new number invented for this feature alone."""
+    if not config.slippage_liquidity_scaling or dollar_volume is None:
+        return config.slippage_pct
+    low_floor = config.min_dollar_volume * config.slippage_liquidity_low_tier_multiple
+    mid_floor = config.min_dollar_volume * config.slippage_liquidity_mid_tier_multiple
+    if dollar_volume < low_floor:
+        return config.slippage_pct * config.slippage_liquidity_low_tier_factor
+    if dollar_volume < mid_floor:
+        return config.slippage_pct * config.slippage_liquidity_mid_tier_factor
+    return config.slippage_pct
+
+
 def settle_trade(
     buy_price: float,
     stop_loss: float,
     sell_price: float,
     bars_since_entry: pd.DataFrame,
     config: TradingConfig = DEFAULT_CONFIG,
+    dollar_volume: float | None = None,
 ) -> dict:
     """`bars_since_entry` must be daily OHLCV rows strictly AFTER the entry
     date, in chronological order (oldest first) -- the entry day itself is
     not part of this walk.
+
+    `dollar_volume` (optional -- AvgVolume x Last_Close at signal time, see
+    each strategy's own `*_levels_from_frame()`) backs the liquidity-tiered
+    slippage scaling (config.slippage_liquidity_scaling, see that field's
+    own docstring) -- None (default) preserves the original flat-slippage
+    behavior exactly, same as every other optional-data-dependent field in
+    this codebase.
 
     Returns a dict with `status` in {"WIN", "LOSS", "EXPIRED", "OPEN"}.
     WIN/LOSS/EXPIRED additionally include exit_price, exit_reason,
@@ -55,7 +88,7 @@ def settle_trade(
             return _resolve("WIN", open_, "gap_up_target", holding_days, buy_price, bar_date, config)
         # Same-day stop-and-target ambiguity resolves conservatively: stop first.
         if low <= stop_loss:
-            slipped_stop = stop_loss * (1 - config.slippage_pct)
+            slipped_stop = stop_loss * (1 - _effective_slippage_pct(dollar_volume, config))
             return _resolve("LOSS", slipped_stop, "stop_hit_intraday", holding_days, buy_price, bar_date, config)
         if high >= sell_price:
             return _resolve("WIN", sell_price, "target_hit", holding_days, buy_price, bar_date, config)
@@ -88,6 +121,7 @@ def settle_trade_with_trailing(
     atr: float,
     bars_since_entry: pd.DataFrame,
     config: TradingConfig = DEFAULT_CONFIG,
+    dollar_volume: float | None = None,
 ) -> dict:
     """Hybrid fixed-then-trailing counterpart to settle_trade() -- a trade
     behaves EXACTLY like settle_trade() (same fixed stop_loss/sell_price,
@@ -118,7 +152,10 @@ def settle_trade_with_trailing(
 
     `atr` is the entry-time ATR already computed by the caller (same value
     used to size the original stop_loss/sell_price) -- passed explicitly
-    since settle_trade() itself has no notion of ATR at all."""
+    since settle_trade() itself has no notion of ATR at all.
+
+    `dollar_volume` (optional) is the same liquidity-tiered slippage input
+    documented on settle_trade() -- see that docstring."""
     trailing_active = False
     highest_high = None
     trailing_stop = None
@@ -141,7 +178,7 @@ def settle_trade_with_trailing(
                 continue
             # Same-day stop-and-target ambiguity resolves conservatively: stop first.
             if low <= stop_loss:
-                slipped_stop = stop_loss * (1 - config.slippage_pct)
+                slipped_stop = stop_loss * (1 - _effective_slippage_pct(dollar_volume, config))
                 return _resolve("LOSS", slipped_stop, "stop_hit_intraday", holding_days, buy_price, bar_date, config)
             if high >= sell_price:
                 # Target reached intraday -- start trailing from this bar's
@@ -168,7 +205,7 @@ def settle_trade_with_trailing(
             highest_high = max(highest_high, high)
             trailing_stop = max(trailing_stop, highest_high - config.trailing_stop_atr_multiplier * atr)
             if low <= trailing_stop:
-                slipped_trailing_stop = trailing_stop * (1 - config.slippage_pct)
+                slipped_trailing_stop = trailing_stop * (1 - _effective_slippage_pct(dollar_volume, config))
                 status = "WIN" if slipped_trailing_stop > buy_price else "LOSS"
                 return _resolve(
                     status, slipped_trailing_stop, "trailing_stop_hit", holding_days, buy_price, bar_date, config

@@ -230,6 +230,7 @@ def _find_next_open_fill(bars_after_signal: pd.DataFrame):
 def _settle(
     buy_price: float, stop_loss: float, sell_price: float, atr: float,
     bars_since_entry: pd.DataFrame, config: TradingConfig,
+    dollar_volume: float | None = None,
 ) -> dict:
     """Shared dispatch used by the 3 currently-active strategies' simulate
     functions (breakout, squeeze_breakout, ma_crossover -- both real and
@@ -239,15 +240,19 @@ def _settle(
     dormant strategies (pullback/breakout_retest/week52_high/momentum_burst/
     adx_trend_entry) still call settle_trade() directly, unaffected by
     trailing_stop_enabled -- see swingtrade/config.py's own field comment
-    for why this is scoped to the active 3 only."""
+    for why this is scoped to the active 3 only.
+
+    `dollar_volume` (optional) passes through to whichever settle function
+    is chosen -- see settle_trade()'s own docstring for the liquidity-tiered
+    slippage rationale."""
     if config.trailing_stop_enabled:
         return settle_trade_with_trailing(
             buy_price=buy_price, stop_loss=stop_loss, sell_price=sell_price, atr=atr,
-            bars_since_entry=bars_since_entry, config=config,
+            bars_since_entry=bars_since_entry, config=config, dollar_volume=dollar_volume,
         )
     return settle_trade(
         buy_price=buy_price, stop_loss=stop_loss, sell_price=sell_price,
-        bars_since_entry=bars_since_entry, config=config,
+        bars_since_entry=bars_since_entry, config=config, dollar_volume=dollar_volume,
     )
 
 
@@ -348,6 +353,7 @@ def simulate_signals(
             sell_price=sell_price,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=scored.get("Dollar_Volume"),
         )
 
         trades.append({
@@ -416,7 +422,9 @@ def simulate_random_entries(
         except RuntimeError:
             continue
 
-        candidates.append((as_of, float(levels["Buy_Price"]), float(levels["ATR"])))
+        candidates.append(
+            (as_of, float(levels["Buy_Price"]), float(levels["ATR"]), levels.get("Dollar_Volume"))
+        )
 
     if not candidates or n_trades <= 0:
         return []
@@ -425,7 +433,7 @@ def simulate_random_entries(
     chosen.sort(key=lambda c: c[0])
 
     trades = []
-    for as_of, buy_price, atr in chosen:
+    for as_of, buy_price, atr, dollar_volume in chosen:
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
         if fill is None:
@@ -442,6 +450,7 @@ def simulate_random_entries(
             sell_price=sell_price,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=dollar_volume,
         )
 
         trades.append({
@@ -1584,6 +1593,7 @@ def simulate_squeeze_breakout_signals(
             atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=levels.get("Dollar_Volume"),
         )
 
         trades.append({
@@ -1659,7 +1669,9 @@ def simulate_random_squeeze_breakout_entries(
         except RuntimeError:
             continue
 
-        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
+        candidates.append(
+            (as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"]), levels.get("Dollar_Volume"))
+        )
 
     if not candidates or n_trades <= 0:
         return []
@@ -1668,7 +1680,7 @@ def simulate_random_squeeze_breakout_entries(
     chosen.sort(key=lambda c: c[0])
 
     trades = []
-    for as_of, buy_price, atr, catalyst_warning in chosen:
+    for as_of, buy_price, atr, catalyst_warning, dollar_volume in chosen:
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.squeeze_breakout_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -1689,6 +1701,7 @@ def simulate_random_squeeze_breakout_entries(
             atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=dollar_volume,
         )
 
         trades.append({
@@ -1792,6 +1805,7 @@ def simulate_pairs_signals(
             atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=levels.get("Dollar_Volume"),
         )
 
         trades.append({
@@ -1865,7 +1879,9 @@ def simulate_random_pairs_entries(
         except RuntimeError:
             continue
 
-        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
+        candidates.append(
+            (as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"]), levels.get("Dollar_Volume"))
+        )
 
     if not candidates or n_trades <= 0:
         return []
@@ -1874,7 +1890,7 @@ def simulate_random_pairs_entries(
     chosen.sort(key=lambda c: c[0])
 
     trades = []
-    for as_of, buy_price, atr, catalyst_warning in chosen:
+    for as_of, buy_price, atr, catalyst_warning, dollar_volume in chosen:
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.pairs_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -1895,6 +1911,7 @@ def simulate_random_pairs_entries(
             atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=dollar_volume,
         )
 
         trades.append({
@@ -2000,6 +2017,7 @@ def simulate_momentum_signals(
             atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=levels.get("Dollar_Volume"),
         )
 
         trades.append({
@@ -2074,7 +2092,9 @@ def simulate_random_momentum_entries(
         except RuntimeError:
             continue
 
-        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
+        candidates.append(
+            (as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"]), levels.get("Dollar_Volume"))
+        )
 
     if not candidates or n_trades <= 0:
         return []
@@ -2083,7 +2103,7 @@ def simulate_random_momentum_entries(
     chosen.sort(key=lambda c: c[0])
 
     trades = []
-    for as_of, buy_price, atr, catalyst_warning in chosen:
+    for as_of, buy_price, atr, catalyst_warning, dollar_volume in chosen:
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.momentum_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -2104,6 +2124,7 @@ def simulate_random_momentum_entries(
             atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=dollar_volume,
         )
 
         trades.append({
@@ -3072,6 +3093,7 @@ def simulate_ma_crossover_signals(
             atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=levels.get("Dollar_Volume"),
         )
 
         trades.append({
@@ -3145,7 +3167,9 @@ def simulate_random_ma_crossover_entries(
         except RuntimeError:
             continue
 
-        candidates.append((as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"])))
+        candidates.append(
+            (as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"]), levels.get("Dollar_Volume"))
+        )
 
     if not candidates or n_trades <= 0:
         return []
@@ -3154,7 +3178,7 @@ def simulate_random_ma_crossover_entries(
     chosen.sort(key=lambda c: c[0])
 
     trades = []
-    for as_of, buy_price, atr, catalyst_warning in chosen:
+    for as_of, buy_price, atr, catalyst_warning, dollar_volume in chosen:
         bars_after_signal = ohlcv[ohlcv.index > as_of]
         if config.ma_crossover_entry_fill == "next_open":
             fill = _find_next_open_fill(bars_after_signal)
@@ -3175,6 +3199,7 @@ def simulate_random_ma_crossover_entries(
             atr=atr,
             bars_since_entry=bars_since_entry,
             config=config,
+            dollar_volume=dollar_volume,
         )
 
         trades.append({
