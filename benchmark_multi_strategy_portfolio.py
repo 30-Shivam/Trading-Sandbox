@@ -172,6 +172,26 @@ def main():
               "with unlimited/siloed capital -- a real, previously-unmeasured cost of running multiple "
               "strategies against one real account, exactly how the user actually trades today.")
 
+    # 2026-09-13 (improvements.txt item 149) -- a DIFFERENT question from
+    # capital contention above: even with UNLIMITED capital (no fighting
+    # over the same dollars at all), do these two strategies make/lose
+    # money on the SAME days for the SAME reasons? Two individually
+    # validated strategies that are highly correlated add much less real
+    # diversification than their separate validation reports suggest on
+    # their own. See swingtrade.compute_strategy_correlation()'s own
+    # docstring for the full method.
+    correlation_result = swingtrade.compute_strategy_correlation({"MA_Crossover": ma_trades, "Pairs": pairs_trades})
+    print("\n=== STRATEGY CORRELATION (are these real edges actually diversified, or redundant?) ===")
+    print(f"  {correlation_result}")
+    pair_stats = correlation_result["pairs"].get("MA_Crossover|Pairs")
+    if pair_stats and pair_stats["correlation"] is not None:
+        print(f"  Daily realized-P&L correlation: {pair_stats['correlation']} over {pair_stats['n_days']} "
+              f"day(s) with any activity. Ticker/entry-day overlap: {pair_stats['ticker_day_overlap_pct']}% "
+              "of unique (ticker, entry_date) instances are shared between the two strategies.")
+        print("  A correlation near 0 means these two strategies' P&L genuinely comes from different market")
+        print("  moments -- real diversification. A correlation pushing toward 1.0 would mean combining them")
+        print("  adds much less true risk reduction than running either one alone at double size.")
+
 
 if __name__ == "__main__":
     main()

@@ -12,6 +12,7 @@ from .backtest import (
     compute_cluster_weights,
     compute_k_ratio,
     compute_max_drawdown,
+    compute_strategy_correlation,
     flatten_out_sample_trades,
     generate_folds,
     monte_carlo_drawdown,
@@ -193,6 +194,7 @@ __all__ = [
     "monte_carlo_drawdown",
     "simulate_portfolio_constrained",
     "audit_dividend_drag",
+    "compute_strategy_correlation",
     "flatten_out_sample_trades",
     "run_walk_forward",
 ]

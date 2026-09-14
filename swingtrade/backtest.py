@@ -4435,6 +4435,85 @@ def audit_dividend_drag(trades: list[dict], dividend_history: dict) -> dict:
     }
 
 
+def compute_strategy_correlation(trades_by_strategy: dict) -> dict:
+    """Are two strategies' real edges actually DIVERSIFIED, or just the
+    same underlying signal wearing different clothes? (2026-09-13, per the
+    user's "fully comprehensive of all variables" directive.) Item 142's
+    `simulate_portfolio_constrained(group_key=...)` already answers "how
+    much capital do these strategies fight over when run together" -- a
+    genuinely different question from this one: even with UNLIMITED
+    capital (no fighting at all), do these strategies make and lose money
+    on the SAME days for the SAME reasons? A real capital-allocation
+    decision (how much to size a NEW strategy relative to ones already
+    running) depends on this, not on the capital-contention question
+    alone -- two strategies that are both real, both individually
+    validated, but 90%+ correlated add much less true diversification
+    than their separate validation reports would suggest on their own.
+
+    `trades_by_strategy` maps strategy label (e.g. "MA_Crossover", "Pairs"
+    -- the same values already in every trade dict's own `signal` field,
+    see `benchmark_multi_strategy_portfolio.py`) -> that strategy's own
+    list of resolved trade dicts (needs `exit_date`/`pnl_pct` on each).
+
+    Method: for each strategy, builds a DAILY realized-P&L series --
+    every trade's `pnl_pct` is booked on its own `exit_date` (summed if
+    more than one trade exits that ticker/strategy that day), matching
+    this module's own "P&L realizes at EXIT, not entry" convention
+    (see `simulate_portfolio_constrained()`'s identical choice). Days
+    with no realized trade for a strategy get 0.0, NOT excluded --
+    excluding them would only compare cherry-picked overlapping activity
+    days, understating how uncorrelated two strategies with different
+    trading FREQUENCIES genuinely are. Then computes the standard Pearson
+    correlation coefficient between each pair of strategies' aligned
+    daily series (aligned over the UNION of every date either strategy
+    has any activity on).
+
+    Also reports `ticker_day_overlap_pct` per pair -- what fraction of
+    each strategy's own (ticker, entry_date) signal instances are shared
+    with the other strategy's own instances -- a simpler, more literal
+    "how often do these two actually pick the exact same moment" measure,
+    distinct from (and can disagree with) the return-correlation number
+    above (e.g. two strategies could rarely trade the identical
+    ticker/day, yet still have correlated DAILY P&L because whatever
+    moves one moves the whole market and hits every open position that
+    day).
+
+    Returns `{"pairs": {"StratA|StratB": {"correlation":, "n_days":,
+    "ticker_day_overlap_pct":}}}` -- `correlation`/`n_days` are None for a
+    pair where either strategy has fewer than 2 days of realized activity
+    (not enough variance to compute a meaningful correlation)."""
+    daily_pnl: dict = {}
+    ticker_days: dict = {}
+    for strategy, trades in trades_by_strategy.items():
+        resolved = [t for t in trades if t.get("status") != "OPEN" and "exit_date" in t and "pnl_pct" in t]
+        series: dict = defaultdict(float)
+        for t in resolved:
+            series[pd.Timestamp(t["exit_date"])] += t["pnl_pct"]
+        daily_pnl[strategy] = series
+        ticker_days[strategy] = {(t.get("ticker"), pd.Timestamp(t["entry_date"])) for t in resolved if "entry_date" in t}
+
+    names = sorted(trades_by_strategy)
+    pairs = {}
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            all_dates = sorted(set(daily_pnl[a]) | set(daily_pnl[b]))
+            key = f"{a}|{b}"
+            if len(all_dates) < 2:
+                pairs[key] = {"correlation": None, "n_days": len(all_dates), "ticker_day_overlap_pct": None}
+                continue
+            series_a = pd.Series([daily_pnl[a].get(d, 0.0) for d in all_dates])
+            series_b = pd.Series([daily_pnl[b].get(d, 0.0) for d in all_dates])
+            correlation = None
+            if series_a.std() > 0 and series_b.std() > 0:
+                correlation = round(float(series_a.corr(series_b)), 4)
+            shared = ticker_days[a] & ticker_days[b]
+            union = ticker_days[a] | ticker_days[b]
+            overlap_pct = round(len(shared) / len(union) * 100, 2) if union else None
+            pairs[key] = {"correlation": correlation, "n_days": len(all_dates), "ticker_day_overlap_pct": overlap_pct}
+
+    return {"pairs": pairs}
+
+
 def compute_k_ratio(trades: list[dict]) -> float | None:
     """K-ratio: how CONSISTENTLY an equity curve compounds over calendar
     time, distinct from sharpe_like (mean/stdev of per-trade returns) which
