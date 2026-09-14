@@ -3204,3 +3204,74 @@ def audit_no_lookahead(
                 mismatches.append((as_of, col, full_value, truncated_value))
 
     return {"dates_checked": dates_checked, "mismatches": mismatches}
+
+
+def audit_data_quality(df: pd.DataFrame, max_daily_move_pct: float = 50.0) -> dict:
+    """Real, previously entirely unexamined data-integrity check (2026-09-13,
+    per the user's "fully comprehensive of all variables" directive) --
+    this project has never once validated that fetched OHLCV data is
+    internally consistent before feeding it into a backtest. A free vendor
+    (yfinance) occasionally returns a bad tick (a stale/erroneous row, a
+    vendor-side data glitch) that could silently corrupt a signal or
+    settlement decision with nothing to ever catch it -- this is that
+    catch.
+
+    Two DIFFERENT categories, reported separately because they mean very
+    different things:
+
+    STRUCTURAL VIOLATIONS -- should be ZERO for genuinely real data,
+    regardless of how volatile the ticker is; any nonzero count here is a
+    real, actionable data bug, not a market event:
+      - Low > High (physically impossible for a real trading session)
+      - Open or Close outside the [Low, High] range for that same row
+      - Any of Open/High/Low/Close <= 0 (a real security never trades at
+        zero or negative)
+      - Volume < 0
+
+    LARGE-MOVE FLAGS -- informational only, NOT necessarily bugs: a
+    single-day |Close-to-Close % change| exceeding `max_daily_move_pct`
+    (default 50%) could be a genuine data glitch (this project has no way
+    to be sure from price data alone), but could equally be a REAL
+    extreme event this codebase's own no-look-ahead discipline must still
+    respect (an earnings-driven crash/spike, an M&A announcement, a halt-
+    and-reopen) -- flagged for human review, never auto-excluded, since
+    silently dropping a real day would itself be a form of survivorship-
+    bias-adjacent look-ahead (deciding after the fact that a real outcome
+    "must have been fake").
+
+    Returns `{"n_rows":, "n_structural_violations":, "structural_violation_dates":
+    (up to 10, for review), "n_large_moves":, "large_move_dates": [(date,
+    pct_change), ...] (up to 10, sorted by |move| descending), "is_clean":
+    bool (True iff n_structural_violations == 0 -- large moves alone don't
+    fail this, they're just flagged)}`. Returns a degenerate all-zero
+    result for an empty/too-short `df` (nothing to check)."""
+    if df is None or len(df) < 2:
+        return {
+            "n_rows": 0 if df is None else len(df), "n_structural_violations": 0,
+            "structural_violation_dates": [], "n_large_moves": 0, "large_move_dates": [], "is_clean": True,
+        }
+
+    o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
+    structural_mask = (
+        (l > h) | (o > h) | (o < l) | (c > h) | (c < l)
+        | (o <= 0) | (h <= 0) | (l <= 0) | (c <= 0)
+    )
+    if "Volume" in df.columns:
+        structural_mask = structural_mask | (df["Volume"] < 0)
+    structural_dates = list(df.index[structural_mask])
+
+    daily_move_pct = c.pct_change() * 100
+    large_move_mask = daily_move_pct.abs() > max_daily_move_pct
+    large_moves = sorted(
+        ((d, round(float(daily_move_pct.loc[d]), 2)) for d in df.index[large_move_mask.fillna(False)]),
+        key=lambda item: abs(item[1]), reverse=True,
+    )
+
+    return {
+        "n_rows": len(df),
+        "n_structural_violations": len(structural_dates),
+        "structural_violation_dates": structural_dates[:10],
+        "n_large_moves": len(large_moves),
+        "large_move_dates": large_moves[:10],
+        "is_clean": len(structural_dates) == 0,
+    }

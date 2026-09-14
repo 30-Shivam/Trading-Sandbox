@@ -505,6 +505,29 @@ def main():
         except Exception as exc:
             print(f"  [WARN] {ticker}: {exc}", file=sys.stderr)
     print(f"Fetched {len(ticker_data)}/{len(tickers)} ticker(s).")
+
+    # Data-quality audit (2026-09-13, improvements.txt item 144) -- free
+    # (no extra fetch, checks data already in memory), so unconditional
+    # rather than opt-in: a vendor-side bad tick (Low > High, a zero/
+    # negative price) could otherwise silently corrupt a signal or
+    # settlement decision with nothing to catch it. Large single-day moves
+    # (>50%) are flagged too but never treated as an error -- a real
+    # crash/spike is a legitimate event, not a bug, and this codebase's
+    # own no-look-ahead discipline must still respect it either way.
+    structural_issues = 0
+    for ticker, df in ticker_data.items():
+        dq = swingtrade.audit_data_quality(df)
+        if not dq["is_clean"]:
+            structural_issues += dq["n_structural_violations"]
+            print(f"  [DATA QUALITY] {ticker}: {dq['n_structural_violations']} structural violation(s) "
+                  f"at {dq['structural_violation_dates']} -- see swingtrade.audit_data_quality()'s own "
+                  "docstring for what this checks.", file=sys.stderr)
+    if structural_issues == 0:
+        print(f"Data quality: 0 structural violations across {len(ticker_data)} ticker(s) (clean).")
+    else:
+        print(f"[WARN] Data quality: {structural_issues} TOTAL structural violation(s) found -- "
+              "see above for which ticker(s)/date(s).", file=sys.stderr)
+
     if not ticker_data:
         print("[ERROR] No ticker data available.", file=sys.stderr)
         sys.exit(1)
