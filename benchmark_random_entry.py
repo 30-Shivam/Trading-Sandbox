@@ -988,6 +988,23 @@ def main():
     print(f"  REAL   ({real_label}): {swingtrade.simulate_portfolio_constrained(real_trades, args.portfolio_starting_capital, args.portfolio_position_budget, config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup)}")
     print(f"  RANDOM (matched count): {random_portfolio_avg}")
 
+    # 2026-09-14 (improvements.txt item 151) -- free (no extra fetch, just
+    # analyzes real_trades already generated), so unconditional like the
+    # data-quality/cap-calibration checks. Every simulate_*_signals()
+    # function walks eligible days independently with no notion of
+    # "already holding this ticker" -- this measures how often that
+    # actually produces a same-ticker double-exposure event nothing else
+    # catches (distinct from the sector/portfolio caps above, which have
+    # no notion of "same ticker" either).
+    overlap_result = swingtrade.audit_same_ticker_overlap(real_trades)
+    print(f"\n=== SAME-TICKER OVERLAP (does this backtest ever double up exposure to one ticker? "
+          f"see improvements.txt item 151) ===")
+    print(f"  REAL ({real_label}): {overlap_result}")
+    if overlap_result["n_overlapping_pairs"]:
+        print(f"  {overlap_result['pct_trades_in_an_overlap']}% of real trades touch at least one same-ticker "
+              "overlap -- consider swingtrade.simulate_portfolio_constrained()'s own max_positions_per_ticker "
+              "param if this matters for a live capital decision.")
+
     if args.with_dividend_drag:
         print("\n=== DIVIDEND DRAG (does pnl_pct understate real total return by never crediting "
               "dividends paid during a holding period? see improvements.txt item 143) ===")

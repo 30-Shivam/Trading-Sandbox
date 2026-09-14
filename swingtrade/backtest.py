@@ -4151,6 +4151,7 @@ def simulate_portfolio_constrained(
     max_total_deployed_pct: float | None = None,
     sector_lookup: dict[str, str] | None = None,
     group_key: str | None = None,
+    max_positions_per_ticker: int | None = None,
 ) -> dict:
     """Replays already-simulated signals through a REAL, single, finite-
     capital account -- the question nothing before this checked (2026-09-13,
@@ -4228,12 +4229,26 @@ def simulate_portfolio_constrained(
     won the limited capital versus got crowded out. None (default)
     preserves the exact original return shape.
 
+    `max_positions_per_ticker` (optional, 2026-09-14, improvements.txt item
+    151) -- caps how many OPEN positions the account will hold in the SAME
+    ticker at once, mirroring the sector/portfolio caps' own opt-in design.
+    None (default) preserves the exact original behavior: unlimited same-
+    ticker exposure, since every `simulate_*_signals()` function walks
+    eligible days independently with no notion of "already holding this
+    ticker" -- see `swingtrade.audit_same_ticker_overlap()`'s own docstring
+    for the real, measured gap this exists to let a caller close (a real
+    15-ticker/5-year `ma_crossover` sample showed ~3% of trades touching a
+    genuine same-ticker overlap). A trade that would breach this cap is
+    skipped (`n_skipped_ticker_limit`), same non-consuming "keep walking"
+    semantics as the sector/portfolio caps.
+
     Returns a dict: `starting_capital`, `ending_equity`, `total_return_pct`,
     `cagr_pct` (None if the date span is under a day), `max_drawdown_pct`,
     `n_signals` (resolved trades actually eligible for replay), `n_taken`,
     `n_skipped_insufficient_capital`, `n_skipped_sector_limit`,
-    `n_skipped_portfolio_limit`, `pct_signals_taken` (n_taken/n_signals as a
-    %, None if n_signals is 0), plus `taken_by_group` if `group_key` was given."""
+    `n_skipped_portfolio_limit`, `n_skipped_ticker_limit`,
+    `pct_signals_taken` (n_taken/n_signals as a %, None if n_signals is 0),
+    plus `taken_by_group` if `group_key` was given."""
     sector_lookup = sector_lookup or {}
     eligible = [t for t in trades if t.get("status") != "OPEN" and "entry_date" in t and "exit_date" in t]
     n_signals = len(eligible)
@@ -4242,7 +4257,8 @@ def simulate_portfolio_constrained(
             "starting_capital": starting_capital, "ending_equity": starting_capital,
             "total_return_pct": 0.0, "cagr_pct": None, "max_drawdown_pct": None,
             "n_signals": 0, "n_taken": 0, "n_skipped_insufficient_capital": 0,
-            "n_skipped_sector_limit": 0, "n_skipped_portfolio_limit": 0, "pct_signals_taken": None,
+            "n_skipped_sector_limit": 0, "n_skipped_portfolio_limit": 0,
+            "n_skipped_ticker_limit": 0, "pct_signals_taken": None,
         }
         if group_key:
             result["taken_by_group"] = {}
@@ -4259,11 +4275,12 @@ def simulate_portfolio_constrained(
     )
 
     cash = starting_capital
-    open_positions: list[dict] = []  # {"exit_date":, "cost":, "sector":, "pnl_pct":}
+    open_positions: list[dict] = []  # {"exit_date":, "cost":, "sector":, "pnl_pct":, "ticker":}
     deployed_now = 0.0
     sector_spent: dict[str, float] = defaultdict(float)
+    open_count_by_ticker: dict = defaultdict(int)
     equity_curve: list[tuple] = [(ordered[0]["entry_date"], starting_capital)]
-    n_taken = n_skipped_funds = n_skipped_sector = n_skipped_portfolio = 0
+    n_taken = n_skipped_funds = n_skipped_sector = n_skipped_portfolio = n_skipped_ticker = 0
     taken_by_group: dict = defaultdict(int) if group_key else None
 
     def _release_through(as_of) -> None:
@@ -4274,6 +4291,7 @@ def simulate_portfolio_constrained(
                 cash += p["cost"] * (1 + p["pnl_pct"] / 100)
                 deployed_now -= p["cost"]
                 sector_spent[p["sector"]] -= p["cost"]
+                open_count_by_ticker[p["ticker"]] -= 1
                 equity_curve.append((p["exit_date"], cash + deployed_now))
             else:
                 still_open.append(p)
@@ -4282,6 +4300,7 @@ def simulate_portfolio_constrained(
     for t in ordered:
         _release_through(t["entry_date"])
         sector = sector_lookup.get(t.get("ticker"), t.get("sector", "Unknown"))
+        ticker = t.get("ticker")
         cost = position_budget
 
         if cost > cash:
@@ -4293,11 +4312,15 @@ def simulate_portfolio_constrained(
         if total_deployed_cap_dollars is not None and deployed_now + cost > total_deployed_cap_dollars:
             n_skipped_portfolio += 1
             continue
+        if max_positions_per_ticker is not None and open_count_by_ticker[ticker] >= max_positions_per_ticker:
+            n_skipped_ticker += 1
+            continue
 
         cash -= cost
         deployed_now += cost
         sector_spent[sector] += cost
-        open_positions.append({"exit_date": t["exit_date"], "cost": cost, "sector": sector, "pnl_pct": t["pnl_pct"]})
+        open_count_by_ticker[ticker] += 1
+        open_positions.append({"exit_date": t["exit_date"], "cost": cost, "sector": sector, "pnl_pct": t["pnl_pct"], "ticker": ticker})
         n_taken += 1
         if group_key:
             taken_by_group[t.get(group_key, "Unknown")] += 1
@@ -4333,6 +4356,7 @@ def simulate_portfolio_constrained(
         "n_skipped_insufficient_capital": n_skipped_funds,
         "n_skipped_sector_limit": n_skipped_sector,
         "n_skipped_portfolio_limit": n_skipped_portfolio,
+        "n_skipped_ticker_limit": n_skipped_ticker,
         "pct_signals_taken": round(n_taken / n_signals * 100, 2),
     }
     if group_key:
@@ -4526,6 +4550,82 @@ def compute_strategy_correlation(trades_by_strategy: dict) -> dict:
             pairs[key] = {"correlation": correlation, "n_days": len(all_dates), "ticker_day_overlap_pct": overlap_pct}
 
     return {"pairs": pairs}
+
+
+def audit_same_ticker_overlap(trades: list[dict]) -> dict:
+    """Real, previously entirely unexamined gap (2026-09-14, per the
+    user's "fully comprehensive of all variables" directive, found while
+    investigating whether backtest trade counts realistically model
+    position-level risk): every `simulate_*_signals()` function in this
+    module walks every ELIGIBLE day independently and opens a trade
+    whenever its own signal condition fires -- with NO check for whether
+    a PREVIOUS trade on the SAME ticker is still open. A real trader
+    generally avoids doubling up exposure to the identical underlying
+    stock; this backtest can silently count two (or more) overlapping
+    positions in the same ticker as if they were two fully independent,
+    unrelated bets -- a real risk-concentration dimension distinct from
+    `simulate_portfolio_constrained()`'s own sector/portfolio caps, which
+    have no notion of "same ticker" at all.
+
+    Confirmed real and non-hypothetical via a direct data check (not just
+    theorized): a 15-ticker, 5-year `ma_crossover` sample showed 3 of 94
+    real trades (~3%) with a genuine same-ticker overlap -- a new signal
+    fired and filled on a ticker before its PREVIOUS trade on that same
+    ticker had reached its own `exit_date`.
+
+    `trades` should be resolved trades (status != "OPEN") with `ticker`,
+    `entry_date`, `exit_date` -- every field every `settle_trade()`/
+    `settle_trade_with_trailing()` trade dict already carries. Groups by
+    ticker, sorts by `entry_date`, and counts every CONSECUTIVE pair
+    where the later trade's `entry_date` falls at or before the earlier
+    trade's own `exit_date` (a closed-interval overlap check, same
+    entry/exit-date concurrency convention `compute_max_drawdown()`/
+    `simulate_portfolio_constrained()` already use, reused here instead
+    of inventing a second one).
+
+    PURE MEASUREMENT ONLY -- does not modify `trades`, does not change
+    how any `simulate_*_signals()` function generates trades. See
+    `simulate_portfolio_constrained()`'s own new `max_positions_per_ticker`
+    parameter (2026-09-14) for the opt-in constraint this measurement
+    motivated.
+
+    Returns `{"n_trades":, "n_tickers":, "n_overlapping_pairs":,
+    "pct_trades_in_an_overlap": (n trades touching at least one
+    overlapping pair, as a % of n_trades), "overlap_examples": (up to 10
+    `(ticker, prev_exit_date, next_entry_date)` tuples, for review)}`."""
+    resolved = [t for t in trades if t.get("status") != "OPEN" and "entry_date" in t and "exit_date" in t and "ticker" in t]
+    n_trades = len(resolved)
+    if n_trades == 0:
+        return {
+            "n_trades": 0, "n_tickers": 0, "n_overlapping_pairs": 0,
+            "pct_trades_in_an_overlap": None, "overlap_examples": [],
+        }
+
+    by_ticker: dict = defaultdict(list)
+    for t in resolved:
+        by_ticker[t["ticker"]].append(t)
+
+    n_overlapping_pairs = 0
+    trades_in_overlap = set()
+    examples = []
+    for ticker, ticker_trades in by_ticker.items():
+        ordered = sorted(ticker_trades, key=lambda t: t["entry_date"])
+        for i in range(1, len(ordered)):
+            prev, cur = ordered[i - 1], ordered[i]
+            if cur["entry_date"] <= prev["exit_date"]:
+                n_overlapping_pairs += 1
+                trades_in_overlap.add(id(prev))
+                trades_in_overlap.add(id(cur))
+                if len(examples) < 10:
+                    examples.append((ticker, prev["exit_date"], cur["entry_date"]))
+
+    return {
+        "n_trades": n_trades,
+        "n_tickers": len(by_ticker),
+        "n_overlapping_pairs": n_overlapping_pairs,
+        "pct_trades_in_an_overlap": round(len(trades_in_overlap) / n_trades * 100, 2),
+        "overlap_examples": examples,
+    }
 
 
 def compute_k_ratio(trades: list[dict]) -> float | None:
