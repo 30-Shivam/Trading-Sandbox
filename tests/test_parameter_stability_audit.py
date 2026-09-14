@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from audit_parameter_stability import _numeric_param_series, _stability
+from audit_parameter_stability import _numeric_param_series, _parse_search_provenance, _stability
 
 
 def _doc(version, **params):
@@ -80,3 +80,81 @@ def test_stability_handles_negative_mean():
     values = [-3.19, -1.86, -2.29, -2.20]
     result = _stability(values)
     assert result["range_over_mean"] > 0
+
+
+# --- _parse_search_provenance(): the honest follow-up to item 147's own
+# stated caveat (2026-09-13, improvements.txt item 148) -- pooling every
+# version regardless of why it was created isn't a fair "does
+# re-optimization converge" test. Every real note string below is copied
+# verbatim (truncated) from this project's own actual MongoDB System_Config
+# history, confirmed via a direct query, not fabricated. ---
+
+def test_parses_a_real_optuna_search_note():
+    notes = (
+        "Optuna search (strategy=ma_crossover  multi-objective): 45 trials, "
+        "2025-08-14..2026-08-14, 306 tune / 102 holdout ticker(s), 6 fold(s), "
+        "recency_half_life_days=180. Baseline sharpe_like=-0.022, best sharpe_like=0.2060."
+    )
+    result = _parse_search_provenance(notes)
+    assert result["is_optuna_search"] is True
+    assert result["n_trials"] == 45
+    assert result["window_days"] == 365
+    assert result["n_folds"] == 6
+
+
+def test_parses_a_note_without_the_multi_objective_suffix():
+    # Later versions dropped the "  multi-objective" annotation -- the
+    # regex must not depend on that exact substring being present.
+    notes = (
+        "Optuna search (strategy=ma_crossover): 20 trials, 2025-09-03..2026-09-03, "
+        "305 tune / 102 holdout ticker(s), 6 fold(s), recency_half_life_days=180."
+    )
+    result = _parse_search_provenance(notes)
+    assert result["is_optuna_search"] is True
+    assert result["n_trials"] == 20
+    assert result["n_folds"] == 6
+
+
+def test_parses_a_multi_year_window_and_high_fold_count():
+    # The real 5-year/54-fold methodology this project's own history
+    # actually used for v68-71 -- confirms the parser isn't hardcoded to
+    # assume every search is a 1-year/6-fold shape.
+    notes = (
+        "Optuna search (strategy=ma_crossover  multi-objective): 20 trials, "
+        "2021-08-30..2026-08-30, 303 tune / 102 holdout ticker(s), 54 fold(s), "
+        "recency_half_life_days=180."
+    )
+    result = _parse_search_provenance(notes)
+    assert result["window_days"] == 365 * 5 + 1  # 2021-08-30..2026-08-30 spans one leap day
+    assert result["n_folds"] == 54
+
+
+def test_untuned_baseline_is_not_a_search():
+    # The real v49 note -- a manual, untuned first-pass baseline, no
+    # Optuna search at all.
+    notes = (
+        "NEW STRATEGY, lean v1, untuned defaults. Moving-average crossover "
+        "(short 20d SMA crosses above long 50d SMA) -- a genuinely different "
+        "mechanical trigger from every strategy tried in this project."
+    )
+    result = _parse_search_provenance(notes)
+    assert result["is_optuna_search"] is False
+    assert result["n_trials"] is None
+    assert result["window_days"] is None
+    assert result["n_folds"] is None
+
+
+def test_manual_recalibration_is_not_a_search():
+    # The real v60 note -- a single-field scoring recalibration,
+    # byte-identical to its parent (v55) otherwise. Not a real re-tune.
+    notes = (
+        "Scoring-only recalibration of ma_crossover_strength_cap_pct (2.0 -> 0.5), "
+        "byte-identical to v55 otherwise. Real data (584 crossovers, 70 tickers, 5yr) found..."
+    )
+    result = _parse_search_provenance(notes)
+    assert result["is_optuna_search"] is False
+
+
+def test_empty_or_missing_notes_is_not_a_search():
+    assert _parse_search_provenance("")["is_optuna_search"] is False
+    assert _parse_search_provenance(None)["is_optuna_search"] is False
