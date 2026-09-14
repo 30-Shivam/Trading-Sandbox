@@ -148,6 +148,14 @@ import ic_tracking
 import storage
 import swingtrade
 from optimize import DEFAULT_HOLDOUT_SEEDS, average_holdout_summary, average_summaries
+from swingtrade.levels import (
+    precompute_breakout_frame,
+    precompute_ma_crossover_frame,
+    precompute_momentum_frame,
+    precompute_pairs_frame,
+    precompute_rsi_frame,
+    precompute_squeeze_breakout_frame,
+)
 from run_backtest import (
     LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, RESEARCH_HOLDOUT_CUTOFF, fetch_earnings_dates,
     fetch_earnings_surprises, fetch_history, fetch_insider_purchases,
@@ -201,6 +209,25 @@ STRENGTH_CAP_FIELD = {
     "momentum_rank": "momentum_strength_cap_pct",
     "pead": "pead_strength_cap_pct",
 }
+
+# Strategy -> its own precompute_*_frame() function (2026-09-13,
+# improvements.txt item 146) -- backs the opt-in --with-lookahead-audit
+# flag. Only the 6 real, actively-used strategies swingtrade.audit_no_lookahead()
+# was already real-data-confirmed clean against (improvements.txt item
+# 139 + its same-day extension) -- dormant/retired strategies
+# (momentum_burst/adx_trend_entry/etc.) are deliberately excluded, same
+# scoping STRENGTH_CAP_FIELD above uses.
+LOOKAHEAD_PRECOMPUTE_FN = {
+    "rsi": precompute_rsi_frame,
+    "breakout": precompute_breakout_frame,
+    "squeeze_breakout": precompute_squeeze_breakout_frame,
+    "ma_crossover": precompute_ma_crossover_frame,
+    "pairs": precompute_pairs_frame,
+    "momentum_rank": precompute_momentum_frame,
+}
+LOOKAHEAD_AUDIT_MAX_TICKERS = 5   # bounded regardless of universe size -- this
+LOOKAHEAD_AUDIT_MAX_DATES = 5     # doubles precompute cost per sample, so it's
+                                   # deliberately opt-in and small by default
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
@@ -395,6 +422,17 @@ def main():
              "changes pnl_pct itself. Off by default (extra network cost); most informative for "
              "higher-dividend-yield universes (adr_watchlist.txt, smallmid financials/REITs/utilities) "
              "-- negligible for this project's own low-dividend primary watchlist.",
+    )
+    parser.add_argument(
+        "--with-lookahead-audit", action="store_true",
+        help="Run swingtrade.audit_no_lookahead() against a small, bounded sample "
+             f"({LOOKAHEAD_AUDIT_MAX_TICKERS} tickers x {LOOKAHEAD_AUDIT_MAX_DATES} dates, regardless "
+             "of universe size) of this strategy's own precompute_*_frame() function (2026-09-13, "
+             "improvements.txt item 146) -- confirms no future code change accidentally introduced a "
+             "look-ahead leak. No extra network fetch (reuses data already fetched for the real "
+             "backtest itself), but doubles precompute cost for the sampled tickers/dates, so opt-in. "
+             "A no-op for strategies without an entry in LOOKAHEAD_PRECOMPUTE_FN (dormant/retired "
+             "strategies, or ones never real-data-audited this way).",
     )
     args = parser.parse_args()
 
@@ -636,6 +674,48 @@ def main():
         # prices, and it matches what a live scan would realistically use.
         momentum_panel = pd.DataFrame({t: ticker_data[t]["Close"] for t in ticker_data})
         momentum_rank_frame = swingtrade.compute_momentum_rank_frame(momentum_panel, config.momentum_lookback_days)
+
+    if args.with_lookahead_audit:
+        precompute_fn = LOOKAHEAD_PRECOMPUTE_FN.get(args.strategy)
+        if precompute_fn is None:
+            print(f"\n[LOOKAHEAD AUDIT] --strategy {args.strategy} has no entry in "
+                  "LOOKAHEAD_PRECOMPUTE_FN -- skipped.")
+        else:
+            sample_tickers = list(ticker_data.keys())[:LOOKAHEAD_AUDIT_MAX_TICKERS]
+            print(f"\n=== LOOK-AHEAD AUDIT ({len(sample_tickers)} ticker(s) x up to "
+                  f"{LOOKAHEAD_AUDIT_MAX_DATES} date(s) -- see improvements.txt item 146) ===")
+            total_checked = total_mismatches = 0
+            for ticker in sample_tickers:
+                df = ticker_data[ticker]
+                if len(df) < 260:
+                    continue
+                sample_dates = list(df.index[250::max(1, (len(df) - 250) // LOOKAHEAD_AUDIT_MAX_DATES)][:LOOKAHEAD_AUDIT_MAX_DATES])
+                extra_series = {}
+                if args.strategy in ("ma_crossover", "squeeze_breakout", "breakout"):
+                    extra_series = {
+                        "market_df": market_data,
+                        "sector_df": sector_data.get(sector_lookup.get(ticker, "Unknown")),
+                    }
+                elif args.strategy == "pairs":
+                    panel = sector_price_panels.get(sector_lookup.get(ticker, "Unknown"))
+                    extra_series = {
+                        "peer_prices": panel.drop(columns=[ticker]) if panel is not None and ticker in panel.columns else None,
+                    }
+                elif args.strategy == "momentum_rank":
+                    extra_series = {
+                        "rank_column": momentum_rank_frame[ticker] if momentum_rank_frame is not None and ticker in momentum_rank_frame.columns else None,
+                    }
+                result = swingtrade.audit_no_lookahead(precompute_fn, df, sample_dates, config, extra_series=extra_series)
+                total_checked += result["dates_checked"]
+                total_mismatches += len(result["mismatches"])
+                if result["mismatches"]:
+                    print(f"  [LOOKAHEAD AUDIT] {ticker}: {len(result['mismatches'])} mismatch(es) -- "
+                          f"{result['mismatches'][:3]}")
+            if total_mismatches == 0:
+                print(f"  Clean: 0 mismatches across {total_checked} sampled date-check(s).")
+            else:
+                print(f"  [WARN] {total_mismatches} TOTAL mismatch(es) found across {total_checked} "
+                      "sampled date-check(s) -- see above for which ticker(s)/date(s)/column(s).")
 
     if args.holdout_frac > 0:
         print(f"Ticker holdout: frac={args.holdout_frac}, averaging TUNE/HOLDOUT over "
