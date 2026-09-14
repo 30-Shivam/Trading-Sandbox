@@ -118,3 +118,9 @@ def test_pairs_backtest_trades_carry_trade_score(uptrend_ohlcv, market_ohlcv):
         "every real pairs backtest trade must carry a real trade_score -- see "
         "ic_tracking.backtest_ic_check(), which silently reports n=0 without this"
     )
+    assert all("signal_strength_pct" in t and isinstance(t["signal_strength_pct"], float) for t in trades), (
+        "every real pairs backtest trade must also carry the raw signal_strength_pct component "
+        "(2026-09-13, improvements.txt item 145) -- without it, swingtrade.audit_cap_calibration() "
+        "can't be run directly against a real backtest's own trades, only via a separate dedicated "
+        "collector script (audit_strength_cap_calibration.py)"
+    )

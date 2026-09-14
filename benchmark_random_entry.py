@@ -186,6 +186,22 @@ PEAD_AWARE_STRATEGIES = ("pead",)  # the only REAL simulate_*_signals() (not the
                                                                    # INSIDER_AWARE_STRATEGIES above) that
                                                                    # accepts earnings_surprises
 
+# Strategy -> its own *_strength_cap_pct/*_strength_cap config field name
+# (2026-09-13, improvements.txt item 145) -- every strategy here now also
+# carries a real `signal_strength_pct` on its own real trade dicts (see
+# swingtrade/backtest.py's own simulate_*_signals() trades.append() calls),
+# so swingtrade.audit_cap_calibration() can run directly against real_trades
+# without a separate collector script. Strategies without an entry here
+# either don't use this scoring pattern (rsi/breakout/etc.) or are
+# dormant/retired (momentum_burst/squeeze_breakout's own live status --
+# see config_loader.py -- adx_trend_entry).
+STRENGTH_CAP_FIELD = {
+    "ma_crossover": "ma_crossover_strength_cap_pct",
+    "pairs": "pairs_zscore_strength_cap",
+    "momentum_rank": "momentum_strength_cap_pct",
+    "pead": "pead_strength_cap_pct",
+}
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 REQUEST_DELAY_SEC = 0.5
@@ -766,6 +782,26 @@ def main():
               "actually rank which specific trades do better or worse'. A strategy can pass the "
               "former with ~zero real answer to the latter (see improvements.txt for the real "
               "finding that motivated this check).")
+
+    # 2026-09-13 (improvements.txt item 145) -- is the *_strength_cap_pct
+    # field itself well-calibrated against what these REAL trades actually
+    # achieved? Free now that real_trades carry their own signal_strength_pct
+    # directly (previously needed a separate collector script per strategy,
+    # see audit_strength_cap_calibration.py). Unconditional, like the data-
+    # quality check -- a no-op print for strategies without an entry in
+    # STRENGTH_CAP_FIELD (rsi/breakout/etc. don't use this scoring pattern).
+    cap_field = STRENGTH_CAP_FIELD.get(args.strategy)
+    if cap_field:
+        strength_values = [t["signal_strength_pct"] for t in real_trades if "signal_strength_pct" in t]
+        cap_value = getattr(config, cap_field)
+        cap_result = swingtrade.audit_cap_calibration(strength_values, cap_value)
+        print(f"\n=== STRENGTH-CAP CALIBRATION (is config.{cap_field}={cap_value} well-calibrated "
+              "against what these REAL trades actually achieved? see improvements.txt item 140) ===")
+        print(f"  {cap_result}")
+        if cap_result["likely_too_high"]:
+            print("  [FLAG] cap looks miscalibrated TOO HIGH -- real strong signals barely use this component's points.")
+        if cap_result["likely_too_low"]:
+            print("  [FLAG] cap looks miscalibrated TOO LOW -- many real signals saturate to the same max score.")
 
     # 2026-09-13 (improvements.txt item 135) -- a REAL confidence figure on
     # the gap itself, not just eyeballing whether REAL's sharpe_like number
