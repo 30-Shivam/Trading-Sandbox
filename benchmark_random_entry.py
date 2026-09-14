@@ -988,6 +988,33 @@ def main():
     print(f"  REAL   ({real_label}): {swingtrade.simulate_portfolio_constrained(real_trades, args.portfolio_starting_capital, args.portfolio_position_budget, config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup)}")
     print(f"  RANDOM (matched count): {random_portfolio_avg}")
 
+    # 2026-09-14 (improvements.txt item 154) -- free (no extra fetch, just
+    # re-replays real_trades already generated through simulate_portfolio_
+    # constrained() at several capital levels), so unconditional like the
+    # section above. Answers a different question than a single-capital
+    # replay does: as starting_capital grows, does pct_signals_taken keep
+    # climbing (money is still the binding constraint) or plateau (the
+    # sector/portfolio caps become the real ceiling, and more capital
+    # stops helping)? Directly relevant to a real capital-allocation
+    # decision for THIS strategy or when sizing a NEW one against it.
+    capacity_levels = [args.portfolio_starting_capital * m for m in (1, 2, 5, 10, 20)]
+    capacity_result = swingtrade.audit_capital_capacity(
+        real_trades, args.portfolio_position_budget, capacity_levels,
+        config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup,
+    )
+    print(f"\n=== CAPITAL CAPACITY SCAN (does more capital keep unlocking more of {args.strategy}'s own real "
+          f"signals, or does it hit a structural ceiling? see improvements.txt item 154) ===")
+    for lvl in capacity_result["levels"]:
+        print(f"  ${lvl['starting_capital']:>10,.0f}: {lvl['pct_signals_taken']}% signals taken "
+              f"(dominant skip reason: {lvl['dominant_skip_reason']})")
+    if capacity_result["capacity_ceiling_capital"] is not None:
+        print(f"  Capacity ceiling: ~${capacity_result['capacity_ceiling_capital']:,.0f} -- beyond this, more "
+              f"capital stops meaningfully increasing pct_signals_taken for {args.strategy} at "
+              f"${args.portfolio_position_budget:,.0f}/position sizing.")
+    else:
+        print(f"  No ceiling found within the scanned range -- {args.strategy} could likely absorb more than "
+              f"${capacity_levels[-1]:,.0f} before capital stops being the binding constraint.")
+
     # 2026-09-14 (improvements.txt item 151) -- free (no extra fetch, just
     # analyzes real_trades already generated), so unconditional like the
     # data-quality/cap-calibration checks. Every simulate_*_signals()

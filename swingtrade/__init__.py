@@ -8,6 +8,7 @@ from .backtest import (
     Fold,
     FoldResult,
     _find_entry_fill as find_entry_fill,
+    audit_capital_capacity,
     audit_dividend_drag,
     audit_same_ticker_overlap,
     compute_cluster_weights,
@@ -197,6 +198,7 @@ __all__ = [
     "audit_dividend_drag",
     "compute_strategy_correlation",
     "audit_same_ticker_overlap",
+    "audit_capital_capacity",
     "flatten_out_sample_trades",
     "run_walk_forward",
 ]

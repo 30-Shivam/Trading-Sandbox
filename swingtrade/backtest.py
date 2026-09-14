@@ -4628,6 +4628,89 @@ def audit_same_ticker_overlap(trades: list[dict]) -> dict:
     }
 
 
+def audit_capital_capacity(
+    trades: list[dict],
+    position_budget: float,
+    capital_levels: list[float],
+    max_sector_allocation_pct: float | None = None,
+    max_total_deployed_pct: float | None = None,
+    sector_lookup: dict[str, str] | None = None,
+    plateau_threshold_pct: float = 1.0,
+) -> dict:
+    """A genuinely new axis (2026-09-14, twentieth iteration of the "fully
+    comprehensive of all variables" loop): `simulate_portfolio_constrained()`
+    (item 138) already answers "how many of this strategy's real signals
+    could ONE real account afford to take" at a single, fixed
+    `starting_capital` -- but every real-data run so far has picked that
+    one capital figure somewhat arbitrarily (matching whatever the CLI
+    default happens to be). This asks the question that actually matters
+    for a capital-ALLOCATION decision: as `starting_capital` grows, does
+    `pct_signals_taken` keep rising (money is still the binding
+    constraint), or does it PLATEAU (the account has hit its structural
+    ceiling -- `max_sector_allocation_pct`/`max_total_deployed_pct` are now
+    the binding constraint, and no amount of additional capital would let
+    this strategy, at this `position_budget`, take meaningfully more of
+    its own signals)? Directly relevant to "when we proceed to
+    constructing new strategies" (the user's own standing directive): it
+    quantifies how much room is actually left in an existing strategy
+    before adding more capital stops helping, which is exactly the
+    question a real capital-allocation-across-strategies decision needs
+    answered.
+
+    Runs `simulate_portfolio_constrained()` once per dollar amount in
+    `capital_levels` (e.g. `[3000, 6000, 15000, 30000, 60000]`), same
+    `position_budget`/caps/`sector_lookup` held fixed across every level
+    (only `starting_capital` varies -- isolates capital scale as the one
+    changing variable, the whole point of a sensitivity scan). `trades`
+    should already be resolved (status != "OPEN") the same as every other
+    `simulate_portfolio_constrained()` caller provides. `capital_levels`
+    is expected ascending; not re-sorted here since the plateau detection
+    below is inherently order-dependent.
+
+    A level's `dominant_skip_reason` is whichever of
+    `n_skipped_insufficient_capital`/`n_skipped_sector_limit`/
+    `n_skipped_portfolio_limit`/`n_skipped_ticker_limit` is largest at that
+    level (None if nothing was skipped). `capacity_ceiling_capital` is the
+    smallest `starting_capital` in the scan where `pct_signals_taken`
+    gained less than `plateau_threshold_pct` percentage points over the
+    PREVIOUS (smaller) level -- i.e. where money stopped being the thing
+    holding the strategy back. None if `pct_signals_taken` was still
+    climbing at the largest level scanned (the ceiling, if any, lies
+    beyond what was tested here) or if there's only one level to compare.
+
+    Returns `{"levels": [scan results, each a
+    simulate_portfolio_constrained() dict plus "dominant_skip_reason"],
+    "capacity_ceiling_capital":}`."""
+    levels = []
+    prev_pct_taken = None
+    ceiling = None
+    for starting_capital in capital_levels:
+        result = simulate_portfolio_constrained(
+            trades, starting_capital, position_budget,
+            max_sector_allocation_pct, max_total_deployed_pct, sector_lookup,
+        )
+        skip_counts = {
+            "insufficient_capital": result["n_skipped_insufficient_capital"],
+            "sector_limit": result["n_skipped_sector_limit"],
+            "portfolio_limit": result["n_skipped_portfolio_limit"],
+            "ticker_limit": result["n_skipped_ticker_limit"],
+        }
+        dominant = max(skip_counts, key=skip_counts.get) if any(skip_counts.values()) else None
+        result = dict(result, dominant_skip_reason=dominant)
+        levels.append(result)
+
+        pct_taken = result["pct_signals_taken"]
+        if ceiling is None and prev_pct_taken is not None and pct_taken is not None:
+            if pct_taken - prev_pct_taken < plateau_threshold_pct:
+                ceiling = starting_capital
+        prev_pct_taken = pct_taken
+
+    return {
+        "levels": levels,
+        "capacity_ceiling_capital": ceiling,
+    }
+
+
 def compute_k_ratio(trades: list[dict]) -> float | None:
     """K-ratio: how CONSISTENTLY an equity curve compounds over calendar
     time, distinct from sharpe_like (mean/stdev of per-trade returns) which
