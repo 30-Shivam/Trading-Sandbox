@@ -361,7 +361,21 @@ def simulate_signals(
             "signal_date": as_of.date(),
             "entry_date": entry_date.date(),
             "sector": sector,
-            "signal": scored["Signal"],
+            # "signal" is a STABLE per-strategy label here (2026-09-14,
+            # improvements.txt item 150) -- every other simulate_*_signals()
+            # tags its own trade dicts this way ("MA_Crossover", "Pairs",
+            # etc.), a real, previously-unnoticed inconsistency this
+            # function alone didn't follow (it stored the live, per-trade
+            # Buy/Strong Buy value instead, which fragmented this
+            # strategy's own attribution across multiple inconsistent keys
+            # anywhere something groups trades by "signal" -- found via
+            # swingtrade.compute_strategy_correlation()/
+            # simulate_portfolio_constrained(group_key="signal")'s own real
+            # multi-strategy use in benchmark_multi_strategy_portfolio.py).
+            # The original live value is NOT discarded -- see
+            # `live_signal` below.
+            "signal": "RSI",
+            "live_signal": scored["Signal"],
             "trade_score": float(scored["Trade_Score"]),
             "rsi": float(scored["RSI"]),
             "atr": atr,

@@ -6,25 +6,33 @@ account, instead of each being judged in isolation?
 Every prior validation in this project (real-vs-random, DSR, backtest IC,
 even swingtrade.simulate_portfolio_constrained() itself, item 138) judges
 ONE strategy's own signals against ONE dedicated capital pool. That's not
-how the user actually trades: ma_crossover (primary) and Mean-Reversion
-Pairs (secondary) already share the SAME real account today. When both
-fire on the same day, they compete for the same limited capital -- a
-question nothing before this checked.
+how the user actually trades: ma_crossover (primary), RSI Mean-Reversion,
+and Mean-Reversion Pairs (both secondary) already share the SAME real
+account today. When more than one fires on the same day, they compete for
+the same limited capital -- a question nothing before this checked.
 
-Method: run both strategies' own REAL, currently-live configs
-(config_loader.load_active_config() for ma_crossover, System_Config v58
-for Mean-Reversion Pairs) against the SAME real ticker universe/window,
-tag each trade with its own strategy (every simulate_*_signals() trade
-dict already carries a "signal" field for exactly this purpose). Then
-compare THREE views via swingtrade.simulate_portfolio_constrained():
-  1. ma_crossover ALONE, with the full starting_capital to itself
-  2. pairs ALONE, with the full starting_capital to itself
-  3. POOLED -- both together, sharing the SAME starting_capital
+2026-09-14: extended from its original 2-strategy scope (ma_crossover +
+pairs) to all THREE currently-live, capital-eligible strategies on the
+primary watchlist (RSI Mean-Reversion added) -- the real, complete roster
+per config_loader.SECONDARY_STRATEGY_VERSIONS, not just a subset.
+
+Method: run every live strategy's own REAL, currently-live config
+(config_loader.load_active_config() for ma_crossover,
+config_loader.SECONDARY_STRATEGY_VERSIONS for RSI/Pairs) against the SAME
+real ticker universe/window, tag each trade with its own strategy (every
+simulate_*_signals() trade dict already carries a "signal" field for
+exactly this purpose). Then compare, via swingtrade.simulate_portfolio_constrained()
+and swingtrade.compute_strategy_correlation():
+  1. Each strategy ALONE, with the full starting_capital to itself
+  2. POOLED -- all together, sharing the SAME starting_capital
        (group_key="signal" attributes each taken trade to its own strategy)
+  3. Pairwise real-vs-real correlation across every strategy pair
 
-The gap between (1)+(2)'s independent capture and (3)'s pooled capture is
-the real cost of capital contention a siloed, one-strategy-at-a-time
-validation can never surface.
+The gap between (1)'s independent capture (summed) and (2)'s pooled
+capture is the real cost of capital contention a siloed, one-strategy-at-
+a-time validation can never surface. (3) answers a different question:
+even with unlimited capital, do these strategies' real edges actually
+come from different market moments, or the same ones?
 
 Usage:
     python benchmark_multi_strategy_portfolio.py
@@ -105,12 +113,16 @@ def main():
     pairs_config, pairs_label = config_loader.load_config_by_version(
         config_loader.SECONDARY_STRATEGY_VERSIONS["Mean-Reversion Pairs"]
     )
-    if pairs_config is None:
-        print(f"[ERROR] Could not load Mean-Reversion Pairs config: {pairs_label}", file=sys.stderr)
+    rsi_config, rsi_label = config_loader.load_config_by_version(
+        config_loader.SECONDARY_STRATEGY_VERSIONS["RSI Mean-Reversion"]
+    )
+    if pairs_config is None or rsi_config is None:
+        print(f"[ERROR] Could not load a secondary config (pairs={pairs_label!r}, rsi={rsi_label!r}).", file=sys.stderr)
         sys.exit(1)
 
     print(f"Strategy 1: ma_crossover ({ma_label})")
-    print(f"Strategy 2: pairs ({pairs_label})\n")
+    print(f"Strategy 2: pairs ({pairs_label})")
+    print(f"Strategy 3: rsi ({rsi_label})\n")
 
     print("Simulating ma_crossover...")
     ma_trades = []
@@ -129,21 +141,32 @@ def main():
         pairs_trades.extend(swingtrade.simulate_pairs_signals(
             ticker, ohlcv, market_ohlcv, start, end, pairs_config, sector=sector, peer_prices=peer_prices,
         ))
-    print(f"  {len(pairs_trades)} real signal(s)\n")
+    print(f"  {len(pairs_trades)} real signal(s)")
 
-    if not ma_trades and not pairs_trades:
-        print("[ERROR] Neither strategy produced any real signals on this universe/window.", file=sys.stderr)
+    print("Simulating rsi...")
+    rsi_trades = []
+    for ticker, ohlcv in ticker_data.items():
+        rsi_trades.extend(swingtrade.simulate_signals(
+            ticker, ohlcv, market_ohlcv, start, end, rsi_config, sector=sector_lookup.get(ticker, "Unknown"),
+        ))
+    print(f"  {len(rsi_trades)} real signal(s)\n")
+
+    trades_by_strategy = {"MA_Crossover": ma_trades, "Pairs": pairs_trades, "RSI": rsi_trades}
+    configs_by_strategy = {"MA_Crossover": ma_config, "Pairs": pairs_config, "RSI": rsi_config}
+
+    if not any(trades_by_strategy.values()):
+        print("[ERROR] No strategy produced any real signals on this universe/window.", file=sys.stderr)
         sys.exit(1)
 
-    ma_solo = swingtrade.simulate_portfolio_constrained(
-        ma_trades, args.starting_capital, args.position_budget,
-        ma_config.max_sector_allocation_pct, ma_config.max_total_deployed_pct, sector_lookup,
-    )
-    pairs_solo = swingtrade.simulate_portfolio_constrained(
-        pairs_trades, args.starting_capital, args.position_budget,
-        pairs_config.max_sector_allocation_pct, pairs_config.max_total_deployed_pct, sector_lookup,
-    )
-    pooled_trades = ma_trades + pairs_trades
+    solo_results = {
+        label: swingtrade.simulate_portfolio_constrained(
+            trades, args.starting_capital, args.position_budget,
+            configs_by_strategy[label].max_sector_allocation_pct,
+            configs_by_strategy[label].max_total_deployed_pct, sector_lookup,
+        )
+        for label, trades in trades_by_strategy.items()
+    }
+    pooled_trades = [t for trades in trades_by_strategy.values() for t in trades]
     pooled = swingtrade.simulate_portfolio_constrained(
         pooled_trades, args.starting_capital, args.position_budget,
         ma_config.max_sector_allocation_pct, ma_config.max_total_deployed_pct, sector_lookup,
@@ -151,21 +174,22 @@ def main():
     )
 
     print(f"=== SOLO (each strategy with its OWN ${args.starting_capital:,.0f} account, ${args.position_budget:,.0f}/position) ===")
-    print(f"  ma_crossover alone: {ma_solo}")
-    print(f"  pairs alone:        {pairs_solo}")
+    for label, result in solo_results.items():
+        print(f"  {label} alone: {result}")
 
-    print(f"\n=== POOLED (BOTH strategies sharing ONE ${args.starting_capital:,.0f} account) ===")
+    print(f"\n=== POOLED (ALL {len(trades_by_strategy)} strategies sharing ONE ${args.starting_capital:,.0f} account) ===")
     print(f"  {pooled}")
 
     print("\n=== WHAT CAPITAL CONTENTION ACTUALLY COST ===")
-    solo_total_taken = ma_solo["n_taken"] + pairs_solo["n_taken"]
+    solo_total_taken = sum(r["n_taken"] for r in solo_results.values())
     pooled_total_taken = pooled["n_taken"]
-    ma_taken_pooled = pooled.get("taken_by_group", {}).get("MA_Crossover", 0)
-    pairs_taken_pooled = pooled.get("taken_by_group", {}).get("Pairs", 0)
+    taken_by_group = pooled.get("taken_by_group", {})
+    solo_breakdown = " + ".join(f"{solo_results[label]['n_taken']} {label}" for label in trades_by_strategy)
+    pooled_breakdown = " + ".join(f"{taken_by_group.get(label, 0)} {label}" for label in trades_by_strategy)
     print(f"  If each strategy had its own dedicated ${args.starting_capital:,.0f} account: "
-          f"{solo_total_taken} total trades taken ({ma_solo['n_taken']} ma_crossover + {pairs_solo['n_taken']} pairs).")
+          f"{solo_total_taken} total trades taken ({solo_breakdown}).")
     print(f"  Sharing ONE real ${args.starting_capital:,.0f} account instead: {pooled_total_taken} total trades taken "
-          f"({ma_taken_pooled} ma_crossover + {pairs_taken_pooled} pairs).")
+          f"({pooled_breakdown}).")
     if solo_total_taken > 0:
         crowd_out_pct = round((1 - pooled_total_taken / solo_total_taken) * 100, 1)
         print(f"  Capital contention crowded out {crowd_out_pct}% of the trades that WOULD have been taken "
@@ -174,23 +198,24 @@ def main():
 
     # 2026-09-13 (improvements.txt item 149) -- a DIFFERENT question from
     # capital contention above: even with UNLIMITED capital (no fighting
-    # over the same dollars at all), do these two strategies make/lose
-    # money on the SAME days for the SAME reasons? Two individually
-    # validated strategies that are highly correlated add much less real
+    # over the same dollars at all), do these strategies make/lose money
+    # on the SAME days for the SAME reasons? Two individually validated
+    # strategies that are highly correlated add much less real
     # diversification than their separate validation reports suggest on
     # their own. See swingtrade.compute_strategy_correlation()'s own
-    # docstring for the full method.
-    correlation_result = swingtrade.compute_strategy_correlation({"MA_Crossover": ma_trades, "Pairs": pairs_trades})
+    # docstring for the full method. Extended 2026-09-14 to all 3 live
+    # strategies (full pairwise matrix), not just the original 2.
+    correlation_result = swingtrade.compute_strategy_correlation(trades_by_strategy)
     print("\n=== STRATEGY CORRELATION (are these real edges actually diversified, or redundant?) ===")
-    print(f"  {correlation_result}")
-    pair_stats = correlation_result["pairs"].get("MA_Crossover|Pairs")
-    if pair_stats and pair_stats["correlation"] is not None:
-        print(f"  Daily realized-P&L correlation: {pair_stats['correlation']} over {pair_stats['n_days']} "
-              f"day(s) with any activity. Ticker/entry-day overlap: {pair_stats['ticker_day_overlap_pct']}% "
-              "of unique (ticker, entry_date) instances are shared between the two strategies.")
-        print("  A correlation near 0 means these two strategies' P&L genuinely comes from different market")
-        print("  moments -- real diversification. A correlation pushing toward 1.0 would mean combining them")
-        print("  adds much less true risk reduction than running either one alone at double size.")
+    for pair_label, pair_stats in correlation_result["pairs"].items():
+        if pair_stats["correlation"] is not None:
+            print(f"  {pair_label}: correlation={pair_stats['correlation']}, n_days={pair_stats['n_days']}, "
+                  f"ticker_day_overlap_pct={pair_stats['ticker_day_overlap_pct']}%")
+        else:
+            print(f"  {pair_label}: {pair_stats} (not enough combined activity for a real correlation)")
+    print("  A correlation near 0 means two strategies' P&L genuinely comes from different market moments --")
+    print("  real diversification. A correlation pushing toward 1.0 would mean combining them adds much less")
+    print("  true risk reduction than running either one alone at double size.")
 
 
 if __name__ == "__main__":
