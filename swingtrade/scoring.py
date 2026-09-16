@@ -393,6 +393,35 @@ def add_momentum_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_C
     return df
 
 
+def add_lowvol_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    """Cross-sectional LOW-VOLATILITY RANK counterpart to add_momentum_trade_score()/
+    add_trade_score()/etc. -- blends RRR and Signal_Strength_Pct (percentile
+    points past lowvol_top_percentile_min, see lowvol_levels_from_frame())
+    into a 0-100 Trade_Score for rows produced by lowvol_levels_from_frame(),
+    reusing signal_for_score()'s thresholds so a low-vol Trade_Score means
+    the same thing on the same 0-100 scale as every other strategy. Exact
+    structural mirror of add_momentum_trade_score().
+
+    Hard gate, not just a scoring input: a ticker whose LowVol_Signal is
+    False gets Trade_Score=0/Ignore, full stop -- same "not eligible at all"
+    semantics as every other strategy's hard gate."""
+    df = df.copy()
+
+    rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+
+    strength_clipped = df["Signal_Strength_Pct"].clip(lower=0, upper=config.lowvol_strength_cap_pct)
+    strength_score = (strength_clipped / config.lowvol_strength_cap_pct) * config.distance_score_weight
+
+    total_weight = config.rrr_score_weight + config.distance_score_weight
+    rescale = (100 / total_weight) if total_weight > 0 else 0.0
+
+    raw_score = ((rrr_score + strength_score) * rescale).clip(lower=0)
+
+    df["Trade_Score"] = raw_score.where(df["LowVol_Signal"], 0.0).round(1)
+    df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
+    return df
+
+
 def add_insider_buying_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
     """INSIDER-BUYING counterpart to add_trade_score()/add_squeeze_breakout_trade_score()/
     add_pairs_trade_score()/etc. -- blends RRR and Signal_Strength_Pct

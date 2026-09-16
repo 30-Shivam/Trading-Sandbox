@@ -75,6 +75,7 @@ from .levels import (
     levels_from_rsi_frame,
     pead_levels_from_frame,
     llm_strategy_levels_from_frame,
+    lowvol_levels_from_frame,
     ma_crossover_levels_from_frame,
     market_uptrend_from_frame,
     momentum_burst_levels_from_frame,
@@ -84,6 +85,7 @@ from .levels import (
     precompute_breakout_retest_frame,
     precompute_insider_buying_frame,
     precompute_llm_strategy_frame,
+    precompute_lowvol_frame,
     precompute_ma_crossover_frame,
     precompute_momentum_burst_frame,
     precompute_momentum_frame,
@@ -101,6 +103,7 @@ from .levels import (
 )
 from .scoring import (
     add_ma_crossover_trade_score,
+    add_lowvol_trade_score,
     add_momentum_trade_score,
     add_pairs_trade_score,
     add_pead_trade_score,
@@ -2162,6 +2165,210 @@ def simulate_random_momentum_entries(
     return trades
 
 
+def simulate_lowvol_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+    rank_column: pd.Series | None = None,
+) -> list[dict]:
+    """Cross-sectional LOW-VOLATILITY RANK counterpart to
+    simulate_momentum_signals() -- buys a ticker whose trailing-volatility
+    percentile rank (across the WHOLE watchlist, inverted so LOW volatility
+    reads as a HIGH percentile) clears config.lowvol_top_percentile_min, in
+    a confirmed macro uptrend. Exact structural mirror of
+    simulate_momentum_signals() -- see swingtrade/config.py's lowvol_*
+    fields and swingtrade/levels.compute_lowvol_rank_frame()/
+    precompute_lowvol_frame() for the full mechanism.
+
+    `rank_column` should be THIS ticker's own column already sliced from a
+    shared universe-wide rank frame (see
+    swingtrade.levels.compute_lowvol_rank_frame()) -- caller's job to build
+    ONCE for the whole universe and slice per ticker. Without it,
+    LowVol_Signal is always False (no percentile data, degrades to "never
+    fires," same convention as every other optional-data-dependent
+    strategy)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_lowvol_frame(ohlcv, rank_column, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = lowvol_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        if not levels["LowVol_Signal"]:
+            continue
+
+        # See simulate_momentum_signals()'s identical comment -- never a
+        # gate here either, purely so backtest trades carry a real
+        # trade_score for ic_tracking.backtest_ic_check().
+        scored = add_lowvol_trade_score(pd.DataFrame([levels]), config).iloc[0]
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.lowvol_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+            dollar_volume=levels.get("Dollar_Volume"),
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "LowVol_Rank",
+            "trade_score": float(scored["Trade_Score"]),
+            "signal_strength_pct": float(levels["Signal_Strength_Pct"]),
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_lowvol_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_lowvol_signals() -- same idea as
+    simulate_random_momentum_entries(), using this strategy's own gates
+    (macro uptrend, liquidity via lowvol_levels_from_frame) and the SAME
+    config.lowvol_entry_fill-selected fill mechanic, so it isolates whether
+    cross-sectional low-vol-rank TIMING adds value over a random day using
+    the identical Buy_Price formula (that day's own Close) and entry/exit
+    structure. `n_trades` should be simulate_lowvol_signals()'s real signal
+    count for this ticker/window, so trade volume is matched.
+
+    Deliberately does NOT take `rank_column` -- called with rank_column=None,
+    so LowVol_Signal is always False, but the candidate pool is every day
+    that passed the shared macro/liquidity gates regardless (same "answers
+    whether TIMING adds value, not whether this filter helps" precedent
+    every other random baseline follows)."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_lowvol_frame(ohlcv, None, config)
+
+    candidates = []  # (as_of, buy_price, atr, catalyst_warning, dollar_volume) for every day that passed the macro/liquidity gates, lowvol signal or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = lowvol_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        candidates.append(
+            (as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"]), levels.get("Dollar_Volume"))
+        )
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr, catalyst_warning, dollar_volume in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.lowvol_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+            dollar_volume=dollar_volume,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_LowVol_Rank",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": catalyst_warning,
+            **result,
+        })
+
+    return trades
+
+
 def simulate_insider_buying_signals(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -3252,6 +3459,7 @@ def run_backtest(
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     insider_data: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
+    lowvol_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
     skew_regime: pd.Series | None = None,
     earnings_surprise_data: dict[str, pd.DataFrame] | None = None,
@@ -3359,6 +3567,19 @@ def run_backtest(
     limitation as insider_data -- not yet threaded through
     run_walk_forward()'s multiprocessing path, only this single-call
     sequential path, since no Optuna tuning pass for this strategy exists
+    yet either.
+
+    `lowvol_rank_frame` (optional, a wide DataFrame -- dates x tickers --
+    of every ticker's own trailing-volatility percentile, INVERTED so LOW
+    volatility reads as a HIGH percentile, see
+    swingtrade.levels.compute_lowvol_rank_frame()) backs the "lowvol_rank"
+    strategy -- same resolution convention as `momentum_rank_frame`
+    (universe-wide, sliced per ticker). `None` (default) means no
+    percentile data at all -- LowVol_Signal then always reads False, same
+    convention as momentum_rank_frame. NOTE: same limitation as
+    insider_data/earnings_surprise_data -- not yet threaded through
+    run_walk_forward()'s multiprocessing path, only this single-call
+    sequential path, since no Optuna tuning pass for this strategy exists
     yet either."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
@@ -3379,6 +3600,11 @@ def run_backtest(
         rank_column = (
             momentum_rank_frame[ticker]
             if momentum_rank_frame is not None and ticker in momentum_rank_frame.columns
+            else None
+        )
+        lowvol_rank_column = (
+            lowvol_rank_frame[ticker]
+            if lowvol_rank_frame is not None and ticker in lowvol_rank_frame.columns
             else None
         )
         if strategy == "rsi":
@@ -3442,12 +3668,17 @@ def run_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector, earnings_surprises=earnings_surprises,
             )
+        elif strategy == "lowvol_rank":
+            trades = simulate_lowvol_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector, rank_column=lowvol_rank_column,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
                 "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
-                "'insider_buying', 'momentum_rank', or 'pead')"
+                "'insider_buying', 'momentum_rank', 'pead', or 'lowvol_rank')"
             )
         all_trades.extend(trades)
     return all_trades
@@ -3563,12 +3794,17 @@ def run_random_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector,
             )
+        elif strategy == "lowvol_rank":
+            trades = simulate_random_lowvol_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
                 "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
-                "'insider_buying', 'momentum_rank', or 'pead')"
+                "'insider_buying', 'momentum_rank', 'pead', or 'lowvol_rank')"
             )
         all_trades.extend(trades)
     return all_trades

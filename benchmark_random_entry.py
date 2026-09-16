@@ -163,7 +163,7 @@ from run_backtest import (
 from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
 EARNINGS_AWARE_STRATEGIES = (
-    "squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank", "pead",
+    "squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank", "pead", "lowvol_rank",
 )  # the only
                                                                    # simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
@@ -189,6 +189,13 @@ MOMENTUM_AWARE_STRATEGIES = ("momentum_rank",)  # the only REAL simulate_*_signa
                                                                    # whether TIMING adds value"
                                                                    # precedent as PAIR_AWARE_STRATEGIES
                                                                    # above) that accepts rank_column
+LOWVOL_AWARE_STRATEGIES = ("lowvol_rank",)  # same "only the REAL simulate_*_signals() accepts
+                                                                   # rank_column" precedent as
+                                                                   # MOMENTUM_AWARE_STRATEGIES -- a
+                                                                   # SEPARATE tuple/panel because
+                                                                   # lowvol_rank's rank_column is a
+                                                                   # different universe-wide frame
+                                                                   # (trailing volatility, not return)
 PEAD_AWARE_STRATEGIES = ("pead",)  # the only REAL simulate_*_signals() (not the random
                                                                    # baseline -- same reasoning as
                                                                    # INSIDER_AWARE_STRATEGIES above) that
@@ -301,7 +308,7 @@ def main():
         choices=[
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
             "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover", "pairs",
-            "insider_buying", "momentum_rank", "pead",
+            "insider_buying", "momentum_rank", "pead", "lowvol_rank",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -675,6 +682,13 @@ def main():
         momentum_panel = pd.DataFrame({t: ticker_data[t]["Close"] for t in ticker_data})
         momentum_rank_frame = swingtrade.compute_momentum_rank_frame(momentum_panel, config.momentum_lookback_days)
 
+    lowvol_rank_frame: pd.DataFrame | None = None
+    if args.strategy in LOWVOL_AWARE_STRATEGIES:
+        # Same "no new fetch, one universe-wide panel, rank once" pattern as
+        # momentum_rank_frame immediately above -- see LOWVOL_AWARE_STRATEGIES.
+        lowvol_panel = pd.DataFrame({t: ticker_data[t]["Close"] for t in ticker_data})
+        lowvol_rank_frame = swingtrade.compute_lowvol_rank_frame(lowvol_panel, config.lowvol_lookback_days)
+
     if args.with_lookahead_audit:
         precompute_fn = LOOKAHEAD_PRECOMPUTE_FN.get(args.strategy)
         if precompute_fn is None:
@@ -759,6 +773,9 @@ def main():
     elif args.strategy == "pead":
         real_fn, random_fn = swingtrade.simulate_pead_signals, swingtrade.simulate_random_pead_entries
         real_label = "PEAD-timed"
+    elif args.strategy == "lowvol_rank":
+        real_fn, random_fn = swingtrade.simulate_lowvol_signals, swingtrade.simulate_random_lowvol_entries
+        real_label = "LowVol_Rank-timed"
     else:
         real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
         real_label = "MA_Crossover-timed"
@@ -794,12 +811,18 @@ def main():
         if momentum_rank_frame is None or ticker not in momentum_rank_frame.columns:
             return {"rank_column": None}
         return {"rank_column": momentum_rank_frame[ticker]}
+    def lowvol_kwargs(ticker):
+        if args.strategy not in LOWVOL_AWARE_STRATEGIES:
+            return {}
+        if lowvol_rank_frame is None or ticker not in lowvol_rank_frame.columns:
+            return {"rank_column": None}
+        return {"rank_column": lowvol_rank_frame[ticker]}
     for i, (ticker, ohlcv) in enumerate(ticker_data.items()):
         sector = sector_lookup.get(ticker, "Unknown")
         real = real_fn(
             ticker, ohlcv, market_data, start, end, config,
             **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker), **peer_kwargs(ticker),
-            **insider_kwargs(ticker), **momentum_kwargs(ticker), **pead_kwargs(ticker),
+            **insider_kwargs(ticker), **momentum_kwargs(ticker), **pead_kwargs(ticker), **lowvol_kwargs(ticker),
         )
         real_trades.extend(real)
         real_counts[ticker] = len(real)

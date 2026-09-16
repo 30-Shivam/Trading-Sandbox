@@ -868,6 +868,44 @@ class TradingConfig:
                                            # (check fill-model sensitivity
                                            # proactively, not after promotion)
 
+    # Low-volatility rank (2026-09-16) -- cross-sectional counterpart to
+    # momentum_rank, ranking every ticker by trailing REALIZED VOLATILITY
+    # (stdev of daily returns over lowvol_lookback_days) instead of trailing
+    # RETURN, and buying the bottom-vol decile (Ang/Hodges/Xing/Zhang
+    # low-volatility anomaly) instead of the top-return decile. Deliberately
+    # the mirror image of momentum_rank's architecture (same rank-once-per-
+    # universe/slice-per-ticker pattern, same macro-uptrend/liquidity gates
+    # via precompute_breakout_frame(), same limit/next_open fill toggle) --
+    # a genuinely different signal family (defensive/quality-style factor,
+    # not a trend/momentum/mean-reversion read) reusing proven, already-
+    # validated plumbing rather than inventing a new mechanism. Fires on
+    # LowVol_Percentile >= lowvol_top_percentile_min, where LowVol_Percentile
+    # is defined so LOW realized volatility maps to a HIGH percentile (100 =
+    # least volatile ticker in the universe that day) -- keeps the ">=
+    # threshold fires" convention identical to momentum_rank despite the
+    # underlying quantity being inverted.
+    lowvol_lookback_days: int = 63  # trailing realized-vol formation window
+                                           # (trading days, ~3 months) -- matches
+                                           # momentum_lookback_days's own default
+                                           # for a direct, apples-to-apples
+                                           # comparison between the two
+                                           # cross-sectional rank strategies
+    lowvol_top_percentile_min: float = 90.0  # a ticker's (inverted) volatility
+                                           # percentile must clear this to fire --
+                                           # 90 = bottom decile of REAL realized
+                                           # volatility, same "top decile of the
+                                           # ranked quantity" framing momentum_rank
+                                           # uses
+    lowvol_strength_cap_pct: float = 10.0  # extra percentile points past
+                                           # lowvol_top_percentile_min that earn
+                                           # full Signal_Strength_Pct credit --
+                                           # same "reused field name, different
+                                           # units" precedent as
+                                           # momentum_strength_cap_pct
+    lowvol_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle
+                                           # every other strategy has, built in
+                                           # from day one per the item-37 lesson
+
     # Insider-buying (2026-08-21) -- buy when recent, real-dollar insider
     # Form-4 purchases cluster within a lookback window, in a confirmed
     # macro uptrend. See run_backtest.fetch_insider_purchases() for the
