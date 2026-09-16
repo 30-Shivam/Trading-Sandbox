@@ -4616,6 +4616,136 @@ def permutation_test_gap(
     }
 
 
+def simulate_sector_rotation_rebalanced(
+    sector_panel: pd.DataFrame,
+    lookback_days: int,
+    top_n: int,
+    rebalance_frequency_days: int,
+) -> list[dict]:
+    """A STRUCTURALLY DIFFERENT backtest paradigm from every other function
+    in this module: an actual REBALANCED PORTFOLIO (hold a sector while it
+    keeps qualifying, exit only when it genuinely falls out of the top-N,
+    re-evaluated periodically) rather than a discrete daily signal reusing
+    a fixed ATR stop/target/max-holding-day exit. This codebase has never
+    had a real rebalance-portfolio engine before (see
+    simulate_sector_rotation_signals()'s own docstring, which explicitly
+    notes the lack) -- this is the first one, built specifically to test
+    whether the discrete daily-signal version of sector rotation's own
+    negative result (2026-09-16, TUNE/HOLDOUT disagree, NOT promoted) was a
+    genuine absence of edge or an artifact of firing on EVERY day a sector
+    qualified (98.6% same-ticker overlap, "stays invested" rather than
+    "rotates") instead of holding a position across the whole time it
+    qualifies.
+
+    Deliberately operates on SECTOR ETFs directly (not individual member
+    tickers) -- the classic, real-world-executable form of sector rotation
+    (an investor can actually buy/hold/sell XLK/XLF/etc. with real capital,
+    no stock-picking-within-a-sector step needed), and it sidesteps the
+    prior attempt's own overlap problem entirely (11 positions max, never
+    hundreds of overlapping per-ticker entries).
+
+    `sector_panel`: wide DataFrame of Close prices, one column per sector
+    NAME (same construction as compute_sector_rotation_rank_frame()'s own
+    `sector_panel` argument). `lookback_days`: trailing-return formation
+    window (same role as sector_rotation_lookback_days). `top_n`: how many
+    of the ~11 sectors to hold at once. `rebalance_frequency_days`: how
+    often (in trading days) to re-evaluate which sectors qualify -- between
+    rebalance dates, an already-held sector is held UNCHANGED regardless of
+    its price path (no ATR stop/target here at all -- this is a genuine
+    buy-and-hold-until-rotated-out position, not a swing trade).
+
+    Returns a list of trade dicts SCHEMA-COMPATIBLE with summarize_trades()/
+    compute_max_drawdown()/compute_k_ratio() (`ticker` is actually the
+    SECTOR name here, `entry_date`/`exit_date`/`pnl_pct`/`status` all
+    present) -- one dict per CONTIGUOUS holding span (a sector held across
+    several consecutive rebalance dates without ever dropping out of the
+    top-N produces ONE trade spanning the whole span, not one per
+    rebalance check). A sector still held at the final rebalance date is
+    closed out (marked WIN/LOSS, never left OPEN) at that date's own
+    price -- deliberately different from every other strategy's "OPEN =
+    excluded from PnL stats" convention, since the goal here is a complete,
+    fair total-return comparison over the whole tested window, not an
+    honest "no outcome yet" for a signal that fired near the data's edge."""
+    trailing_return = sector_panel.pct_change(periods=lookback_days)
+    rebalance_dates = sector_panel.index[lookback_days::rebalance_frequency_days]
+
+    current_holdings: dict[str, dict] = {}  # sector -> {"entry_date", "entry_price"}
+    trades: list[dict] = []
+
+    for rebalance_date in rebalance_dates:
+        row = trailing_return.loc[rebalance_date].dropna()
+        target = set(row.nlargest(top_n).index) if len(row) > 0 else set()
+
+        for sector in list(current_holdings):
+            if sector in target:
+                continue
+            entry = current_holdings.pop(sector)
+            exit_price = float(sector_panel.loc[rebalance_date, sector])
+            trades.append(_close_rotation_trade(sector, entry, rebalance_date, exit_price))
+
+        for sector in target:
+            if sector in current_holdings:
+                continue
+            current_holdings[sector] = {
+                "entry_date": rebalance_date,
+                "entry_price": float(sector_panel.loc[rebalance_date, sector]),
+            }
+
+    final_date = sector_panel.index[-1]
+    for sector, entry in current_holdings.items():
+        exit_price = float(sector_panel.loc[final_date, sector])
+        trades.append(_close_rotation_trade(sector, entry, final_date, exit_price))
+
+    return trades
+
+
+def _close_rotation_trade(sector: str, entry: dict, exit_date, exit_price: float) -> dict:
+    """Shared close-out helper for simulate_sector_rotation_rebalanced() --
+    both the mid-run "fell out of top-N" exit and the end-of-window
+    mark-to-market close-out build the identical trade-dict shape."""
+    entry_price = entry["entry_price"]
+    pnl_pct = round((exit_price - entry_price) / entry_price * 100, 4) if entry_price else 0.0
+    return {
+        "ticker": sector,
+        "entry_date": entry["entry_date"],
+        "exit_date": exit_date,
+        "buy_price": entry_price,
+        "sell_price": exit_price,
+        "pnl_pct": pnl_pct,
+        "status": "WIN" if pnl_pct > 0 else ("LOSS" if pnl_pct < 0 else "EXPIRED"),
+    }
+
+
+def compute_equal_weight_buy_and_hold(sector_panel: pd.DataFrame, lookback_days: int) -> list[dict]:
+    """The natural passive-benchmark counterpart to
+    simulate_sector_rotation_rebalanced() -- buy every sector that has
+    valid history ONCE (at the same date the rotation strategy's own first
+    rebalance would use, so both start from an identical, fair starting
+    line) and hold to the end, unweighted by any rotation skill. Answers
+    'does picking winners beat just owning the whole sector universe
+    equally', the standard evaluation baseline for a rotation/momentum
+    strategy -- a real, executable alternative (an investor could equally
+    just buy-and-hold all 11 SPDR sector ETFs), not a synthetic random-entry
+    timing baseline like every discrete-signal strategy in this module
+    uses (there's no daily entry DECISION here to randomize against).
+
+    Returns the same trade-dict shape as simulate_sector_rotation_rebalanced()
+    -- one row per sector, entry at the shared start date, exit at the
+    panel's own final date."""
+    start_date = sector_panel.index[lookback_days]
+    final_date = sector_panel.index[-1]
+    trades = []
+    for sector in sector_panel.columns:
+        entry_price = sector_panel.loc[start_date, sector]
+        exit_price = sector_panel.loc[final_date, sector]
+        if pd.isna(entry_price) or pd.isna(exit_price):
+            continue
+        trades.append(_close_rotation_trade(
+            sector, {"entry_date": start_date, "entry_price": float(entry_price)}, final_date, float(exit_price),
+        ))
+    return trades
+
+
 def simulate_portfolio_constrained(
     trades: list[dict],
     starting_capital: float,
