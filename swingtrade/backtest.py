@@ -93,11 +93,13 @@ from .levels import (
     precompute_pead_frame,
     precompute_pullback_frame,
     precompute_rsi_frame,
+    precompute_sector_rotation_frame,
     precompute_squeeze_breakout_frame,
     precompute_week52_frame,
     pairs_levels_from_frame,
     pullback_levels_from_frame,
     rule_exit_to_config,
+    sector_rotation_levels_from_frame,
     squeeze_breakout_levels_from_frame,
     week52_levels_from_frame,
 )
@@ -107,6 +109,7 @@ from .scoring import (
     add_momentum_trade_score,
     add_pairs_trade_score,
     add_pead_trade_score,
+    add_sector_rotation_trade_score,
     add_squeeze_breakout_trade_score,
     add_trade_score,
 )
@@ -2369,6 +2372,210 @@ def simulate_random_lowvol_entries(
     return trades
 
 
+def simulate_sector_rotation_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+    rank_column: pd.Series | None = None,
+) -> list[dict]:
+    """Cross-sectional SECTOR ROTATION counterpart to simulate_momentum_signals()/
+    simulate_lowvol_signals() -- buys a ticker whose OWN SECTOR's trailing-
+    return percentile rank (across the ~11 GICS sector ETFs, NOT the ticker
+    watchlist) clears config.sector_rotation_top_percentile_min, in a
+    confirmed macro uptrend. Exact structural mirror of
+    simulate_momentum_signals() -- see swingtrade/config.py's
+    sector_rotation_* fields and swingtrade/levels.compute_sector_rotation_rank_frame()/
+    precompute_sector_rotation_frame() for the full mechanism.
+
+    `rank_column` should be THIS TICKER'S OWN SECTOR'S column already
+    sliced from a shared sector-wide rank frame (see
+    swingtrade.levels.compute_sector_rotation_rank_frame()) -- caller's job
+    to build ONCE across the sector ETFs and resolve per ticker via
+    sector_lookup (every ticker in the same sector shares the identical
+    column, unlike momentum_rank_frame's per-ticker columns). Without it,
+    SectorRotation_Signal is always False, same "missing optional data
+    never fabricates a signal" convention as every other strategy."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_sector_rotation_frame(ohlcv, rank_column, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = sector_rotation_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        if not levels["SectorRotation_Signal"]:
+            continue
+
+        # See simulate_momentum_signals()'s identical comment -- never a
+        # gate here either, purely so backtest trades carry a real
+        # trade_score for ic_tracking.backtest_ic_check().
+        scored = add_sector_rotation_trade_score(pd.DataFrame([levels]), config).iloc[0]
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.sector_rotation_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+            dollar_volume=levels.get("Dollar_Volume"),
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Sector_Rotation",
+            "trade_score": float(scored["Trade_Score"]),
+            "signal_strength_pct": float(levels["Signal_Strength_Pct"]),
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_sector_rotation_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_sector_rotation_signals() -- same
+    idea as simulate_random_momentum_entries(), using this strategy's own
+    gates (macro uptrend, liquidity via sector_rotation_levels_from_frame)
+    and the SAME config.sector_rotation_entry_fill-selected fill mechanic,
+    so it isolates whether sector-rotation TIMING adds value over a random
+    day. `n_trades` should be simulate_sector_rotation_signals()'s real
+    signal count for this ticker/window, so trade volume is matched.
+
+    Deliberately does NOT take `rank_column` -- called with rank_column=None,
+    so SectorRotation_Signal is always False, but the candidate pool is
+    every day that passed the shared macro/liquidity gates regardless, same
+    "answers whether TIMING adds value, not whether this filter helps"
+    precedent every other random baseline follows."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_sector_rotation_frame(ohlcv, None, config)
+
+    candidates = []  # (as_of, buy_price, atr, catalyst_warning, dollar_volume) for every day that passed the macro/liquidity gates, sector-rotation signal or not
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = sector_rotation_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        candidates.append(
+            (as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"]), levels.get("Dollar_Volume"))
+        )
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr, catalyst_warning, dollar_volume in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.sector_rotation_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+            dollar_volume=dollar_volume,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_Sector_Rotation",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": catalyst_warning,
+            **result,
+        })
+
+    return trades
+
+
 def simulate_insider_buying_signals(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -3460,6 +3667,7 @@ def run_backtest(
     insider_data: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
     lowvol_rank_frame: pd.DataFrame | None = None,
+    sector_rotation_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
     skew_regime: pd.Series | None = None,
     earnings_surprise_data: dict[str, pd.DataFrame] | None = None,
@@ -3580,7 +3788,21 @@ def run_backtest(
     insider_data/earnings_surprise_data -- not yet threaded through
     run_walk_forward()'s multiprocessing path, only this single-call
     sequential path, since no Optuna tuning pass for this strategy exists
-    yet either."""
+    yet either.
+
+    `sector_rotation_rank_frame` (optional, a wide DataFrame -- dates x
+    SECTOR NAMES, not tickers -- of every GICS sector ETF's own trailing-
+    return percentile among the OTHER sectors, see
+    swingtrade.levels.compute_sector_rotation_rank_frame()) backs the
+    "sector_rotation" strategy. UNLIKE `momentum_rank_frame`/
+    `lowvol_rank_frame` (resolved by TICKER), this is resolved by the
+    ticker's own SECTOR via `sector_lookup` -- every ticker in the same
+    sector shares the identical column. `None` (default) means no
+    percentile data at all -- SectorRotation_Signal then always reads
+    False, same convention as momentum_rank_frame. NOTE: same limitation as
+    momentum_rank_frame's own insider_data/earnings_surprise_data note --
+    not yet threaded through run_walk_forward()'s multiprocessing path,
+    only this single-call sequential path."""
     earnings_data = earnings_data or {}
     sector_lookup = sector_lookup or {}
     sector_data = sector_data or {}
@@ -3605,6 +3827,11 @@ def run_backtest(
         lowvol_rank_column = (
             lowvol_rank_frame[ticker]
             if lowvol_rank_frame is not None and ticker in lowvol_rank_frame.columns
+            else None
+        )
+        sector_rotation_rank_column = (
+            sector_rotation_rank_frame[sector]
+            if sector_rotation_rank_frame is not None and sector in sector_rotation_rank_frame.columns
             else None
         )
         if strategy == "rsi":
@@ -3673,12 +3900,17 @@ def run_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector, rank_column=lowvol_rank_column,
             )
+        elif strategy == "sector_rotation":
+            trades = simulate_sector_rotation_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector, rank_column=sector_rotation_rank_column,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
                 "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
-                "'insider_buying', 'momentum_rank', 'pead', or 'lowvol_rank')"
+                "'insider_buying', 'momentum_rank', 'pead', 'lowvol_rank', or 'sector_rotation')"
             )
         all_trades.extend(trades)
     return all_trades
@@ -3799,12 +4031,17 @@ def run_random_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector,
             )
+        elif strategy == "sector_rotation":
+            trades = simulate_random_sector_rotation_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
                 "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
-                "'insider_buying', 'momentum_rank', 'pead', or 'lowvol_rank')"
+                "'insider_buying', 'momentum_rank', 'pead', 'lowvol_rank', or 'sector_rotation')"
             )
         all_trades.extend(trades)
     return all_trades

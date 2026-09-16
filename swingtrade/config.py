@@ -906,6 +906,48 @@ class TradingConfig:
                                            # every other strategy has, built in
                                            # from day one per the item-37 lesson
 
+    # Sector rotation (2026-09-16) -- a DIFFERENT cross-sectional rank than
+    # momentum_rank/lowvol_rank: ranks the (~11) GICS SECTOR ETFs against
+    # EACH OTHER by trailing return, and fires for every ticker whose OWN
+    # sector clears the top-percentile threshold -- a portfolio-level bet
+    # (which sectors are leading) expressed as a per-ticker discrete signal,
+    # same "no real rebalance-portfolio engine, reuse the ATR stop/target/
+    # max-holding-day exit every strategy shares" simplification
+    # momentum_rank's own docstring already established for THIS codebase.
+    # Deliberately NOT the same signal as the already-REMOVED
+    # best_ideas_sector_rs methodology (see improvements.txt/trading-
+    # strategy-status) -- that ranked each TICKER against its OWN sector
+    # (intra-sector relative strength, an LLM-narrative-scored input); this
+    # ranks SECTORS against EACH OTHER (inter-sector rotation, a fully
+    # mechanical rank-and-gate signal) -- a genuinely different mechanism
+    # despite the similar-sounding name, not a re-run of a known negative.
+    sector_rotation_lookback_days: int = 63  # trailing-return formation window
+                                           # for each SECTOR ETF (trading days,
+                                           # ~3 months) -- matches
+                                           # momentum_lookback_days/
+                                           # lowvol_lookback_days's own defaults
+    sector_rotation_top_percentile_min: float = 90.0  # a ticker's OWN SECTOR's
+                                           # trailing-return percentile (0-100
+                                           # scale, ranked across only ~11
+                                           # sector ETFs, not the whole ticker
+                                           # universe) must clear this to fire.
+                                           # With ~11 sectors this naturally
+                                           # selects roughly the top 2 -- a
+                                           # sensible rotation breadth, not an
+                                           # accident of reusing momentum's
+                                           # default unchanged
+    sector_rotation_strength_cap_pct: float = 10.0  # extra percentile points
+                                           # past sector_rotation_top_percentile_min
+                                           # that earn full Signal_Strength_Pct
+                                           # credit -- same "reused field name,
+                                           # different units" precedent as
+                                           # momentum_strength_cap_pct/
+                                           # lowvol_strength_cap_pct
+    sector_rotation_entry_fill: str = "limit"  # same "limit" vs. "next_open"
+                                           # toggle every other strategy has,
+                                           # built in from day one per the
+                                           # item-37 lesson
+
     # Insider-buying (2026-08-21) -- buy when recent, real-dollar insider
     # Form-4 purchases cluster within a lookback window, in a confirmed
     # macro uptrend. See run_backtest.fetch_insider_purchases() for the

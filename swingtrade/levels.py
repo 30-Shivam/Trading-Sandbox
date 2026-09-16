@@ -2058,6 +2058,170 @@ def compute_lowvol_levels(
     return lowvol_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def compute_sector_rotation_rank_frame(sector_panel: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
+    """Cross-sectional percentile rank of every SECTOR ETF's own trailing
+    RETURN against every OTHER sector (not every other ticker) -- the
+    inter-sector-rotation counterpart to compute_momentum_rank_frame(),
+    same "whole-universe operation done once" rationale but the "universe"
+    here is the ~11 GICS sector ETFs (see watchlist.SECTOR_ETF), not the
+    ticker watchlist.
+
+    `sector_panel` should be a wide DataFrame of Close prices, one column
+    per SECTOR NAME (e.g. "Technology", "Financials", ...) -- built from
+    the same sector ETF OHLCV every SECTOR_AWARE_STRATEGIES caller already
+    fetches (see watchlist.SECTOR_ETF), NOT one column per ticker.
+
+    Returns a DataFrame the same shape as `sector_panel` (dates x sectors),
+    each cell = that SECTOR's trailing-return percentile among all sectors
+    on that day (100 = strongest sector, matching compute_momentum_rank_frame()'s
+    own "highest value reads 100" convention exactly, unlike
+    compute_lowvol_rank_frame()'s deliberately-inverted one). A sector with
+    fewer than `lookback_days` of prior history reads NaN, same "missing
+    data doesn't fabricate a signal" convention as compute_momentum_rank_frame()."""
+    trailing_return = sector_panel.pct_change(periods=lookback_days)
+    return trailing_return.rank(axis=1, pct=True) * 100
+
+
+def precompute_sector_rotation_frame(
+    df: pd.DataFrame,
+    rank_column: pd.Series | None = None,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> pd.DataFrame:
+    """Vectorized precompute of the cross-sectional SECTOR ROTATION
+    strategy's columns -- built on top of precompute_breakout_frame() (reused
+    wholesale for SMA_TREND/ATR/AvgVolume/etc., the same macro-uptrend/
+    liquidity gates every strategy shares), exact structural mirror of
+    precompute_momentum_frame()/precompute_lowvol_frame().
+
+    `rank_column`, if given, should be THIS TICKER'S OWN SECTOR'S column
+    already sliced from a shared sector-wide rank frame built once via
+    compute_sector_rotation_rank_frame() -- unlike momentum_rank_frame/
+    lowvol_rank_frame (sliced by TICKER, one column per ticker), this is
+    sliced by the ticker's SECTOR (every ticker in the same sector shares
+    the identical column) -- caller's job to resolve `sector_lookup[ticker]`
+    into the right column. Missing (None) degrades to "never fires" rather
+    than excluding the ticker outright, same convention as
+    precompute_momentum_frame()."""
+    df = precompute_breakout_frame(df, config)
+    df["SectorRotation_Percentile"] = rank_column.reindex(df.index) if rank_column is not None else np.nan
+    return df
+
+
+def sector_rotation_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract the cross-sectional SECTOR ROTATION strategy's dict for one
+    row of a frame already built by precompute_sector_rotation_frame() --
+    exact structural mirror of momentum_levels_from_frame()/
+    lowvol_levels_from_frame(), differing only in which precomputed
+    percentile column gates the signal. Same macro-uptrend/liquidity gates
+    every strategy shares (via precompute_breakout_frame(), reused
+    wholesale)."""
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, rsi = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"], last_row["RSI"],
+    )
+    sector_rotation_percentile = last_row["SectorRotation_Percentile"]
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+
+    last_close, sma_trend, atr, avg_volume = float(last_close), float(sma_trend), float(atr), float(avg_volume)
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    if pd.isna(sector_rotation_percentile):
+        sector_rotation_signal = False
+        sector_rotation_percentile_out = None
+        signal_strength_pct = 0.0
+    else:
+        sector_rotation_percentile = float(sector_rotation_percentile)
+        sector_rotation_signal = bool(sector_rotation_percentile >= config.sector_rotation_top_percentile_min)
+        sector_rotation_percentile_out = round(sector_rotation_percentile, 2)
+        signal_strength_pct = (
+            round(sector_rotation_percentile - config.sector_rotation_top_percentile_min, 2)
+            if sector_rotation_signal else 0.0
+        )
+
+    buy_price = round(last_close, 2)
+    distance_to_buy_pct = 0.0
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "SectorRotation_Percentile": sector_rotation_percentile_out,
+        "SectorRotation_Signal": sector_rotation_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": distance_to_buy_pct,
+        "Signal_Strength_Pct": signal_strength_pct,
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+        "Dollar_Volume": round(dollar_volume, 2),
+    }
+
+
+def compute_sector_rotation_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+    rank_column: pd.Series | None = None,
+) -> dict:
+    """Compute cross-sectional SECTOR ROTATION levels for one ticker's
+    OHLCV history -- see precompute_sector_rotation_frame()'s own docstring
+    for the full mechanism (`rank_column` should be THIS TICKER'S SECTOR'S
+    own column, not the ticker's own). Thin wrapper, exact mirror of
+    compute_momentum_levels()/compute_lowvol_levels()."""
+    frame = precompute_sector_rotation_frame(df, rank_column, config)
+    as_of = frame.index[-1]
+    return sector_rotation_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def classify_insider_transaction(text) -> str:
     """Classifies one yfinance insider_transactions row's free-text "Text"
     field -- the "Transaction" column itself returns empty in the

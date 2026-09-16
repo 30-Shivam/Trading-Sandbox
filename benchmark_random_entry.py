@@ -164,6 +164,7 @@ from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
 EARNINGS_AWARE_STRATEGIES = (
     "squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank", "pead", "lowvol_rank",
+    "sector_rotation",
 )  # the only
                                                                    # simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
@@ -196,6 +197,24 @@ LOWVOL_AWARE_STRATEGIES = ("lowvol_rank",)  # same "only the REAL simulate_*_sig
                                                                    # lowvol_rank's rank_column is a
                                                                    # different universe-wide frame
                                                                    # (trailing volatility, not return)
+SECTOR_ROTATION_AWARE_STRATEGIES = ("sector_rotation",)  # same "only the REAL simulate_*_signals()
+                                                                   # accepts rank_column" precedent --
+                                                                   # a SEPARATE tuple from
+                                                                   # SECTOR_AWARE_STRATEGIES above:
+                                                                   # that one passes a per-ticker
+                                                                   # sector_ohlcv kwarg (breakout/
+                                                                   # squeeze_breakout/ma_crossover's
+                                                                   # OWN Sector_Relative_Strength
+                                                                   # filter), this one passes a
+                                                                   # sector-wide rank_column (see
+                                                                   # SECTOR_ETF_FETCH_STRATEGIES below
+                                                                   # for the shared ETF-fetch trigger
+                                                                   # both draw from)
+SECTOR_ETF_FETCH_STRATEGIES = SECTOR_AWARE_STRATEGIES + SECTOR_ROTATION_AWARE_STRATEGIES  # every
+                                                                   # strategy that needs sector ETF
+                                                                   # OHLCV fetched at all, regardless
+                                                                   # of which shape (sector_ohlcv vs.
+                                                                   # rank_column) it's turned into
 PEAD_AWARE_STRATEGIES = ("pead",)  # the only REAL simulate_*_signals() (not the random
                                                                    # baseline -- same reasoning as
                                                                    # INSIDER_AWARE_STRATEGIES above) that
@@ -308,7 +327,7 @@ def main():
         choices=[
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
             "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover", "pairs",
-            "insider_buying", "momentum_rank", "pead", "lowvol_rank",
+            "insider_buying", "momentum_rank", "pead", "lowvol_rank", "sector_rotation",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -618,7 +637,7 @@ def main():
         print(f"Got dividend history for {len(dividend_history)}/{len(ticker_data)} ticker(s).")
 
     sector_data: dict[str, pd.DataFrame] = {}
-    if args.strategy in SECTOR_AWARE_STRATEGIES:
+    if args.strategy in SECTOR_ETF_FETCH_STRATEGIES:
         present_sectors = sorted({sector_lookup[t] for t in ticker_data if t in sector_lookup} & set(SECTOR_ETF))
         if present_sectors:
             print(f"\nFetching {len(present_sectors)} sector ETF(s) for Sector_Relative_Strength...")
@@ -628,6 +647,19 @@ def main():
                 etf_df = fetch_history(SECTOR_ETF[sector], start, end)
                 if not etf_df.empty:
                     sector_data[sector] = etf_df
+
+    sector_rotation_rank_frame: pd.DataFrame | None = None
+    if args.strategy in SECTOR_ROTATION_AWARE_STRATEGIES and sector_data:
+        # No new fetch -- sector_data was already populated above (this
+        # strategy is in SECTOR_ETF_FETCH_STRATEGIES). ONE wide panel across
+        # every fetched sector ETF's Close, rank-computed ONCE via
+        # swingtrade.compute_sector_rotation_rank_frame() and sliced per
+        # TICKER'S OWN SECTOR below (see sector_rotation_kwargs()) -- NOT
+        # per ticker, unlike momentum_rank_frame/lowvol_rank_frame.
+        sector_panel = pd.DataFrame({sector: df["Close"] for sector, df in sector_data.items()})
+        sector_rotation_rank_frame = swingtrade.compute_sector_rotation_rank_frame(
+            sector_panel, config.sector_rotation_lookback_days
+        )
 
     insider_data: dict[str, pd.DataFrame] = {}
     if args.strategy in INSIDER_AWARE_STRATEGIES:
@@ -776,6 +808,9 @@ def main():
     elif args.strategy == "lowvol_rank":
         real_fn, random_fn = swingtrade.simulate_lowvol_signals, swingtrade.simulate_random_lowvol_entries
         real_label = "LowVol_Rank-timed"
+    elif args.strategy == "sector_rotation":
+        real_fn, random_fn = swingtrade.simulate_sector_rotation_signals, swingtrade.simulate_random_sector_rotation_entries
+        real_label = "Sector_Rotation-timed"
     else:
         real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
         real_label = "MA_Crossover-timed"
@@ -817,12 +852,20 @@ def main():
         if lowvol_rank_frame is None or ticker not in lowvol_rank_frame.columns:
             return {"rank_column": None}
         return {"rank_column": lowvol_rank_frame[ticker]}
+    def sector_rotation_kwargs(ticker):
+        if args.strategy not in SECTOR_ROTATION_AWARE_STRATEGIES:
+            return {}
+        ticker_sector = sector_lookup.get(ticker, "Unknown")
+        if sector_rotation_rank_frame is None or ticker_sector not in sector_rotation_rank_frame.columns:
+            return {"rank_column": None}
+        return {"rank_column": sector_rotation_rank_frame[ticker_sector]}
     for i, (ticker, ohlcv) in enumerate(ticker_data.items()):
         sector = sector_lookup.get(ticker, "Unknown")
         real = real_fn(
             ticker, ohlcv, market_data, start, end, config,
             **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker), **peer_kwargs(ticker),
             **insider_kwargs(ticker), **momentum_kwargs(ticker), **pead_kwargs(ticker), **lowvol_kwargs(ticker),
+            **sector_rotation_kwargs(ticker),
         )
         real_trades.extend(real)
         real_counts[ticker] = len(real)
