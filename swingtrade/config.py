@@ -948,6 +948,44 @@ class TradingConfig:
                                            # built in from day one per the
                                            # item-37 lesson
 
+    # Quality/profitability rank (2026-09-16) -- a GENUINELY different DATA
+    # SOURCE from every other strategy in this codebase: real point-in-time
+    # fundamentals (annual Return-on-Equity) via SEC EDGAR's own free XBRL
+    # company-facts API (see sec_fundamentals.py), not yfinance OHLCV.
+    # Ranks every ticker's OWN most-recently-FILED ROE against the whole
+    # universe and fires for the top decile -- the well-documented
+    # profitability/quality anomaly (Fama-French RMW factor family),
+    # deliberately orthogonal to every price/volume-derived signal tried in
+    # this project so far (momentum, low-vol, sector rotation, RSI,
+    # breakout, etc.). Same cross-sectional rank-once-per-universe
+    # architecture as momentum_rank/lowvol_rank -- but the rank_column here
+    # is a LEVEL (this year's ROE), not a trailing return, updated only
+    # once a year per ticker when its 10-K is filed (low-turnover by
+    # nature, unlike the daily-updating price-based signals). Real
+    # limitation, not a silent gap: SEC EDGAR only covers SEC-registered
+    # (effectively US-listed) filers -- Canadian cross-listed tickers in
+    # this project's own watchlist.txt read no data, same "missing
+    # optional data never fabricates a signal" convention as every other
+    # optional filter.
+    quality_top_percentile_min: float = 90.0  # a ticker's ROE percentile
+                                           # rank (0-100 scale) must clear
+                                           # this to fire -- 90 = top decile,
+                                           # same "buy the top decile"
+                                           # framing momentum_rank/
+                                           # lowvol_rank use
+    quality_strength_cap_pct: float = 10.0  # extra percentile points past
+                                           # quality_top_percentile_min that
+                                           # earn full Signal_Strength_Pct
+                                           # credit -- same "reused field
+                                           # name, different units"
+                                           # precedent as
+                                           # momentum_strength_cap_pct/
+                                           # lowvol_strength_cap_pct
+    quality_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle
+                                           # every other strategy has, built
+                                           # in from day one per the item-37
+                                           # lesson
+
     # Insider-buying (2026-08-21) -- buy when recent, real-dollar insider
     # Form-4 purchases cluster within a lookback window, in a confirmed
     # macro uptrend. See run_backtest.fetch_insider_purchases() for the

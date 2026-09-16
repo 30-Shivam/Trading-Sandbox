@@ -145,6 +145,7 @@ import pandas as pd
 import yfinance as yf
 
 import ic_tracking
+import sec_fundamentals
 import storage
 import swingtrade
 from optimize import DEFAULT_HOLDOUT_SEEDS, average_holdout_summary, average_summaries
@@ -164,7 +165,7 @@ from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
 EARNINGS_AWARE_STRATEGIES = (
     "squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank", "pead", "lowvol_rank",
-    "sector_rotation",
+    "sector_rotation", "quality_rank",
 )  # the only
                                                                    # simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
@@ -190,6 +191,15 @@ MOMENTUM_AWARE_STRATEGIES = ("momentum_rank",)  # the only REAL simulate_*_signa
                                                                    # whether TIMING adds value"
                                                                    # precedent as PAIR_AWARE_STRATEGIES
                                                                    # above) that accepts rank_column
+QUALITY_AWARE_STRATEGIES = ("quality_rank",)  # same "only the REAL simulate_*_signals() accepts
+                                                                   # rank_column" precedent as
+                                                                   # MOMENTUM_AWARE_STRATEGIES -- a
+                                                                   # SEPARATE tuple because
+                                                                   # quality_rank's rank_column comes
+                                                                   # from a fundamentally different
+                                                                   # fetch (SEC EDGAR, network-bound,
+                                                                   # not reused from already-fetched
+                                                                   # OHLCV like every other rank frame)
 LOWVOL_AWARE_STRATEGIES = ("lowvol_rank",)  # same "only the REAL simulate_*_signals() accepts
                                                                    # rank_column" precedent as
                                                                    # MOMENTUM_AWARE_STRATEGIES -- a
@@ -234,6 +244,9 @@ STRENGTH_CAP_FIELD = {
     "pairs": "pairs_zscore_strength_cap",
     "momentum_rank": "momentum_strength_cap_pct",
     "pead": "pead_strength_cap_pct",
+    "lowvol_rank": "lowvol_strength_cap_pct",
+    "sector_rotation": "sector_rotation_strength_cap_pct",
+    "quality_rank": "quality_strength_cap_pct",
 }
 
 # Strategy -> its own precompute_*_frame() function (2026-09-13,
@@ -327,7 +340,7 @@ def main():
         choices=[
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
             "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover", "pairs",
-            "insider_buying", "momentum_rank", "pead", "lowvol_rank", "sector_rotation",
+            "insider_buying", "momentum_rank", "pead", "lowvol_rank", "sector_rotation", "quality_rank",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -721,6 +734,22 @@ def main():
         lowvol_panel = pd.DataFrame({t: ticker_data[t]["Close"] for t in ticker_data})
         lowvol_rank_frame = swingtrade.compute_lowvol_rank_frame(lowvol_panel, config.lowvol_lookback_days)
 
+    quality_rank_frame: pd.DataFrame | None = None
+    if args.strategy in QUALITY_AWARE_STRATEGIES:
+        # UNLIKE every other rank frame above, this genuinely fetches new
+        # data -- SEC EDGAR's free XBRL API, not a reuse of already-fetched
+        # OHLCV (see sec_fundamentals.py). One companyfacts call per
+        # ticker, real network I/O, so this is the slowest section of a
+        # quality_rank run.
+        full_date_range = pd.date_range(start, end, freq="D")
+        print(f"\nFetching point-in-time ROE for {len(ticker_data)} ticker(s) from SEC EDGAR "
+              "(one request per ticker, paced -- this is the slow part)...")
+        roe_panel = sec_fundamentals.build_roe_panel(list(ticker_data.keys()), full_date_range)
+        covered = roe_panel.notna().any().sum()
+        print(f"Got real SEC EDGAR fundamentals for {covered}/{len(ticker_data)} ticker(s) "
+              "(tickers with none -- e.g. Canadian cross-listed names -- read as 'never fires').")
+        quality_rank_frame = swingtrade.compute_quality_rank_frame(roe_panel)
+
     if args.with_lookahead_audit:
         precompute_fn = LOOKAHEAD_PRECOMPUTE_FN.get(args.strategy)
         if precompute_fn is None:
@@ -811,6 +840,9 @@ def main():
     elif args.strategy == "sector_rotation":
         real_fn, random_fn = swingtrade.simulate_sector_rotation_signals, swingtrade.simulate_random_sector_rotation_entries
         real_label = "Sector_Rotation-timed"
+    elif args.strategy == "quality_rank":
+        real_fn, random_fn = swingtrade.simulate_quality_signals, swingtrade.simulate_random_quality_entries
+        real_label = "Quality_Rank-timed"
     else:
         real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
         real_label = "MA_Crossover-timed"
@@ -859,13 +891,19 @@ def main():
         if sector_rotation_rank_frame is None or ticker_sector not in sector_rotation_rank_frame.columns:
             return {"rank_column": None}
         return {"rank_column": sector_rotation_rank_frame[ticker_sector]}
+    def quality_kwargs(ticker):
+        if args.strategy not in QUALITY_AWARE_STRATEGIES:
+            return {}
+        if quality_rank_frame is None or ticker not in quality_rank_frame.columns:
+            return {"rank_column": None}
+        return {"rank_column": quality_rank_frame[ticker]}
     for i, (ticker, ohlcv) in enumerate(ticker_data.items()):
         sector = sector_lookup.get(ticker, "Unknown")
         real = real_fn(
             ticker, ohlcv, market_data, start, end, config,
             **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker), **peer_kwargs(ticker),
             **insider_kwargs(ticker), **momentum_kwargs(ticker), **pead_kwargs(ticker), **lowvol_kwargs(ticker),
-            **sector_rotation_kwargs(ticker),
+            **sector_rotation_kwargs(ticker), **quality_kwargs(ticker),
         )
         real_trades.extend(real)
         real_counts[ticker] = len(real)
