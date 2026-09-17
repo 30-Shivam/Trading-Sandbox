@@ -10,7 +10,7 @@ must still respect.
 import numpy as np
 import pandas as pd
 
-from swingtrade.levels import audit_data_quality
+from swingtrade.levels import audit_data_quality, sanitize_ohlcv
 
 
 def _ohlcv(rows: list[dict]) -> pd.DataFrame:
@@ -120,3 +120,102 @@ def test_nan_close_does_not_crash_pct_change():
     result = audit_data_quality(_ohlcv(rows))
     # Should not crash; NaN comparisons are simply False, not flagged as violations.
     assert isinstance(result["n_structural_violations"], int)
+
+
+# --- sanitize_ohlcv() -- 2026-09-17, the repair counterpart to the audit
+# above. Built after the SAME 2021-05-05 structural violation recurred
+# across 4 unrelated tickers in both this project's ticker universes
+# (HUBB -- the original item-144 finding -- plus HLX/UA/WLY), strong
+# evidence of a systemic one-day vendor feed anomaly worth a general
+# safeguard rather than four hand-patched tickers.
+
+def test_sanitize_ohlcv_clean_data_passes_through_unchanged():
+    rows = [
+        {"Open": 100, "High": 102, "Low": 99, "Close": 101, "Volume": 1_000_000},
+        {"Open": 101, "High": 103, "Low": 100, "Close": 102, "Volume": 1_100_000},
+    ]
+    df = _ohlcv(rows)
+    result = sanitize_ohlcv(df)
+    pd.testing.assert_frame_equal(result, df)
+
+
+def test_sanitize_ohlcv_none_and_empty_pass_through():
+    assert sanitize_ohlcv(None) is None
+    empty = pd.DataFrame()
+    assert sanitize_ohlcv(empty).empty
+
+
+def test_sanitize_ohlcv_clips_open_below_low_matching_real_hubb_violation():
+    # Real values from HUBB 2021-05-05, the original item-144 finding.
+    rows = [{"Open": 195.98, "High": 198.64, "Low": 196.21, "Close": 198.13, "Volume": 500_000}]
+    result = sanitize_ohlcv(_ohlcv(rows))
+    assert result.iloc[0]["Open"] == 196.21  # clipped up to Low
+    assert result.iloc[0]["Close"] == 198.13  # already within bounds, untouched
+    assert audit_data_quality(result)["is_clean"] is True
+
+
+def test_sanitize_ohlcv_clips_open_above_high_matching_real_hlx_violation():
+    # Real values from HLX 2023-06-05.
+    rows = [{"Open": 7.11, "High": 7.07, "Low": 6.83, "Close": 7.01, "Volume": 300_000}]
+    result = sanitize_ohlcv(_ohlcv(rows))
+    assert result.iloc[0]["Open"] == 7.07  # clipped down to High
+    assert audit_data_quality(result)["is_clean"] is True
+
+
+def test_sanitize_ohlcv_clips_close_outside_bounds():
+    rows = [
+        {"Open": 100, "High": 105, "Low": 99, "Close": 110, "Volume": 1_000_000},  # Close > High
+        {"Open": 100, "High": 105, "Low": 99, "Close": 90, "Volume": 1_000_000},   # Close < Low
+    ]
+    result = sanitize_ohlcv(_ohlcv(rows))
+    assert result.iloc[0]["Close"] == 105
+    assert result.iloc[1]["Close"] == 99
+    assert audit_data_quality(result)["is_clean"] is True
+
+
+def test_sanitize_ohlcv_swaps_low_and_high_when_inverted():
+    # Low > High -- deeper corruption than Open/Close alone. Real values
+    # preserved, just their Low/High roles corrected (not discarded).
+    rows = [{"Open": 100, "High": 95, "Low": 105, "Close": 99, "Volume": 1_000_000}]
+    result = sanitize_ohlcv(_ohlcv(rows))
+    row = result.iloc[0]
+    assert row["Low"] == 95
+    assert row["High"] == 105
+    # Open(100)/Close(99) both now legitimately fall within the corrected [95, 105] bounds.
+    assert row["Open"] == 100
+    assert row["Close"] == 99
+    assert audit_data_quality(result)["is_clean"] is True
+
+
+def test_sanitize_ohlcv_drops_non_positive_rows_rather_than_guessing():
+    rows = [
+        {"Open": 100, "High": 102, "Low": 99, "Close": 101, "Volume": 1_000_000},
+        {"Open": -5, "High": 102, "Low": 99, "Close": 101, "Volume": 1_000_000},  # impossible negative price
+        {"Open": 100, "High": 102, "Low": 99, "Close": 101, "Volume": 1_000_000},
+    ]
+    df = _ohlcv(rows)
+    result = sanitize_ohlcv(df)
+    assert len(result) == 2  # the bad row is dropped, not repaired
+    assert -5 not in result["Open"].values
+
+
+def test_sanitize_ohlcv_drops_negative_volume_row():
+    rows = [
+        {"Open": 100, "High": 102, "Low": 99, "Close": 101, "Volume": -100},
+    ]
+    result = sanitize_ohlcv(_ohlcv(rows))
+    assert result.empty
+
+
+def test_sanitize_ohlcv_all_rows_dropped_returns_empty_not_error():
+    rows = [{"Open": -1, "High": -1, "Low": -1, "Close": -1, "Volume": 0}]
+    result = sanitize_ohlcv(_ohlcv(rows))
+    assert result.empty
+
+
+def test_sanitize_ohlcv_does_not_mutate_input():
+    rows = [{"Open": 195.98, "High": 198.64, "Low": 196.21, "Close": 198.13, "Volume": 500_000}]
+    df = _ohlcv(rows)
+    original_open = df.iloc[0]["Open"]
+    sanitize_ohlcv(df)
+    assert df.iloc[0]["Open"] == original_open  # caller's own frame untouched

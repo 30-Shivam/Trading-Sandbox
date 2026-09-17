@@ -102,7 +102,12 @@ def fetch_history(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.Dat
         return df
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    return df
+    # 2026-09-17: repair the rare-but-real structural OHLC violations
+    # audit_data_quality() catches (see swingtrade.sanitize_ohlcv()'s own
+    # docstring -- the same 2021-05-05 vendor anomaly recurred across 4
+    # unrelated tickers in both this project's universes) BEFORE any
+    # strategy's ATR/stop-loss/entry-fill math ever sees the row.
+    return swingtrade.sanitize_ohlcv(df)
 
 
 def fetch_earnings_dates(ticker: str) -> pd.DatetimeIndex:

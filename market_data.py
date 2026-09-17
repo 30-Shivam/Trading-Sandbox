@@ -59,6 +59,12 @@ def fetch_data(ticker: str) -> pd.DataFrame:
         df = df.iloc[:-1]
     if df.empty:
         raise RuntimeError(f"no usable (non-NaN Close) data returned for ticker '{ticker}'")
+    # 2026-09-17: same real-data-driven fix as run_backtest.fetch_history() --
+    # repair rare structural OHLC violations (see swingtrade.sanitize_ohlcv())
+    # before this LIVE data ever reaches a real signal calculation.
+    df = swingtrade.sanitize_ohlcv(df)
+    if df.empty:
+        raise RuntimeError(f"no usable data left for ticker '{ticker}' after sanitizing structural violations")
     return df
 
 

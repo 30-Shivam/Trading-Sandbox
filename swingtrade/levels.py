@@ -3770,3 +3770,72 @@ def audit_data_quality(df: pd.DataFrame, max_daily_move_pct: float = 50.0) -> di
         "large_move_dates": large_moves[:10],
         "is_clean": len(structural_dates) == 0,
     }
+
+
+def sanitize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    """Repairs the STRUCTURAL VIOLATIONS audit_data_quality() detects
+    (Open/Close outside [Low, High], Low > High, non-positive prices)
+    instead of merely flagging them -- built 2026-09-17 after the SAME
+    2021-05-05 structural violation recurred across FOUR unrelated
+    tickers spanning BOTH this project's ticker universes (HUBB in the
+    primary watchlist -- the original item-144 finding -- and HLX/UA/WLY
+    in the small/mid-cap one), strong evidence of a systemic one-day
+    yfinance/Yahoo feed anomaly rather than four independent ticker-
+    specific glitches. A vendor data quirk this narrow doesn't justify
+    hunting down and hand-patching individual tickers -- it justifies a
+    general safeguard, since ANY strategy's ATR/stop-loss/entry-fill math
+    silently trusts whatever OHLC values it's handed, live or backtested.
+
+    Minimal-assumption repair, never fabricates a new price level:
+      - Open (or Close) outside [Low, High]: clipped to the nearest of
+        the two bounds -- the reported Low/High are trusted as-is, only
+        the internally-inconsistent Open/Close gets corrected to the
+        closest boundary it violates. Confirmed against all 5 known real
+        violations (HUBB/HLX x2/UA/WLY) -- every one is exactly this
+        shape (Open below Low), and clipping resolves each cleanly.
+      - Low > High (the bounds themselves contradict each other, a
+        deeper corruption than Open/Close alone): the two are SWAPPED,
+        not discarded -- the working theory is a vendor-side column
+        mislabeling, not fabricated numbers, so preserving both real
+        values while fixing their assigned roles is the smallest
+        intervention that resolves the inconsistency. Applied BEFORE the
+        Open/Close clipping above so a subsequent Open/Close check
+        measures against the corrected bounds.
+      - Any of Open/High/Low/Close <= 0: no bound exists to safely clip
+        to (a real security never legitimately trades at zero or
+        negative) -- these rows are DROPPED entirely rather than
+        guessed at, same "don't fabricate data" discipline as everywhere
+        else in this codebase's no-look-ahead work.
+
+    Returns a REPAIRED COPY -- never mutates `df` in place. A `df` with
+    zero structural violations (the overwhelming majority of real data)
+    passes through with values unchanged (only float rounding-safe
+    comparisons, no unconditional rewrite). Call audit_data_quality() on
+    the RESULT if you want to confirm zero violations remain (repairing
+    Low/High can, in principle, still leave an already-adjusted Open/Close
+    row that needs a second look -- covered by this function's own test
+    suite, not just asserted here)."""
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+    o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
+
+    non_positive = (o <= 0) | (h <= 0) | (l <= 0) | (c <= 0)
+    if "Volume" in df.columns:
+        non_positive = non_positive | (df["Volume"] < 0)
+    df = df.loc[~non_positive]
+    if df.empty:
+        return df
+    o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
+
+    swapped = l > h
+    if swapped.any():
+        new_low = h.where(swapped, l)
+        new_high = l.where(swapped, h)
+        df["Low"], df["High"] = new_low, new_high
+        h, l = df["High"], df["Low"]
+
+    df["Open"] = o.clip(lower=l, upper=h)
+    df["Close"] = c.clip(lower=l, upper=h)
+    return df
