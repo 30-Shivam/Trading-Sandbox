@@ -1800,7 +1800,13 @@ def main():
                             else:
                                 st.caption(f"Audit: FAIL -- {audit['audit_notes']}")
 
-                        if verdict["decision"] in ("Buy", "Hold"):
+                        if verdict["decision"] in ("Buy", "Hold", "Avoid"):
+                            # 2026-09-20 REAL BUG FIX -- see ingest.run_llm_agent()'s
+                            # identical fix for the full writeup: "Avoid" used to be
+                            # silently discarded (never logged, never IC-tracked),
+                            # and Trade_Score used to be RAW confidence regardless
+                            # of decision (a confident bearish call would have shown
+                            # a HIGH trade_score, inverting the correlation).
                             atr = context["atr"]
                             buy_price = round(context["last_close"], 2)
                             sell_price = round(buy_price + llm_config.atr_take_profit_multiplier * atr, 2)
@@ -1809,7 +1815,8 @@ def main():
                             rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
                             llm_rows.append({
                                 "Ticker": ticker, "As_Of": row["As_Of"], "Signal": verdict["decision"],
-                                "Trade_Score": verdict["confidence"], "Last_Close": context["last_close"],
+                                "Trade_Score": best_ideas.llm_bullishness_score(verdict["decision"], verdict["confidence"]),
+                                "Last_Close": context["last_close"],
                                 "Buy_Price": buy_price, "Sell_Price": sell_price, "Stop_Loss": stop_loss,
                                 "RRR": rrr, "RSI": context["rsi"], "ATR": atr,
                                 "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
@@ -1826,10 +1833,14 @@ def main():
 
                 if llm_rows and storage_ok:
                     llm_df = pd.DataFrame(llm_rows)
-                    # "Hold" isn't in the shared Strong Buy/Buy/Watch/Ignore vocabulary
-                    # storage/signals.py expects -- map it to "Watch" (research tier),
-                    # same actionable/research split every mechanical strategy uses.
-                    llm_df["Signal"] = llm_df["Signal"].replace("Hold", "Watch")
+                    # Neither "Hold" nor "Avoid" is in the shared Strong Buy/Buy/
+                    # Watch/Ignore vocabulary storage/signals.py expects -- map both
+                    # to "Watch" (research tier, loggable), same actionable/research
+                    # split every mechanical strategy uses. Trade_Score (already
+                    # direction-aware via best_ideas.llm_bullishness_score() above)
+                    # is what distinguishes a bearish Avoid from a neutral Hold, not
+                    # the Signal label.
+                    llm_df["Signal"] = llm_df["Signal"].replace({"Hold": "Watch", "Avoid": "Watch"})
                     try:
                         logged = storage.log_trade_signals(llm_df, llm_config.to_dict())
                         st.caption(

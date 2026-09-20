@@ -231,8 +231,11 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
     flagged above Ignore today, capped at MAX_LLM_CANDIDATES, ranked by
     highest Trade_Score), same context-building (fundamentals, headlines,
     macro snapshot, qualitative snapshot -- see market_data.get_qualitative_snapshot()),
-    same Trade_Signals logging convention ("Hold" mapped to "Watch" since it
-    isn't in the shared Strong Buy/Buy/Watch/Ignore vocabulary). NEVER
+    same Trade_Signals logging convention ("Hold" AND "Avoid" both mapped
+    to "Watch" since neither is in the shared Strong Buy/Buy/Watch/Ignore
+    vocabulary -- Trade_Score, not the Signal label, is what distinguishes
+    a genuine bearish "Avoid" from a genuinely neutral "Hold", see
+    best_ideas.llm_bullishness_score()). NEVER
     capital-allocated -- Shares_To_Buy/Est_Cost are always 0, no cash pool,
     no allocate_capital() call, same as the dashboard tab.
 
@@ -324,7 +327,23 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
             if audit is not None:
                 print(f"    Audit: {audit['audit_result']} -- {audit['audit_notes']}")
 
-            if verdict["decision"] in ("Buy", "Hold"):
+            if verdict["decision"] in ("Buy", "Hold", "Avoid"):
+                # 2026-09-20 REAL BUG FIX: "Avoid" verdicts used to be
+                # silently discarded here (gate was Buy/Hold only) -- the
+                # IC-tracking system could never learn whether llm_agent's
+                # bearish calls were actually right, since they were never
+                # recorded as trades to measure outcomes against. And
+                # Trade_Score used to be the RAW confidence regardless of
+                # decision -- a confident "Hold" (genuinely uncertain) was
+                # indistinguishable from a confident "Buy" in the ranking,
+                # and a logged "Avoid" would have shown a HIGH trade_score
+                # for a BEARISH call, inverting the correlation entirely.
+                # best_ideas.llm_bullishness_score() already solves both
+                # (Buy stretches up from 50, Avoid stretches down from 50,
+                # Hold stays flatly 50 regardless of confidence) -- this
+                # standalone logging path just never reused it. See
+                # ic_tracking.ensemble_weight()'s own 2026-09-20 fix
+                # docstring for the sibling bug this was found alongside.
                 variant_config = swingtrade.TradingConfig(
                     **{**config.to_dict(), "strategy": llm_agent.variant_strategy_name(variant)}
                 )
@@ -336,7 +355,8 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
                 rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
                 llm_rows_by_variant[variant].append({
                     "Ticker": ticker, "As_Of": row["As_Of"], "Signal": verdict["decision"],
-                    "Trade_Score": verdict["confidence"], "Last_Close": context["last_close"],
+                    "Trade_Score": best_ideas.llm_bullishness_score(verdict["decision"], verdict["confidence"]),
+                    "Last_Close": context["last_close"],
                     "Buy_Price": buy_price, "Sell_Price": sell_price, "Stop_Loss": stop_loss,
                     "RRR": rrr, "RSI": context["rsi"], "ATR": atr,
                     "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
@@ -357,7 +377,7 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
         strategy_name = llm_agent.variant_strategy_name(variant)
         variant_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": strategy_name})
         llm_df = pd.DataFrame(llm_rows)
-        llm_df["Signal"] = llm_df["Signal"].replace("Hold", "Watch")
+        llm_df["Signal"] = llm_df["Signal"].replace({"Hold": "Watch", "Avoid": "Watch"})
         try:
             logged = storage.log_trade_signals(llm_df, variant_config.to_dict())
             print(f"LLM Agent [{variant}]: logged {logged['actionable']} actionable + {logged['research']} "
