@@ -96,8 +96,12 @@ _ENOUGH_WINDOWS = [{"ic": 0.1}] * ic.MIN_WINDOWS_FOR_IR_TRUST
 
 def test_ensemble_weight_no_signal_at_all_returns_neutral_prior():
     # Nothing settled yet -- no data to shrink from, regardless of effective_n.
+    # Default neutral_prior is 0.0 as of the 2026-09-20 fix (see
+    # ensemble_weight()'s own docstring) -- a brand-new methodology starts
+    # at zero influence and must earn weight, rather than starting at the
+    # maximum any methodology could ever reach.
     report = {"ir": None, "overall_ic": None, "effective_n_settled": 0.0}
-    assert ic.ensemble_weight(report) == 1.0
+    assert ic.ensemble_weight(report) == 0.0
     assert ic.ensemble_weight(report, neutral_prior=2.0) == 2.0
 
 
@@ -105,7 +109,7 @@ def test_ensemble_weight_zero_effective_n_returns_neutral_prior_even_with_signal
     # credibility = 0/(0+K) = 0 -- a signal existing at all with zero
     # effective weight behind it still fully shrinks to neutral.
     report = {"ir": None, "overall_ic": 0.9, "effective_n_settled": 0.0}
-    assert ic.ensemble_weight(report) == 1.0
+    assert ic.ensemble_weight(report) == 0.0
 
 
 def test_ensemble_weight_half_credibility_at_K_effective_trades():
@@ -115,18 +119,18 @@ def test_ensemble_weight_half_credibility_at_K_effective_trades():
         "ir": None, "overall_ic": 0.4,
         "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
     }
-    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.4 + 0.5 * 1.0)
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.4 + 0.5 * 0.0)
 
 
 def test_ensemble_weight_negative_signal_floored_before_blending():
     # Real squeeze_breakout-shaped case: a substantial negative signal at
-    # half credibility lands at half of neutral, not at 0 and not negative
-    # -- the floor-at-zero happens BEFORE blending, not after.
+    # half credibility floors to 0 pre-blend, then blends toward the
+    # (also 0.0) neutral prior -- lands at exactly 0, not negative.
     report = {
         "ir": None, "overall_ic": -0.9,
         "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
     }
-    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.0 + 0.5 * 1.0)
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.0 + 0.5 * 0.0)
 
 
 def test_ensemble_weight_converges_toward_full_signal_at_large_effective_n():
@@ -144,7 +148,7 @@ def test_ensemble_weight_prefers_ir_over_overall_ic_when_both_available():
         "ir": 0.5, "overall_ic": -0.2, "ic_series": _ENOUGH_WINDOWS,
         "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
     }
-    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.5 + 0.5 * 1.0)
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.5 + 0.5 * 0.0)
 
 
 # --- MIN_WINDOWS_FOR_IR_TRUST gate (2026-08-27 fix): a 2-window ir is
@@ -160,7 +164,7 @@ def test_ensemble_weight_falls_back_to_overall_ic_below_min_windows():
         "ir": 0.9, "overall_ic": 0.3, "ic_series": too_few,
         "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
     }
-    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.3 + 0.5 * 1.0)
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.3 + 0.5 * 0.0)
 
 
 def test_ensemble_weight_uses_ir_at_exactly_min_windows():
@@ -169,15 +173,42 @@ def test_ensemble_weight_uses_ir_at_exactly_min_windows():
         "ir": 0.9, "overall_ic": 0.3, "ic_series": exactly_enough,
         "effective_n_settled": float(ic.CREDIBILITY_HALF_LIFE_TRADES),
     }
-    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.9 + 0.5 * 1.0)
+    assert math.isclose(ic.ensemble_weight(report), 0.5 * 0.9 + 0.5 * 0.0)
 
 
 def test_ensemble_weight_below_trust_floor_ignores_overall_ic_entirely():
     # A methodology that hasn't cleared the trust floor stays at the
     # neutral prior regardless of what its (not-yet-trustworthy) overall_ic
-    # says, positive or negative -- unchanged from the pre-fix behavior.
+    # says, positive or negative -- unchanged from the pre-fix behavior
+    # (only the neutral prior's own VALUE changed, 2026-09-20).
     report = {"trust_floor_met": False, "ir": None, "overall_ic": -0.9}
-    assert ic.ensemble_weight(report) == 1.0
+    assert ic.ensemble_weight(report) == 0.0
+
+
+# --- Regression test for the 2026-09-20 neutral_prior=1.0 -> 0.0 fix,
+# locked in against the EXACT real live Mongo numbers that exposed the bug
+# (see ensemble_weight()'s own docstring). Before the fix, ma_crossover's
+# thin real sample (9.9 effective trades) outweighed rsi_mean_reversion's
+# far larger, far stronger one (204.1 effective trades) in the Best Ideas
+# blend -- backwards from what credibility weighting is supposed to do.
+
+def test_ensemble_weight_more_evidence_beats_less_evidence_real_regression_case():
+    ma_crossover = {
+        "ir": None, "ic_series": [{}], "overall_ic": 0.11558503073001737,
+        "effective_n_settled": 9.9,
+    }
+    rsi_mean_reversion = {
+        "ir": 2.081974983302944, "ic_series": [{}, {}], "overall_ic": 0.5458312219533142,
+        "effective_n_settled": 204.1,
+    }
+    w_ma = ic.ensemble_weight(ma_crossover)
+    w_rsi = ic.ensemble_weight(rsi_mean_reversion)
+    # The strategy with dramatically more evidence AND a dramatically
+    # stronger signal must now outweigh the thin, weaker one -- the exact
+    # ordering that was backwards under the old neutral_prior=1.0 default.
+    assert w_rsi > w_ma
+    assert w_ma < 0.1  # thin evidence -> correctly small influence
+    assert w_rsi > 0.4  # strong, sample-rich evidence -> correctly dominant
 
 
 # --- Tier-weighting (2026-08-21, per explicit user request): actionable

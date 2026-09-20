@@ -501,13 +501,48 @@ def methodology_report(strategy: str, score_field: str = "trade_score", window_d
     }
 
 
-def ensemble_weight(report: dict, neutral_prior: float = 1.0) -> float:
+def ensemble_weight(report: dict, neutral_prior: float = 0.0) -> float:
     """The blend weight one methodology contributes to the Best Ideas
     composite score (see best_ideas.blend_composite()) -- a CONTINUOUS
     credibility-weighted shrinkage of the methodology's own demonstrated
     signal toward `neutral_prior` (equal weight, same for every
     methodology), rather than the binary "neutral until a floor, full
     trust after" cutover this function used before 2026-08-29.
+
+    REAL BUG FOUND+FIXED 2026-09-20: `neutral_prior` was `1.0` from
+    2026-08-29 until now -- a value numerically LARGER than almost any
+    real IC/IR ever observed. Since credibility shrinkage pulls a
+    methodology's weight FROM `neutral_prior` TOWARD its own signal as
+    effective_n grows, a `neutral_prior` sitting ABOVE the realistic
+    signal range inverts the entire point of credibility weighting: a
+    methodology with LESS evidence stays closer to the (high) neutral
+    prior and so gets a HIGHER weight than one with substantially MORE
+    evidence of a genuinely strong edge, which gets pulled DOWN toward
+    its own (lower, but real) value. Caught with real live Mongo numbers
+    (2026-09-17 broader capital-trustworthiness re-evaluation): `ma_crossover`
+    (9.9 effective trades, overall_ic=+0.116) got weight 0.707 -- HIGHER
+    than `rsi_mean_reversion` (204.1 effective trades, overall_ic=+0.546,
+    by far this project's strongest and most sample-rich live signal),
+    which only got 0.586. The Best Ideas composite that actually produced
+    this project's one confirmed real-capital decision (ATD.TO) was, by
+    construction, underweighting its own best evidence and overweighting
+    its most uncertain input.
+
+    Fix: `neutral_prior=0.0` -- the textbook credibility-theory default
+    (absent evidence, assume no demonstrated skill yet, not maximum
+    skill). Recomputed on the same real report snapshot: `ma_crossover`
+    drops to 0.038, `rsi_mean_reversion` rises to 0.497 (now correctly
+    the dominant contributor), methodologies with real negative overall_ic
+    (`pairs`, `llm_agent`) correctly land at exactly 0.0 (excluded from
+    positive influence, not deleted -- `blend_composite()`'s own
+    total_weight<=0 fallback still protects against an all-zero blend).
+    A brand-new methodology with zero settled trades now starts at
+    literally zero influence and has to EARN weight through demonstrated
+    skill, rather than starting at the maximum any methodology could ever
+    reach -- the "old below-floor behavior" this docstring used to
+    describe (full neutral weight pre-evidence) was itself the
+    unexamined assumption this fix corrects, not a property worth
+    preserving.
 
     Signal selection unchanged from the pre-shrinkage version: prefers `ir`
     (stable across >=MIN_WINDOWS_FOR_IR_TRUST calendar windows, the most
@@ -537,24 +572,23 @@ def ensemble_weight(report: dict, neutral_prior: float = 1.0) -> float:
     the real, somewhat arbitrary discontinuity this replaces.
 
     2026-08-29 fix, per explicit user request ("brainstorm genuinely
-    meaningful additions"): designed and verified against real live Mongo
-    data before shipping. Two concrete findings from that check: (1) this
-    also partly corrects a pre-existing quirk where `neutral_prior=1.0` is
-    numerically LARGER than almost any real IC ever observed, so the old
-    hard-cutover system already punished a genuinely good methodology
-    (llm_agent, overall_ic=+0.28, the best real performer) relative to
-    untested ones (weight 0.28 vs 1.0) -- shrinkage pulling it UP toward
-    1.0 (real example: effective_n=33 -> weight~0.55) is arguably more
-    correct, not a regression. (2) the real, deliberate tradeoff: a
-    methodology with substantial NEGATIVE evidence (squeeze_breakout,
-    overall_ic=-0.32 over 26 effective trades) no longer reaches an exact
-    zero weight either (real example: ~0.43 at this K) -- it only
-    asymptotically approaches zero as effective_n keeps growing. Confirmed
-    with the user directly: K=CREDIBILITY_HALF_LIFE_TRADES=20 (uniform
-    shrinkage philosophy, nothing -- including bad news -- ever treated as
-    100% certain) over a smaller K that would converge faster/more
-    aggressively toward the old hard-zero behavior, or an asymmetric
-    design that kept the hard floor for negatives only.
+    meaningful additions"): replaced the old binary trust-floor cutover
+    with this continuous shrinkage formula -- that part of the redesign
+    stands. Its ORIGINAL `neutral_prior=1.0` choice and the reasoning
+    behind it did not: the original writeup argued shrinking a good
+    methodology's weight UP toward 1.0 as evidence accumulated was
+    "arguably more correct, not a regression" -- see the 2026-09-20 fix
+    above for why that reasoning was backwards (it's the exact mechanism
+    that let `ma_crossover`'s 9.9-trade sample outweigh
+    `rsi_mean_reversion`'s 204-trade one). What DOES still hold from the
+    original design, independent of `neutral_prior`'s value: a methodology
+    with substantial NEGATIVE evidence never reaches an exact zero weight
+    from credibility alone (it only asymptotically approaches
+    `max(signal, 0.0)=0` as effective_n grows) -- and K=CREDIBILITY_HALF_LIFE_TRADES=20
+    was confirmed with the user directly as the uniform shrinkage rate
+    (nothing, including bad news, ever treated as 100% certain), over a
+    smaller K that would converge faster/more aggressively, or an
+    asymmetric design that kept a hard floor for negatives only.
 
     `report["trust_floor_met"]` is still computed by methodology_report()
     and still meaningful for display (a "has this cleared the traditional
