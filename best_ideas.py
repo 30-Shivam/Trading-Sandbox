@@ -118,14 +118,29 @@ REQUEST_DELAY_SEC = 0.5  # same pacing every other yfinance-calling loop in
 # regime_switcher -0.320 over 26.9 effective trades (essentially identical
 # magnitude/sample size to squeeze_breakout's own -0.28..-0.32/13-34-trade
 # removal threshold), best_ideas_sector_rs -0.238 over 44.7 effective trades.
-# ensemble_weight()'s credibility shrinkage was already discounting both
-# (blend weight ~0.43/~0.31 instead of a full 1.0 neutral prior) rather than
-# zeroing them outright, but that's a softened drag, not a fixed one -- their
-# historical Trade_Signals/Trade_Outcomes are untouched and still directly
-# queryable via ic_tracking.methodology_report(), just no longer iterated
-# here. Note this does NOT change regime_switcher's own status as a live,
-# independently-run/logged strategy (regime_switcher.py) -- only its
-# composite-feed membership here.
+# Their historical Trade_Signals/Trade_Outcomes are untouched and still
+# directly queryable via ic_tracking.methodology_report(), just no longer
+# iterated here. Note this does NOT change regime_switcher's own status as
+# a live, independently-run/logged strategy (regime_switcher.py) -- only
+# its composite-feed membership here.
+#
+# REAL BUG FOUND+FIXED 2026-09-20: this "removal" was INCOMPLETE. Removing
+# a name from METHODOLOGIES only stops it from getting an ensemble_weight()
+# entry in run_best_ideas()'s own `weights` dict -- it did NOT stop
+# run_best_ideas() from still injecting `available_scores["regime_switcher"]`/
+# `available_scores["best_ideas_sector_rs"]` unconditionally (see that
+# function's own real-signal-gathering loop, now fixed). Since
+# blend_composite()'s own fallback is `weights.get(name, 1.0)`, a name with
+# NO entry in `weights` gets the RAW, UNCAPPED maximum weight (1.0) -- worse
+# than this comment's own original claim ("ensemble_weight()'s credibility
+# shrinkage was already discounting both... blend weight ~0.43/~0.31") ever
+# was, since neither ever actually ran through ensemble_weight() at all once
+# removed from METHODOLOGIES. Confirmed via a real live signal (best_ideas
+# "Strong Buy" on WELL, 2026-09-18): best_ideas_sector_rs contributed
+# weight=0.4357 -- the LARGEST single share of that blend -- driven by a
+# methodology with a confirmed, sustained NEGATIVE real track record.
+# Fixed by actually stopping the score injection (not just the weight
+# computation), matching what this comment always claimed was already true.
 METHODOLOGIES = [
     "ma_crossover", "rsi_mean_reversion", "pairs", "llm_agent",
     "best_ideas_qualitative", "best_ideas_meta",
@@ -468,7 +483,6 @@ def run_best_ideas(
             continue
         for _, row in df[df["Signal"] != "Ignore"].iterrows():
             mechanical_rows.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
-    regime_by_ticker = {pick["Ticker"]: pick for pick in regime_picks}
 
     composite_rows: list[dict] = []
     sector_rs_rows: list[dict] = []
@@ -538,12 +552,12 @@ def run_best_ideas(
             # wiring, item 82/84 -- so no override split is needed here,
             # unlike rsi's own bare-dispatch-name-in/clean-label-out case).
             available_scores["pairs"] = float(ticker_mech["pairs"]["Trade_Score"])
-        regime_pick = regime_by_ticker.get(ticker)
-        if regime_pick is not None:
-            available_scores["regime_switcher"] = float(regime_pick["Trade_Score"])
+        # regime_switcher/best_ideas_sector_rs deliberately do NOT feed
+        # `available_scores` (and therefore never reach blend_composite())
+        # -- see this module's own 2026-09-20 bug-fix comment above
+        # METHODOLOGIES for why. `sector_rs_entry` is still computed below
+        # for sector_rs_rows' own independent (non-composite) display row.
         sector_rs_entry = sector_rs_scores.get(ticker)
-        if sector_rs_entry is not None:
-            available_scores["best_ideas_sector_rs"] = sector_rs_entry["percentile"]
 
         qualitative = market_data.get_qualitative_snapshot(ticker) if fetch_llm else None
         qual_result = qualitative_composite_score(qualitative)

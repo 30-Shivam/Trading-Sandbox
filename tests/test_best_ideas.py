@@ -11,6 +11,7 @@ import math
 import pandas as pd
 
 import best_ideas as bi
+import swingtrade
 
 
 # ---------------------------------------------------------------- signal thresholds
@@ -228,3 +229,60 @@ def test_blend_composite_missing_weight_defaults_to_one():
     scores = {"a": 80.0, "b": 60.0}
     composite, _ = bi.blend_composite(scores, {})
     assert composite == 70.0
+
+
+# ---------------------------------------------------------------- run_best_ideas()
+# regression: regime_switcher/best_ideas_sector_rs must NOT reach the composite
+#
+# A deliberate, narrow exception to this file's own stated "run_best_ideas()
+# is exercised via the live smoke test, not here" rule (see module
+# docstring) -- justified because the bug this locks in was real and
+# serious: `blend_composite()`'s own `weights.get(name, 1.0)` fallback means
+# any score that reaches it WITHOUT a computed weight gets the RAW, UNCAPPED
+# maximum (1.0), not a lesser "unproven" weight. regime_switcher and
+# best_ideas_sector_rs were "removed" 2026-09-05 for confirmed sustained
+# NEGATIVE real IC, but a real live signal (best_ideas "Strong Buy" on WELL,
+# 2026-09-18) showed best_ideas_sector_rs still contributing weight=0.4357 --
+# the largest single share of that blend. fetch_llm=False keeps this fully
+# offline (no network/LLM/Mongo), so it's safe to run in the normal suite.
+
+def test_run_best_ideas_excludes_removed_methodologies_from_composite():
+    n = 70  # > config.sector_relative_strength_lookback_days (63) so compute_sector_rs_scores has enough history
+    sector_df = _flat_close_df([100.0 + i * 0.1 for i in range(n)])  # flat-ish +7% sector
+    # TEST's own price massively outperforms its sector -- if sector_rs's
+    # own score reached the composite, it would dominate (near-100 percentile,
+    # sole ticker in this synthetic universe).
+    bundle = {"TEST": {"df": _flat_close_df([50.0 + i * 2 for i in range(n)])}}
+    sector_data = {"Tech": sector_df}
+    sector_lookup = {"TEST": "Tech"}
+
+    strategy_frames = {
+        "ma_crossover": _mech_df([{
+            "Ticker": "TEST", "Signal": "Buy", "Trade_Score": 65.0,
+            "Last_Close": 190.0, "ATR": 2.0, "RSI": 55.0, "Currency": "USD",
+            "Next_Earnings_Date": None, "Catalyst_Warning": False, "Top_Headline": "",
+            "As_Of": pd.Timestamp("2026-09-20").date(),
+        }]),
+    }
+    # A real regime_switcher pick for the SAME ticker, at maximum conviction --
+    # if it reached the composite at weight 1.0, it alone would swamp the blend.
+    regime_picks = [{"Ticker": "TEST", "Trade_Score": 100.0}]
+
+    config = swingtrade.DEFAULT_CONFIG
+    ic_reports = {"ma_crossover": {"overall_ic": 0.5, "ir": None, "ic_series": [{}], "effective_n_settled": 30.0}}
+
+    result = bi.run_best_ideas(
+        strategy_frames, regime_picks, bundle, sector_data, sector_lookup,
+        config, ic_reports, macro_snapshot=None, fetch_llm=False,
+    )
+
+    composite_rows = result["best_ideas"]
+    assert composite_rows, "expected a real composite row for TEST"
+    breakdown = composite_rows[0]["Methodology_Breakdown"]
+    assert "best_ideas_sector_rs" not in breakdown
+    assert "regime_switcher" not in breakdown
+    assert "ma_crossover" in breakdown
+
+    # sector_rs's own INDEPENDENT display row must still exist -- only its
+    # composite-feed membership was removed, not its own standalone signal.
+    assert result["best_ideas_sector_rs"], "sector_rs's own standalone row should be unaffected"
