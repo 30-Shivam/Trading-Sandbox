@@ -1,0 +1,15 @@
+Fetching 407 ticker(s) + SPY, 2021-09-13..2026-09-12...
+Fetched 407/407 ticker(s).
+
+
+=== ma_crossover (ACTIVE) (v71) -- cost sensitivity ===
+  current default  (slip=0.001, comm=0.0000): REAL=0.098 RANDOM=0.05 GAP=0.048 backtest_ic=0.019762985952570797 (n=2411)
+  moderate         (slip=0.003, comm=0.0005): REAL=0.087 RANDOM=0.039 GAP=0.047999999999999994 backtest_ic=0.020908262299810614 (n=2411)
+  harsh            (slip=0.005, comm=0.0010): REAL=0.077 RANDOM=0.028 GAP=0.049 backtest_ic=0.022038161065042652 (n=2411)
+  very harsh       (slip=0.010, comm=0.0010): REAL=0.053 RANDOM=0.003 GAP=0.049999999999999996 backtest_ic=0.02500766907846381 (n=2411)
+
+=== pairs (Mean-Reversion Pairs, LIVE) (v58) -- cost sensitivity ===
+  current default  (slip=0.001, comm=0.0000): REAL=0.036 RANDOM=0.023 GAP=0.012999999999999998 backtest_ic=0.004051267005416983 (n=6579)
+  moderate         (slip=0.003, comm=0.0005): REAL=0.013 RANDOM=-0.001 GAP=0.013999999999999999 backtest_ic=0.003316249135522768 (n=6579)
+  harsh            (slip=0.005, comm=0.0010): REAL=-0.009 RANDOM=-0.025 GAP=0.016 backtest_ic=0.0028292510349529096 (n=6579)
+  very harsh       (slip=0.010, comm=0.0010): REAL=-0.061 RANDOM=-0.08 GAP=0.019000000000000003 backtest_ic=0.002532761174034273 (n=6579)

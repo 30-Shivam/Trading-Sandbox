@@ -1,0 +1,31 @@
+MFP: No earnings dates found, symbol may be delisted
+$DOCN: possibly delisted; no price data found  (period=1y)
+
+1 Failed download:
+['DOCN']: possibly delisted; no price data found  (period=1y)
+$DOCS: possibly delisted; no price data found  (period=1y)
+
+1 Failed download:
+['DOCS']: possibly delisted; no price data found  (period=1y)
+$DT: possibly delisted; no price data found  (period=1y)
+
+1 Failed download:
+['DT']: possibly delisted; no price data found  (period=1y)
+$DTM: possibly delisted; no price data found  (period=1y)
+
+1 Failed download:
+['DTM']: possibly delisted; no price data found  (period=1y)
+$DUOL: possibly delisted; no price data found  (period=1y)
+
+1 Failed download:
+['DUOL']: possibly delisted; no price data found  (period=1y)
+$DY: possibly delisted; no price data found  (period=1y)
+
+1 Failed download:
+['DY']: possibly delisted; no price data found  (period=1y)
+$EEFT: possibly delisted; no price data found  (period=1y)
+
+1 Failed download:
+['EEFT']: possibly delisted; no price data found  (period=1y)
+RSI Mean-Reversion (Small/Mid-Cap): analyzed 617/992 ticker(s), logged 87 actionable + 268 research signal(s) to MongoDB (never capital-allocated).
+RSI Mean-Reversion (Small/Mid-Cap): 375 ticker(s) could not be analyzed/scored.

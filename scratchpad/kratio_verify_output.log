@@ -1,0 +1,15 @@
+Reusing v71's own stored 102-ticker holdout set (seed=42, frac=0.25).
+OLD (pre-fix) v71 candidate k_ratio: TUNE=39.034, HOLDOUT=11.446
+OLD (pre-fix) v60 head-to-head holdout k_ratio (from session notes): 24.57
+
+Fetching history for SPY + 102 holdout ticker(s), 2021-08-30..2026-08-30...
+Fetched 11 sector ETF(s).
+Fetched FRED T10Y2Y yield-curve spread.
+Fetched 102/102 holdout ticker(s).
+Generated 54 fold(s) (stored notes say 54).
+
+=== v60 (LIVE) on holdout (NEW concurrency-weighted k_ratio) ===
+  k_ratio=-2.028, max_drawdown=24.34%, sharpe_like=-0.04, win_rate=39.56, trade_count=426, effective_trade_count=154.3
+
+=== v71 (CANDIDATE) on holdout (NEW concurrency-weighted k_ratio) ===
+  k_ratio=30.778, max_drawdown=21.54%, sharpe_like=0.048, win_rate=16.63, trade_count=390, effective_trade_count=75.2

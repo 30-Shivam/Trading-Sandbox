@@ -1,0 +1,1059 @@
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:56:21,329] A new study created in memory with name: no-name-e8d7925c-7e0a-461a-8e91-033ebbaff84d
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:56:38,522] Trial 0 finished with value: 0.189 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -23.67718373837978}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:56:55,482] Trial 1 finished with value: 0.034 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -2.452084198210425}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:57:12,746] Trial 2 finished with value: 0.189 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -24.965224606638472}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:57:29,985] Trial 3 finished with value: 0.164 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -14.843138968002258}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:57:47,276] Trial 4 finished with value: 0.189 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -28.31995488948489}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:58:04,469] Trial 5 finished with value: 0.189 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -24.2184384686863}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:58:21,404] Trial 6 finished with value: 0.178 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -7.523027547528713}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:58:38,217] Trial 7 finished with value: 0.178 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -6.831744402560808}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:58:55,403] Trial 8 finished with value: 0.164 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -14.506365495918956}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:59:12,834] Trial 9 finished with value: 0.18 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -10.365873807882434}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:59:29,780] Trial 10 finished with value: -10.0 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': 16.888571717159184}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 01:59:47,056] Trial 11 finished with value: 0.189 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -21.186571485091886}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 02:00:04,358] Trial 12 finished with value: 0.189 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -29.562100315390957}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 02:00:21,750] Trial 13 finished with value: 0.189 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -19.938425748961407}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 02:00:38,968] Trial 14 finished with value: -10.0 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': 4.513653481794906}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 02:00:56,316] Trial 15 finished with value: 0.164 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -17.98467754020567}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 02:01:13,424] Trial 16 finished with value: 0.189 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -27.409798602795078}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 02:01:30,348] Trial 17 finished with value: 0.189 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -22.359874802470422}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 02:01:47,742] Trial 18 finished with value: -10.0 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': 10.467145359856133}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+[I 2026-09-03 02:02:07,921] Trial 19 finished with value: 0.164 and parameters: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -13.849805087287228}. Best is trial 0 with value: 0.189.
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Pinning every ma_crossover dimension except skew_regime_min to v71's live values:
+  ma_crossover_short_window = 11
+  ma_crossover_long_window = 90
+  ma_crossover_sector_relative_strength_min = -3.7741303513040476
+  ma_crossover_yield_curve_spread_max = 0.4526281555382279
+  atr_take_profit_multiplier = 4.087579761131225
+  stop_loss_atr_multiplier = 2.0934344786843373
+Fetching history for 407 ticker(s) + SPY, 2025-09-03..2026-09-03 (once, reused across all 20 trials)...
+Fetching 11 sector ETF(s) for Sector_Relative_Strength...
+Fetching FRED T10Y2Y yield-curve spread for Yield_Curve_Spread...
+Fetching CBOE SKEW Index (^SKEW) for Skew_Regime_Diff...
+Fetched 407/407 ticker(s).
+Generated 6 walk-forward fold(s).
+Ticker holdout split (seed=42, frac=0.25): 305 tune / 102 holdout. Holdout tickers never seen during tuning: ['ACN', 'ADI', 'ADM', 'AFL', 'ALL', 'AON', 'ARM', 'ATD.TO', 'AWK', 'BIIB', 'BKR', 'BLK', 'CCL', 'CFG', 'CL', 'CMI', 'COIN', 'COP', 'CPAY', 'CSCO', 'CSX', 'DASH', 'DE', 'DGX', 'DHI', 'DHR', 'DLR', 'DOCU', 'DOW', 'DTE', 'EMR', 'EW', 'EXC', 'EXPE', 'EXR', 'FOXA', 'GM', 'GOOG', 'GPN', 'GRMN', 'HAL', 'HST', 'IBM', 'IDXX', 'IR', 'ISRG', 'KHC', 'KKR', 'L.TO', 'LEN', 'LHX', 'LIN', 'LITE', 'LLY', 'LMT', 'LVS', 'MAR', 'MCHP', 'MCK', 'MCO', 'MDB', 'MDT', 'MPWR', 'MSCI', 'MSFT', 'MSTR', 'MTB', 'MTCH', 'NEM', 'NKE', 'NTR.TO', 'ODFL', 'OKTA', 'PCAR', 'PEP', 'PG', 'PLD', 'PSA', 'PSX', 'PYPL', 'QRVO', 'SLB', 'SNDK', 'SRE', 'SYK', 'T', 'TD.TO', 'TDG', 'TEAM', 'TEL', 'TGT', 'U', 'V', 'VRTX', 'WAB', 'WBD', 'WEC', 'WM', 'WY', 'XEL', 'XYZ', 'ZM']
+Using up to 8 CPU core(s) for walk-forward parallelization (--max-workers to change; 12 available).
+
+Baseline (DEFAULT_CONFIG, strategy=ma_crossover) pooled out-of-sample metrics on TUNE tickers (recency-weighted, half-life=180d): {'trade_count': 240, 'effective_trade_count': 206.9, 'win_rate': 27.46, 'avg_pnl_pct': -0.46, 'pnl_std': 4.84, 'sharpe_like': -0.096, 'trades_per_year': 512.6, 'annualized_sharpe_like': -2.174, 'k_ratio': 0.741}
+Live Trade_Outcomes so far (every signal, all tiers): 1066 -- pooled metrics: {'trade_count': 1066, 'open_count': 0, 'win_count': 266, 'loss_count': 796, 'expired_count': 4, 'win_rate': 24.95, 'avg_pnl_pct': 0.33, 'total_pnl_pct': 348.94, 'pnl_std': 6.72, 'sharpe_like': 0.049, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}
+  Actionable tier (Strong Buy/Buy) only: 593 -- pooled metrics: {'trade_count': 593, 'open_count': 0, 'win_count': 165, 'loss_count': 426, 'expired_count': 2, 'win_rate': 27.82, 'avg_pnl_pct': 1.46, 'total_pnl_pct': 864.97, 'pnl_std': 7.83, 'sharpe_like': 0.186, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}
+    ...of which CONFIRMED real fills: 3 -- pooled metrics: {'trade_count': 3, 'open_count': 0, 'win_count': 0, 'loss_count': 3, 'expired_count': 0, 'win_rate': 0.0, 'avg_pnl_pct': -3.79, 'total_pnl_pct': -11.38, 'pnl_std': 2.15, 'sharpe_like': -1.767, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}
+  Research tier (Watch, never traded/tradeable) only: 397 -- pooled metrics: {'trade_count': 397, 'open_count': 0, 'win_count': 69, 'loss_count': 328, 'expired_count': 0, 'win_rate': 17.38, 'avg_pnl_pct': -1.45, 'total_pnl_pct': -575.58, 'pnl_std': 4.31, 'sharpe_like': -0.336, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}
+  Research_loosened tier (active config scored Ignore, loosened config didn't, never traded/tradeable) only: 76 -- pooled metrics: {'trade_count': 76, 'open_count': 0, 'win_count': 32, 'loss_count': 42, 'expired_count': 2, 'win_rate': 42.11, 'avg_pnl_pct': 0.78, 'total_pnl_pct': 59.55, 'pnl_std': 5.68, 'sharpe_like': 0.138, 'trades_per_year': None, 'annualized_sharpe_like': None, 'k_ratio': None}. Reflects the loosened config, NOT the active one -- a sanity check on whether loosening is worth considering, not a report card on v19 itself.
+
+Best trial #0: score(sharpe_like or penalty)=0.1890  (annualized_sharpe~4.561, win_rate=20.6%)
+  params: {'ma_crossover_short_window': 11, 'ma_crossover_long_window': 90, 'ma_crossover_sector_relative_strength_min': -3.7741303513040476, 'ma_crossover_yield_curve_spread_max': 0.4526281555382279, 'ma_crossover_skew_regime_min': -23.67718373837978}
+  metrics (TUNE tickers): {'trade_count': 110, 'effective_trade_count': 101.6, 'win_rate': 20.6, 'avg_pnl_pct': 2.44, 'pnl_std': 12.92, 'sharpe_like': 0.189, 'trades_per_year': 582.3, 'annualized_sharpe_like': 4.561, 'k_ratio': 11.55}
+
+=== Deflated Sharpe Ratio (selection-bias correction, 17 scored trial(s) this search, sharpe_std=0.0371) ===
+  Search-level DSR: 89.5% confidence this beats what 17 trials would produce by chance alone (zero real skill).
+  Project-wide DSR: 84.7% confidence using 74 (every candidate System_Config ever written across this whole project) as N -- a much more conservative, whole-project view, reusing this search's own sharpe_std as the best available proxy (not a rigorous full-history recomputation -- no per-trial Sharpe is stored from past searches).
+  Caveat: assumes independent trials -- Optuna's TPE sampler deliberately exploits promising regions, so real trials are somewhat correlated, making this a real but imperfect approximation. Also assumes normal returns (skewness=0, kurtosis=3) -- the true correction would need the winning trial's raw per-trade return distribution, not just its summarized metrics.
+
+=== RRR-vs-scoring-ceiling check (can this config's Buy tier ever fire -- or fire too easily?) ===
+  BASELINE  (DEFAULT_CONFIG): RRR=2.0, best-case Trade_Score=66.67 vs signal_buy_threshold=60 -- OK, reachable; RRR alone=33.33 vs signal_watch_threshold=40 -- OK, discriminating
+  CANDIDATE (winning trial):  RRR=1.95, best-case Trade_Score=65.83 vs signal_buy_threshold=60 -- OK, reachable; RRR alone=32.5 vs signal_watch_threshold=40 -- OK, discriminating
+
+=== Ticker-universe holdout validation (102 tickers Optuna never saw) ===
+  baseline (DEFAULT_CONFIG, strategy=ma_crossover) on holdout: {'trade_count': 81, 'effective_trade_count': 73.9, 'win_rate': 32.68, 'avg_pnl_pct': 0.1, 'pnl_std': 4.42, 'sharpe_like': 0.022, 'trades_per_year': 173.0, 'annualized_sharpe_like': 0.289, 'k_ratio': 5.059}
+  candidate (winning trial) on holdout: {'trade_count': 36, 'effective_trade_count': 34.6, 'win_rate': 18.41, 'avg_pnl_pct': 0.35, 'pnl_std': 6.61, 'sharpe_like': 0.053, 'trades_per_year': 185.2, 'annualized_sharpe_like': 0.721, 'k_ratio': 3.378}
+  [WARN] Holdout effective_trade_count is thin -- treat this validation as a weak signal, not proof either way. Consider a lower --holdout-frac or more tickers.
+  LIVE (active v71) on holdout: {'trade_count': 36, 'effective_trade_count': 34.6, 'win_rate': 18.41, 'avg_pnl_pct': 0.35, 'pnl_std': 6.61, 'sharpe_like': 0.053, 'trades_per_year': 185.2, 'annualized_sharpe_like': 0.721, 'k_ratio': 3.378}
+  [WARN] Candidate (0.053) does NOT beat what's actually live (active v71, 0.053) on holdout, even if it beat DEFAULT_CONFIG above. Beating an arbitrary default is not a promotion case on its own.
+
+=== Real-vs-random ratio check (single window, same methodology as benchmark_random_entry.py) ===
+Isolates whether tuning found genuinely better TIMING or just a payoff-bracket shape that inflates ANY entry's return, real or random -- watch the GAP (REAL sharpe_like minus RANDOM sharpe_like), not the raw REAL number alone.
+  BASELINE  (ma_crossover, DEFAULT_CONFIG): REAL sharpe_like=-0.049 vs RANDOM sharpe_like=-0.039  (gap=-0.010000000000000002)
+  CANDIDATE (ma_crossover, winning trial):  REAL sharpe_like=0.177 vs RANDOM sharpe_like=-0.133  (gap=0.31)
+  Candidate's real-vs-random GAP (0.3100) improved on baseline's (-0.0100) -- a real, if modest, sign the tuning found genuine timing value, not just a reshaped payoff bracket.
+
+Wrote candidate System_Config version=75 (status=candidate, NOT active).
+Review it, then run: python promote_config.py --promote 75

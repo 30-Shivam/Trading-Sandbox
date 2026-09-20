@@ -1,0 +1,21 @@
+Fetching 992 ticker(s) + SPY, 2021-09-13..2026-09-12...
+Fetched 992/992 ticker(s).
+
+
+=== ma_crossover (v71) -- cost sensitivity ===
+  current default  (slip=0.001, comm=0.0000): REAL=0.029 RANDOM=-0.033 GAP=0.062 backtest_ic=-0.034759750726828714 (n=5280)
+  moderate         (slip=0.003, comm=0.0005): REAL=0.021 RANDOM=-0.042 GAP=0.063 backtest_ic=-0.034623187538515975 (n=5280)
+  harsh            (slip=0.005, comm=0.0010): REAL=0.013 RANDOM=-0.051 GAP=0.064 backtest_ic=-0.03447389053240088 (n=5280)
+  very harsh       (slip=0.010, comm=0.0010): REAL=-0.006 RANDOM=-0.072 GAP=0.06599999999999999 backtest_ic=-0.03376285509243959 (n=5280)
+
+=== pairs (v58) -- cost sensitivity ===
+  current default  (slip=0.001, comm=0.0000): REAL=0.014 RANDOM=-0.009 GAP=0.023 backtest_ic=-0.008685636656592652 (n=12895)
+  moderate         (slip=0.003, comm=0.0005): REAL=-0.005 RANDOM=-0.029 GAP=0.024 backtest_ic=-0.008358014932340651 (n=12895)
+  harsh            (slip=0.005, comm=0.0010): REAL=-0.024 RANDOM=-0.048 GAP=0.024 backtest_ic=-0.008087512114843716 (n=12895)
+  very harsh       (slip=0.010, comm=0.0010): REAL=-0.069 RANDOM=-0.095 GAP=0.025999999999999995 backtest_ic=-0.007261166665893015 (n=12895)
+
+=== rsi_mean_reversion (v66) -- cost sensitivity ===
+  current default  (slip=0.001, comm=0.0000): REAL=0.059 RANDOM=0.016 GAP=0.043 backtest_ic=-0.02074542875068339 (n=17824)
+  moderate         (slip=0.003, comm=0.0005): REAL=0.053 RANDOM=0.009 GAP=0.044 backtest_ic=-0.020601116915099117 (n=17824)
+  harsh            (slip=0.005, comm=0.0010): REAL=0.048 RANDOM=0.003 GAP=0.045 backtest_ic=-0.02046620785509703 (n=17824)
+  very harsh       (slip=0.010, comm=0.0010): REAL=0.034 RANDOM=-0.012 GAP=0.046 backtest_ic=-0.020159600890570784 (n=17824)

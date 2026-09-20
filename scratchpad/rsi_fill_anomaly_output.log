@@ -1,0 +1,12 @@
+RSI v66: max_entry_wait_days=5, support_lookback_days=20, rsi_oversold_threshold=55.7064746864139
+Fetching history for SPY + 407 ticker(s), 2021-09-01..2026-08-31...
+
+Fetched 407/407 ticker(s).
+
+REAL filled trades:               9403
+RANDOM (matched-count, small):     1800  (19.1% of real's count)
+RANDOM (exhaustive, every candidate attempted): 46426  (493.7% of real's count)
+
+REAL:                {'trade_count': 9314, 'open_count': 89, 'win_count': 1426, 'loss_count': 3005, 'expired_count': 4883, 'win_rate': 15.31, 'avg_pnl_pct': 0.6, 'total_pnl_pct': 5569.9, 'pnl_std': 7.0, 'sharpe_like': 0.085, 'trades_per_year': 1870.2, 'annualized_sharpe_like': 3.676, 'k_ratio': 26.64}
+RANDOM (small):      {'trade_count': 1782, 'open_count': 18, 'win_count': 298, 'loss_count': 618, 'expired_count': 866, 'win_rate': 16.72, 'avg_pnl_pct': 0.44, 'total_pnl_pct': 781.71, 'pnl_std': 6.87, 'sharpe_like': 0.064, 'trades_per_year': 359.4, 'annualized_sharpe_like': 1.213, 'k_ratio': 21.369}
+RANDOM (exhaustive): {'trade_count': 45917, 'open_count': 509, 'win_count': 7968, 'loss_count': 16095, 'expired_count': 21854, 'win_rate': 17.35, 'avg_pnl_pct': 0.54, 'total_pnl_pct': 24849.87, 'pnl_std': 7.56, 'sharpe_like': 0.072, 'trades_per_year': 9220.0, 'annualized_sharpe_like': 6.914, 'k_ratio': 17.631}

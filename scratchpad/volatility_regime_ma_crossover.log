@@ -1,0 +1,46 @@
+Testing config: v71 (active) -- strategy=ma_crossover
+  ma_crossover_short_window=11, ma_crossover_long_window=90, ma_crossover_entry_fill=limit, atr_take_profit_multiplier=4.087579761131225, stop_loss_atr_multiplier=2.0934344786843373
+
+Fetching SPY (market-uptrend proxy)...
+Fetched 407/407 ticker(s).
+
+Fetching 11 sector ETF(s) for Sector_Relative_Strength...
+
+Simulating REAL MA_Crossover-timed strategy and matched-count RANDOM-entry baseline for 407 ticker(s), 2021-09-14..2026-09-13...
+Real MA_Crossover-timed signals: 2418 across 407 ticker(s) (entry-fill realized: 2418). Random baseline (matched count per ticker): 2243 entries filled.
+
+=== ALL TICKERS ===
+  REAL   (MA_Crossover-timed): {'trade_count': 2410, 'effective_trade_count': 2090.1, 'win_rate': 17.6, 'avg_pnl_pct': 0.65, 'pnl_std': 6.61, 'sharpe_like': 0.098, 'trades_per_year': 484.2, 'annualized_sharpe_like': 2.156, 'k_ratio': 42.982}
+  RANDOM (matched count, avg of 3 seeds [1, 42, 7]): {'sharpe_like': 0.03, 'avg_pnl_pct': 0.1967, 'win_rate': 16.3, 'trades_per_year': 445.3, 'effective_trade_count': 2073.5, 'trade_count': 2216.0, 'k_ratio': 43.029, 'pnl_std': 6.52, 'annualized_sharpe_like': 0.6333, '_sharpe_like_min': 0.014, '_sharpe_like_max': 0.055, '_k_ratio_min': 20.501, '_k_ratio_max': 57.734, '_seeds_used': 3}
+
+=== BACKTEST-TIME IC (does Trade_Score itself rank REAL trades' outcomes, not just beat random on aggregate returns?) ===
+  n=2410  backtest_ic=0.021
+  This is a DIFFERENT question from the ALL/TUNE/HOLDOUT sharpe_like/win_rate checks above -- those ask 'does this beat random on aggregate', this asks 'does the score actually rank which specific trades do better or worse'. A strategy can pass the former with ~zero real answer to the latter (see improvements.txt for the real finding that motivated this check).
+
+=== BY YEAR (does the edge hold up over time, or is it concentrated in one stretch?) ===
+  2021  REAL   (MA_Crossover-timed): {'trade_count': 244, 'effective_trade_count': 210.3, 'win_rate': 19.27, 'avg_pnl_pct': 1.66, 'pnl_std': 6.09, 'sharpe_like': 0.273, 'trades_per_year': 848.8, 'annualized_sharpe_like': 7.953, 'k_ratio': 11.538}
+  2021  RANDOM (matched count): {'trade_count': 190, 'effective_trade_count': 174.1, 'win_rate': 20.1, 'avg_pnl_pct': 1.43, 'pnl_std': 6.84, 'sharpe_like': 0.208, 'trades_per_year': 648.6, 'annualized_sharpe_like': 5.297, 'k_ratio': 15.793}
+  2022  REAL   (MA_Crossover-timed): {'trade_count': 135, 'effective_trade_count': 115.6, 'win_rate': 5.94, 'avg_pnl_pct': -2.97, 'pnl_std': 5.81, 'sharpe_like': -0.512, 'trades_per_year': 147.2, 'annualized_sharpe_like': -6.212, 'k_ratio': -8.955}
+  2022  RANDOM (matched count): {'trade_count': 93, 'effective_trade_count': 87.1, 'win_rate': 12.35, 'avg_pnl_pct': -2.1, 'pnl_std': 5.52, 'sharpe_like': -0.381, 'trades_per_year': 101.1, 'annualized_sharpe_like': -3.831, 'k_ratio': -3.267}
+  2023  REAL   (MA_Crossover-timed): {'trade_count': 615, 'effective_trade_count': 522.5, 'win_rate': 19.04, 'avg_pnl_pct': 1.17, 'pnl_std': 6.45, 'sharpe_like': 0.181, 'trades_per_year': 649.2, 'annualized_sharpe_like': 4.612, 'k_ratio': 9.946}
+  2023  RANDOM (matched count): {'trade_count': 454, 'effective_trade_count': 419.2, 'win_rate': 13.69, 'avg_pnl_pct': -0.13, 'pnl_std': 5.84, 'sharpe_like': -0.022, 'trades_per_year': 479.3, 'annualized_sharpe_like': -0.482, 'k_ratio': 10.539}
+  2024  REAL   (MA_Crossover-timed): {'trade_count': 525, 'effective_trade_count': 460.4, 'win_rate': 17.15, 'avg_pnl_pct': 0.55, 'pnl_std': 6.08, 'sharpe_like': 0.091, 'trades_per_year': 538.6, 'annualized_sharpe_like': 2.112, 'k_ratio': 23.347}
+  2024  RANDOM (matched count): {'trade_count': 662, 'effective_trade_count': 611.6, 'win_rate': 17.52, 'avg_pnl_pct': 0.68, 'pnl_std': 5.91, 'sharpe_like': 0.115, 'trades_per_year': 664.3, 'annualized_sharpe_like': 2.964, 'k_ratio': 44.48}
+  2025  REAL   (MA_Crossover-timed): {'trade_count': 512, 'effective_trade_count': 446.2, 'win_rate': 14.36, 'avg_pnl_pct': 0.45, 'pnl_std': 6.25, 'sharpe_like': 0.072, 'trades_per_year': 523.8, 'annualized_sharpe_like': 1.648, 'k_ratio': 9.658}
+  2025  RANDOM (matched count): {'trade_count': 461, 'effective_trade_count': 438.3, 'win_rate': 19.19, 'avg_pnl_pct': 0.91, 'pnl_std': 6.71, 'sharpe_like': 0.135, 'trades_per_year': 463.9, 'annualized_sharpe_like': 2.908, 'k_ratio': 22.794}
+  2026  REAL   (MA_Crossover-timed): {'trade_count': 379, 'effective_trade_count': 336.0, 'win_rate': 23.2, 'avg_pnl_pct': 0.9, 'pnl_std': 7.98, 'sharpe_like': 0.113, 'trades_per_year': 553.7, 'annualized_sharpe_like': 2.659, 'k_ratio': 37.286}
+  2026  RANDOM (matched count): {'trade_count': 353, 'effective_trade_count': 333.7, 'win_rate': 16.51, 'avg_pnl_pct': -0.24, 'pnl_std': 7.97, 'sharpe_like': -0.03, 'trades_per_year': 526.3, 'annualized_sharpe_like': -0.688, 'k_ratio': 10.7}
+
+=== BY VOLATILITY REGIME (does the edge hold in both calm and turbulent markets, or is it concentrated in one?) ===
+  elevated   REAL   (MA_Crossover-timed): {'trade_count': 1188, 'effective_trade_count': 1011.0, 'win_rate': 15.36, 'avg_pnl_pct': 0.74, 'pnl_std': 6.66, 'sharpe_like': 0.111, 'trades_per_year': 242.3, 'annualized_sharpe_like': 1.728, 'k_ratio': 37.542}
+  elevated   RANDOM (matched count): {'trade_count': 916, 'effective_trade_count': 863.9, 'win_rate': 15.85, 'avg_pnl_pct': 0.34, 'pnl_std': 6.9, 'sharpe_like': 0.049, 'trades_per_year': 186.7, 'annualized_sharpe_like': 0.67, 'k_ratio': 39.604}
+  normal     REAL   (MA_Crossover-timed): {'trade_count': 1222, 'effective_trade_count': 1079.7, 'win_rate': 19.62, 'avg_pnl_pct': 0.57, 'pnl_std': 6.55, 'sharpe_like': 0.087, 'trades_per_year': 245.5, 'annualized_sharpe_like': 1.363, 'k_ratio': 36.651}
+  normal     RANDOM (matched count): {'trade_count': 1297, 'effective_trade_count': 1200.0, 'win_rate': 17.75, 'avg_pnl_pct': 0.38, 'pnl_std': 6.29, 'sharpe_like': 0.06, 'trades_per_year': 261.0, 'annualized_sharpe_like': 0.969, 'k_ratio': 33.956}
+
+=== MONTE CARLO DRAWDOWN (1000 reshuffles of each's own trade order) ===
+  REAL   (MA_Crossover-timed): {'n_simulations': 1000, 'n_trades': 2410, 'actual_chronological_max_drawdown': 23.24, 'monte_carlo_mean': 9.53, 'monte_carlo_median': 8.92, 'monte_carlo_p95': 15.34, 'monte_carlo_worst': 31.95}
+  RANDOM (matched count): {'n_simulations': 1000, 'n_trades': 2213, 'actual_chronological_max_drawdown': 17.38, 'monte_carlo_mean': 12.93, 'monte_carlo_median': 11.95, 'monte_carlo_p95': 22.34, 'monte_carlo_worst': 36.3}
+
+If REAL's sharpe_like/win_rate isn't meaningfully better than RANDOM's (same trade
+count, same universe, same stop/target/holding-period structure), ma_crossover timing
+is not adding real predictive information beyond the payoff structure + market drift.

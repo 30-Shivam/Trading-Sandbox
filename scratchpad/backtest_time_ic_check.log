@@ -1,0 +1,15 @@
+Fetching 407 ticker(s) + SPY, 2021-09-12..2026-09-11...
+Fetched 407/407 ticker(s).
+
+ma_crossover (v71): n=2410 BACKTEST-TIME IC (Trade_Score vs pnl_pct) = 0.018495021061248194
+rsi_mean_reversion (rsi) (v66): n=9256 BACKTEST-TIME IC (Trade_Score vs pnl_pct) = -0.013294740580186351
+squeeze_breakout (v53): n=2741 BACKTEST-TIME IC (Trade_Score vs pnl_pct) = -0.08729173768337634
+pairs (v58): n=6577 BACKTEST-TIME IC (Trade_Score vs pnl_pct) = 0.004382269279909149
+momentum_rank (v65): n=19339 BACKTEST-TIME IC (Trade_Score vs pnl_pct) = -0.005677904540141031
+
+=== Summary: backtest-time IC vs known real LIVE IC (from this session's trust-floor sweep) ===
+  ma_crossover: backtest_ic=0.018 (n=2410)  vs  live_ic=0.794
+  rsi_mean_reversion (rsi): backtest_ic=-0.013 (n=9256)  vs  live_ic=0.621
+  squeeze_breakout: backtest_ic=-0.087 (n=2741)  vs  live_ic=-0.134
+  pairs: backtest_ic=0.004 (n=6577)  vs  live_ic=-0.01
+  momentum_rank: backtest_ic=-0.006 (n=19339)  vs  live_ic=0.335

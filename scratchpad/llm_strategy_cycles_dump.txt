@@ -1,0 +1,35 @@
+
+cycle_id: 1 parent: None
+  n_conditions: 3 logic: AND
+  conditions: [{'field': 'RSI', 'op': '<', 'value': 35.0}, {'field': 'Squeeze_Zscore', 'op': '>', 'value': 1.5}, {'field': 'Relative_Strength', 'op': '>', 'value': 0.0}]
+  exit: {'type': 'atr_bracket', 'take_profit_atr_multiplier': 3.0, 'stop_loss_atr_multiplier': 1.5}
+  sample n_tickers: 40 real trade_count: 0
+  rationale: This strategy targets high-momentum, high-compression assets that are temporarily oversold but exhibit strong relative strength against the broader market. By filtering for low RSI (short-term pullback) paired with high Squeeze_Zscore (indicating energy buildup/imminent breakout) and positive Relative_Strength, we aim to capture high-probability reversal sweeps. The ATR bracket exit enforces a dis
+
+cycle_id: 2 parent: 1
+  n_conditions: 4 logic: AND
+  conditions: [{'field': 'RSI', 'op': '<', 'value': 35.0}, {'field': 'Squeeze_Zscore', 'op': '>', 'value': 1.5}, {'field': 'OBV_Zscore', 'op': '>', 'value': 0.8}, {'field': 'Relative_Strength', 'op': '>', 'value': 0.0}]
+  exit: {'type': 'trailing_stop', 'take_profit_atr_multiplier': 4.0, 'stop_loss_atr_multiplier': 2.0, 'trailing_stop_atr_multiplier': 2.5}
+  sample n_tickers: 40 real trade_count: 0
+  rationale: Cycle 1 produced zero trades, likely due to overly restrictive conditions or lack of volume confirmation. This refinement adds an OBV_Zscore filter (>0.8) to confirm institutional accumulation during the volatility squeeze, and switches to a trailing_stop exit to capture extended moves while managing drawdown dynamically. The widened TP/SL multipliers (4.0/2.0) with a 2.5 ATR trailing distance aim
+
+cycle_id: 3 parent: 2
+  n_conditions: 4 logic: AND
+  conditions: [{'field': 'RSI', 'op': '<', 'value': 35.0}, {'field': 'Squeeze_Zscore', 'op': '>', 'value': 1.5}, {'field': 'OBV_Zscore', 'op': '>', 'value': 0.5}, {'field': 'ADX', 'op': '>', 'value': 20.0}]
+  exit: {'type': 'trailing_stop', 'take_profit_atr_multiplier': 5.0, 'stop_loss_atr_multiplier': 2.5, 'trailing_stop_atr_multiplier': 3.0}
+  sample n_tickers: 40 real trade_count: 0
+  rationale: Relaxing the OBV_Zscore threshold should increase signal frequency while the added ADX filter keeps us in trending environments where the squeeze is more likely to break out. A larger take‑profit and a slightly looser stop‑loss give the trade more room, and a higher trailing‑stop multiplier aims to capture longer moves without cutting winners too early.
+
+cycle_id: 4 parent: 2
+  n_conditions: 4 logic: AND
+  conditions: [{'field': 'RSI', 'op': '<', 'value': 35.0}, {'field': 'Squeeze_Zscore', 'op': '>', 'value': 1.5}, {'field': 'OBV_Zscore', 'op': '>', 'value': 0.5}, {'field': 'Relative_Strength', 'op': '>', 'value': 0.0}]
+  exit: {'type': 'trailing_stop', 'take_profit_atr_multiplier': 4.0, 'stop_loss_atr_multiplier': 2.0, 'trailing_stop_atr_multiplier': 3.0}
+  sample n_tickers: 40 real trade_count: 0
+  rationale: Cycle 2 introduced Relative_Strength but still yielded zero trades. Cycle 3 dropped Relative_Strength and added ADX, also zero trades. This proposal merges the two: keeping the core RSI + Squeeze_Zscore + OBV_Zscore (relaxed to >0.5 per Cycle 2 notes) and adding Relative_Strength > 0.0 to filter for stocks outperforming the broader market. The trailing stop parameters are set to 4.0 TP / 2.0 SL / 
+
+cycle_id: 5 parent: 4
+  n_conditions: 4 logic: AND
+  conditions: [{'field': 'RSI', 'op': '<', 'value': 35.0}, {'field': 'Squeeze_Zscore', 'op': '>', 'value': 1.0}, {'field': 'OBV_Zscore', 'op': '>', 'value': 0.5}, {'field': 'Relative_Strength', 'op': '>', 'value': 0.0}]
+  exit: {'type': 'trailing_stop', 'take_profit_atr_multiplier': 3.5, 'stop_loss_atr_multiplier': 2.0, 'trailing_stop_atr_multiplier': 3.0}
+  sample n_tickers: 40 real trade_count: 0
+  rationale: Lowering the Squeeze_Zscore threshold from 1.5 to 1.0 and easing the OBV_Zscore requirement should admit more squeeze‑breakout setups without discarding the original quality filters (RSI, Relative_Strength). The trailing‑stop exit keeps risk controlled while allowing upside to run. This refinement directly addresses the bottleneck identified in Cycle 4.

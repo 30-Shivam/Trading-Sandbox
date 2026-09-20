@@ -1,0 +1,33 @@
+Testing LIVE config: Using System_Config v71 (active). (strategy=ma_crossover)
+
+Fetching ^SKEW (CBOE SKEW Index) from 2019-09-05..2026-09-03 (730 days of extra warmup before 2021-09-04)...
+Fetched 2000 observation(s), median=138.08, range [110.34, 183.12].
+
+Fetching SPY (market proxy)...
+Fetched 407/407 ticker(s).
+Ticker holdout: frac=0.25, averaging TUNE/HOLDOUT over 10 seeds ([42, 1, 5, 7, 13, 99, 123, 2024, 2025, 777]) -- see improvements.txt item 69.
+
+Simulating ma_crossover for 407 ticker(s), 2021-09-04..2026-09-03...
+  2418 signal(s)
+
+Bucketing trades by ^SKEW regime as of each trade's own signal_date (rolling median, point-in-time safe)...
+  Elevated-SKEW trades: 1523
+  Normal-SKEW trades:   895
+
+=== ALL TICKERS ===
+  ELEVATED (SKEW > its own trailing 1yr median): {'trade_count': 1522, 'effective_trade_count': 1313.5, 'win_rate': 18.62, 'avg_pnl_pct': 0.82, 'pnl_std': 6.4, 'sharpe_like': 0.128, 'trades_per_year': 311.1, 'annualized_sharpe_like': 2.258, 'k_ratio': 55.277}
+  NORMAL   (SKEW <= its own trailing 1yr median): {'trade_count': 885, 'effective_trade_count': 781.9, 'win_rate': 15.64, 'avg_pnl_pct': 0.41, 'pnl_std': 7.86, 'sharpe_like': 0.052, 'trades_per_year': 179.7, 'annualized_sharpe_like': 0.697, 'k_ratio': -8.211}
+
+=== TUNE (avg of 10 seeds) ===
+  ELEVATED: {'pnl_std': 6.421, 'avg_pnl_pct': 0.84, 'sharpe_like': 0.1307, 'trades_per_year': 232.12, 'annualized_sharpe_like': 1.9916, 'win_rate': 18.627, 'trade_count': 1134.8, 'effective_trade_count': 1013.85, 'k_ratio': 49.2126, '_sharpe_like_min': 0.095, '_sharpe_like_max': 0.165, '_k_ratio_min': 32.908, '_k_ratio_max': 66.002, '_seeds_used': 10}
+  NORMAL:   {'pnl_std': 7.895, 'avg_pnl_pct': 0.53, 'sharpe_like': 0.0667, 'trades_per_year': 134.26, 'annualized_sharpe_like': 0.7728, 'win_rate': 15.962, 'trade_count': 660.8, 'effective_trade_count': 600.57, 'k_ratio': -7.462, '_sharpe_like_min': 0.034, '_sharpe_like_max': 0.103, '_k_ratio_min': -32.277, '_k_ratio_max': 17.173, '_seeds_used': 10}
+
+=== HOLDOUT (avg of 10 seeds) ===
+  ELEVATED: {'pnl_std': 6.469, 'avg_pnl_pct': 0.786, 'sharpe_like': 0.1217, 'trades_per_year': 79.3, 'annualized_sharpe_like': 1.0845, 'win_rate': 18.495, 'trade_count': 387.2, 'effective_trade_count': 374.37, 'k_ratio': 20.8771, '_sharpe_like_min': 0.049, '_sharpe_like_max': 0.172, '_k_ratio_min': -20.111, '_k_ratio_max': 48.84, '_seeds_used': 10}
+  NORMAL:   {'pnl_std': 7.291, 'avg_pnl_pct': -0.037, 'sharpe_like': -0.0112, 'trades_per_year': 45.93, 'annualized_sharpe_like': -0.0759, 'win_rate': 14.214, 'trade_count': 224.2, 'effective_trade_count': 217.17, 'k_ratio': -8.1812, '_sharpe_like_min': -0.167, '_sharpe_like_max': 0.096, '_k_ratio_min': -60.279, '_k_ratio_max': 17.71, '_seeds_used': 10}
+
+Decision gate: ELEVATED and NORMAL need to show a REAL, consistent difference in
+sharpe_like/win_rate on BOTH TUNE and HOLDOUT (averaged across seeds, not a single
+draw), not just ALL, to count as real evidence SKEW regime carries information beyond
+ma_crossover's own edge. A HOLDOUT-only or inconsistent result means stop here -- do
+not build a live SKEW-regime filter on top of this.

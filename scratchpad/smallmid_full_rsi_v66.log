@@ -1,0 +1,52 @@
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CWEN.A"}}}
+$CWEN.A: possibly delisted; no timezone found
+
+1 Failed download:
+['CWEN.A']: possibly delisted; no timezone found
+$MOG.A: possibly delisted; no timezone found
+
+1 Failed download:
+['MOG.A']: possibly delisted; no timezone found
+Testing config: v66 (candidate) -- strategy=rsi
+  rsi_oversold_threshold=55.7064746864139, atr_take_profit_multiplier=4.111688157863203, stop_loss_atr_multiplier=2.4172141996624306
+
+Fetching SPY (market-uptrend proxy)...
+Fetched 1000/1002 ticker(s).
+Ticker holdout: frac=0.25, averaging TUNE/HOLDOUT over 10 seeds ([42, 1, 5, 7, 13, 99, 123, 2024, 2025, 777]) -- see improvements.txt item 69.
+
+Simulating REAL RSI-timed strategy and matched-count RANDOM-entry baseline for 1000 ticker(s), 2021-09-01..2026-08-31...
+Real RSI-timed signals: 18307 across 1000 ticker(s) (entry-fill realized: 18307). Random baseline (matched count per ticker): 3522 entries filled.
+
+=== ALL TICKERS ===
+  REAL   (RSI-timed): {'trade_count': 17842, 'effective_trade_count': 17814.2, 'win_rate': 13.71, 'avg_pnl_pct': 0.67, 'pnl_std': 8.48, 'sharpe_like': 0.079, 'trades_per_year': 3580.7, 'annualized_sharpe_like': 4.727, 'k_ratio': -5.668}
+  RANDOM (matched count): {'trade_count': 3464, 'effective_trade_count': 3463.5, 'win_rate': 16.29, 'avg_pnl_pct': 0.43, 'pnl_std': 8.5, 'sharpe_like': 0.051, 'trades_per_year': 696.3, 'annualized_sharpe_like': 1.346, 'k_ratio': -0.483}
+
+=== BY YEAR (does the edge hold up over time, or is it concentrated in one stretch?) ===
+  2021  REAL   (RSI-timed): {'trade_count': 1577, 'effective_trade_count': 1573.3, 'win_rate': 12.73, 'avg_pnl_pct': 0.9, 'pnl_std': 8.06, 'sharpe_like': 0.111, 'trades_per_year': 4923.1, 'annualized_sharpe_like': 7.788, 'k_ratio': -3.289}
+  2021  RANDOM (matched count): {'trade_count': 303, 'effective_trade_count': 302.5, 'win_rate': 15.23, 'avg_pnl_pct': 0.83, 'pnl_std': 7.83, 'sharpe_like': 0.106, 'trades_per_year': 954.1, 'annualized_sharpe_like': 3.274, 'k_ratio': -2.668}
+  2022  REAL   (RSI-timed): {'trade_count': 715, 'effective_trade_count': 715.0, 'win_rate': 6.15, 'avg_pnl_pct': -3.54, 'pnl_std': 7.65, 'sharpe_like': -0.462, 'trades_per_year': 779.6, 'annualized_sharpe_like': -12.899, 'k_ratio': -9.057}
+  2022  RANDOM (matched count): {'trade_count': 150, 'effective_trade_count': 150.0, 'win_rate': 15.33, 'avg_pnl_pct': -1.73, 'pnl_std': 8.98, 'sharpe_like': -0.192, 'trades_per_year': 161.6, 'annualized_sharpe_like': -2.441, 'k_ratio': -7.716}
+  2023  REAL   (RSI-timed): {'trade_count': 3338, 'effective_trade_count': 3337.0, 'win_rate': 9.53, 'avg_pnl_pct': -0.8, 'pnl_std': 7.48, 'sharpe_like': -0.108, 'trades_per_year': 3533.9, 'annualized_sharpe_like': -6.42, 'k_ratio': -16.716}
+  2023  RANDOM (matched count): {'trade_count': 687, 'effective_trade_count': 687.0, 'win_rate': 12.95, 'avg_pnl_pct': -0.45, 'pnl_std': 7.69, 'sharpe_like': -0.058, 'trades_per_year': 729.4, 'annualized_sharpe_like': -1.566, 'k_ratio': -2.235}
+  2024  REAL   (RSI-timed): {'trade_count': 5888, 'effective_trade_count': 5875.2, 'win_rate': 17.43, 'avg_pnl_pct': 1.68, 'pnl_std': 8.24, 'sharpe_like': 0.204, 'trades_per_year': 5908.2, 'annualized_sharpe_like': 15.68, 'k_ratio': 26.619}
+  2024  RANDOM (matched count): {'trade_count': 1064, 'effective_trade_count': 1064.0, 'win_rate': 19.92, 'avg_pnl_pct': 1.45, 'pnl_std': 8.15, 'sharpe_like': 0.178, 'trades_per_year': 1067.7, 'annualized_sharpe_like': 5.816, 'k_ratio': 22.537}
+  2025  REAL   (RSI-timed): {'trade_count': 3789, 'effective_trade_count': 3779.8, 'win_rate': 14.33, 'avg_pnl_pct': 0.88, 'pnl_std': 8.48, 'sharpe_like': 0.104, 'trades_per_year': 3812.5, 'annualized_sharpe_like': 6.422, 'k_ratio': 0.122}
+  2025  RANDOM (matched count): {'trade_count': 750, 'effective_trade_count': 750.0, 'win_rate': 16.93, 'avg_pnl_pct': 0.5, 'pnl_std': 8.95, 'sharpe_like': 0.056, 'trades_per_year': 754.6, 'annualized_sharpe_like': 1.538, 'k_ratio': 3.658}
+  2026  REAL   (RSI-timed): {'trade_count': 2535, 'effective_trade_count': 2534.0, 'win_rate': 12.4, 'avg_pnl_pct': 1.0, 'pnl_std': 9.97, 'sharpe_like': 0.101, 'trades_per_year': 3906.8, 'annualized_sharpe_like': 6.313, 'k_ratio': 3.243}
+  2026  RANDOM (matched count): {'trade_count': 510, 'effective_trade_count': 510.0, 'win_rate': 13.14, 'avg_pnl_pct': -0.19, 'pnl_std': 9.47, 'sharpe_like': -0.021, 'trades_per_year': 792.7, 'annualized_sharpe_like': -0.591, 'k_ratio': 1.945}
+
+=== TUNE (avg of 10 seeds) ===
+  REAL   (RSI-timed): {'effective_trade_count': 13326.76, 'avg_pnl_pct': 0.644, 'pnl_std': 8.492, 'win_rate': 13.6, 'k_ratio': -8.3096, 'sharpe_like': 0.0756, 'trades_per_year': 2681.68, 'annualized_sharpe_like': 3.9149, 'trade_count': 13346.4, '_sharpe_like_min': 0.061, '_sharpe_like_max': 0.088, '_k_ratio_min': -19.5, '_k_ratio_max': 2.99, '_seeds_used': 10}
+  RANDOM (matched count): {'effective_trade_count': 2589.2, 'avg_pnl_pct': 0.435, 'pnl_std': 8.512, 'win_rate': 16.125, 'k_ratio': 0.0202, 'sharpe_like': 0.051, 'trades_per_year': 521.62, 'annualized_sharpe_like': 1.1648, 'trade_count': 2589.6, '_sharpe_like_min': 0.038, '_sharpe_like_max': 0.064, '_k_ratio_min': -12.894, '_k_ratio_max': 17.107, '_seeds_used': 10}
+
+=== HOLDOUT (avg of 10 seeds) ===
+  REAL   (RSI-timed): {'effective_trade_count': 4490.7, 'avg_pnl_pct': 0.751, 'pnl_std': 8.433, 'win_rate': 14.016, 'k_ratio': 3.9805, 'sharpe_like': 0.089, 'trades_per_year': 908.3, 'annualized_sharpe_like': 2.6824, 'trade_count': 4495.6, '_sharpe_like_min': 0.053, '_sharpe_like_max': 0.134, '_k_ratio_min': -17.778, '_k_ratio_max': 36.941, '_seeds_used': 10}
+  RANDOM (matched count): {'effective_trade_count': 874.3, 'avg_pnl_pct': 0.43, 'pnl_std': 8.466, 'win_rate': 16.746, 'k_ratio': 3.7828, 'sharpe_like': 0.0508, 'trades_per_year': 176.92, 'annualized_sharpe_like': 0.676, 'trade_count': 874.4, '_sharpe_like_min': 0.012, '_sharpe_like_max': 0.085, '_k_ratio_min': -34.704, '_k_ratio_max': 48.524, '_seeds_used': 10}
+
+=== MONTE CARLO DRAWDOWN (1000 reshuffles of each's own trade order) ===
+  REAL   (RSI-timed): {'n_simulations': 1000, 'n_trades': 17842, 'actual_chronological_max_drawdown': np.float64(45.48), 'monte_carlo_mean': 4.36, 'monte_carlo_median': 2.69, 'monte_carlo_p95': 12.73, 'monte_carlo_worst': 45.93}
+  RANDOM (matched count): {'n_simulations': 1000, 'n_trades': 3464, 'actual_chronological_max_drawdown': 36.25, 'monte_carlo_mean': 12.32, 'monte_carlo_median': 11.22, 'monte_carlo_p95': 25.85, 'monte_carlo_worst': 41.23}
+
+If REAL's sharpe_like/win_rate isn't meaningfully better than RANDOM's (same trade
+count, same universe, same stop/target/holding-period structure), rsi timing
+is not adding real predictive information beyond the payoff structure + market drift.
