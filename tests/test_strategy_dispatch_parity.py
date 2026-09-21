@@ -50,6 +50,7 @@ COMPUTE_LEVELS_FN = {
     "ma_crossover": swingtrade.compute_ma_crossover_levels,
     "pairs": swingtrade.compute_pairs_levels,
     "momentum_rank": swingtrade.compute_momentum_levels,
+    "value_rank": swingtrade.compute_value_levels,
 }
 STRATEGIES = list(COMPUTE_LEVELS_FN.keys())
 

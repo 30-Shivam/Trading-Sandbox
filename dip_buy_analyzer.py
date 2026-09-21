@@ -175,6 +175,7 @@ import ic_tracking
 import llm_agent
 import market_data
 import regime_switcher
+import sec_fundamentals
 import storage
 import swingtrade
 from confirm_fill import resettle_if_already_settled
@@ -559,6 +560,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_pairs_trade_score(df, config)
     elif config.strategy == "momentum_rank":
         return swingtrade.add_momentum_trade_score(df, config)
+    elif config.strategy == "value_rank":
+        return swingtrade.add_value_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -762,9 +765,24 @@ def render_experimental_section(
         swingtrade.compute_momentum_rank_frame(momentum_panel, config.momentum_lookback_days)
         if config.strategy == "momentum_rank" and momentum_panel is not None else None
     )
+    value_rank_frame = None
+    if config.strategy == "value_rank" and momentum_panel is not None:
+        # Same live SEC EDGAR fetch ingest.py's own run_experimental_strategies()
+        # does -- reuses the CACHED panel builder (see
+        # sec_fundamentals.build_book_value_per_share_panel_cached()'s own
+        # docstring) so re-opening this dashboard tab repeatedly in one
+        # session, or across days, doesn't re-hit SEC EDGAR for data that
+        # only changes once a year per ticker. date_index MUST be
+        # momentum_panel's own real trading-day index (not a freshly-built
+        # range) -- see ingest.py's identical comment for why.
+        with st.spinner("Fetching point-in-time Book Value Per Share from SEC EDGAR..."):
+            bvps_panel = sec_fundamentals.build_book_value_per_share_panel_cached(
+                list(momentum_panel.columns), momentum_panel.index,
+            )
+        value_rank_frame = swingtrade.compute_value_rank_frame(momentum_panel, bvps_panel)
     results, score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-        momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve,
+        momentum_rank_frame=momentum_rank_frame, value_rank_frame=value_rank_frame, yield_curve=yield_curve,
         pair_price_panels=pair_price_panels,
     )
     if not results:
@@ -807,6 +825,8 @@ def render_experimental_section(
         trigger_columns = ["ADX", "Short_MA"]
     elif config.strategy == "momentum_rank":
         trigger_columns = ["Momentum_Percentile"]
+    elif config.strategy == "value_rank":
+        trigger_columns = ["Value_Percentile"]
     else:
         trigger_columns = []
     display_columns = [

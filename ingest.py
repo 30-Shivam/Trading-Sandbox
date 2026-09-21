@@ -82,6 +82,7 @@ import llm_agent
 import market_data
 import notifications
 import regime_switcher
+import sec_fundamentals
 import storage
 import swingtrade
 from watchlist import read_ticker_sectors, read_tickers
@@ -129,6 +130,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_pairs_trade_score(df, config)
     elif config.strategy == "momentum_rank":
         return swingtrade.add_momentum_trade_score(df, config)
+    elif config.strategy == "value_rank":
+        return swingtrade.add_value_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -503,9 +506,29 @@ def run_experimental_strategies(
             swingtrade.compute_momentum_rank_frame(momentum_panel, config.momentum_lookback_days)
             if config.strategy == "momentum_rank" else None
         )
+        value_rank_frame = None
+        if config.strategy == "value_rank":
+            # UNLIKE momentum_rank_frame above, this genuinely fetches new
+            # data (SEC EDGAR book value + yfinance split history) -- see
+            # sec_fundamentals.build_book_value_per_share_panel_cached()'s
+            # own docstring for why the CACHED variant is used here (not
+            # the same function benchmark_random_entry.py's backtest path
+            # calls): book value only changes once per fiscal year per
+            # ticker, so re-fetching SEC's full payload on every single
+            # daily automation run would be unnecessary network cost.
+            # date_index MUST be momentum_panel's own real trading-day
+            # index, not a freshly-built pd.Timestamp.now()-based range --
+            # the latter carries a current time-of-day component that
+            # would never exactly match the midnight-normalized OHLCV
+            # index, silently making value_rank_frame all-NaN forever
+            # (caught before shipping, not a live incident).
+            tickers = list(bundle.keys())
+            price_panel = momentum_panel  # same wide Close-price panel, no extra fetch
+            bvps_panel = sec_fundamentals.build_book_value_per_share_panel_cached(tickers, price_panel.index)
+            value_rank_frame = swingtrade.compute_value_rank_frame(price_panel, bvps_panel)
         results, score_skipped = market_data.score_bundle_for_strategy(
             bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-            momentum_rank_frame=momentum_rank_frame, yield_curve=yield_curve,
+            momentum_rank_frame=momentum_rank_frame, value_rank_frame=value_rank_frame, yield_curve=yield_curve,
         )
         if not results:
             print(f"{label} (v{version}, experimental): no tickers scored today.")

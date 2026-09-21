@@ -576,6 +576,7 @@ def score_bundle_for_strategy(
     sector_data: dict[str, pd.DataFrame] | None = None,
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
+    value_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """Compute levels for every ticker in an already-fetched bundle (see
@@ -584,9 +585,11 @@ def score_bundle_for_strategy(
     `market_df` for Relative_Strength), "pullback" (compute_pullback_levels),
     "breakout_retest" (compute_breakout_retest_levels), "week52_high"
     (compute_week52_levels), "momentum_burst" (compute_momentum_burst_levels),
-    "squeeze_breakout" (compute_squeeze_breakout_levels), or
-    "adx_trend_entry" (compute_adx_trend_entry_levels) -- the returned
-    dicts are schema-compatible across all eight (see
+    "squeeze_breakout" (compute_squeeze_breakout_levels), "adx_trend_entry"
+    (compute_adx_trend_entry_levels), "momentum_rank" (compute_momentum_levels,
+    uses `momentum_rank_frame`), or "value_rank" (compute_value_levels, uses
+    `value_rank_frame` -- see sec_fundamentals.py/swingtrade.compute_value_rank_frame())
+    -- the returned dicts are schema-compatible across all of these (see
     compute_breakout_levels' docstring), each with an added "Currency"
     key ("USD"/"CAD", from fetch_ticker_bundle()'s own get_ticker_currency()
     tag -- informational only, this system does no FX conversion). Pure
@@ -622,6 +625,10 @@ def score_bundle_for_strategy(
         rank_column = (
             momentum_rank_frame[ticker]
             if momentum_rank_frame is not None and ticker in momentum_rank_frame.columns else None
+        )
+        value_rank_column = (
+            value_rank_frame[ticker]
+            if value_rank_frame is not None and ticker in value_rank_frame.columns else None
         )
         try:
             if config.strategy == "breakout":
@@ -670,6 +677,11 @@ def score_bundle_for_strategy(
                 levels = swingtrade.compute_momentum_levels(
                     ticker, df, config, next_earnings_date=next_earnings,
                     top_headline=top_headline, rank_column=rank_column,
+                )
+            elif config.strategy == "value_rank":
+                levels = swingtrade.compute_value_levels(
+                    ticker, df, config, next_earnings_date=next_earnings,
+                    top_headline=top_headline, rank_column=value_rank_column,
                 )
             else:
                 levels = swingtrade.compute_levels(

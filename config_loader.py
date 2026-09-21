@@ -269,6 +269,24 @@ SECONDARY_VALIDATION_CAVEATS: dict[str, str] = {
 # no allocate_capital() call, same as every strategy's first live exposure.
 EXPERIMENTAL_STRATEGY_VERSIONS = {
     "Momentum Rank": 65,
+    # Value Rank (Price-to-Book, cheapest decile) added 2026-09-21 -- the
+    # first genuinely new strategy this cycle's continuous algorithm-
+    # derivation loop actually PASSED (4 prior candidates -- Low-Volatility
+    # Rank, discrete + rebalanced Sector Rotation, Quality Rank -- all hit
+    # the TUNE-good/HOLDOUT-reverses disqualifying pattern). Full 407-ticker
+    # validation: TUNE/HOLDOUT agree (no reversal), permutation test
+    # p=0.0000 (strongest significance found anywhere in this project,
+    # beats ma_crossover's own p=0.009), edge holds 6/8 calendar years and
+    # both volatility regimes, portfolio-constrained $10k replay +105% vs
+    # random's +62%. A real stock-split/book-value bug (SEC's as-filed
+    # share count vs yfinance's split-adjusted price falsely deflating
+    # Price-to-Book for any pre-split date, e.g. NVDA) was found and fixed
+    # BEFORE this result was trusted -- see sec_fundamentals.py's own
+    # top-of-file writeup. Same experimental/tracked-only staging as every
+    # strategy here -- real settled-trade IC has to clear its own trust
+    # floor over real weeks before any capital-eligibility question is
+    # even asked. v76.
+    "Value Rank": 76,
 }
 
 # RSI Mean-Reversion (Small/Mid-Cap), added 2026-09-01 -- NOT in

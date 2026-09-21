@@ -8,10 +8,13 @@ filed AFTER `as_of` must NEVER be visible to a lookup at `as_of` (real
 look-ahead risk, not a hypothetical one -- SEC filings routinely lag their
 own period-end date by 45-90+ days).
 """
+from datetime import datetime, timedelta, timezone
+
 import pandas as pd
 import pytest
 
 import sec_fundamentals
+import storage
 
 
 class _FakeResponse:
@@ -348,4 +351,108 @@ def test_build_roe_panel_forward_fills_without_look_ahead(monkeypatch):
     assert panel.loc["2020-01-05", "A"] == pytest.approx(0.2)
     assert panel.loc["2020-01-10", "A"] == pytest.approx(0.2)
     # A ticker with no SEC data at all (e.g. a Canadian cross-listed name) -> all-NaN column.
+    assert panel["B"].isna().all()
+
+
+class _FakeCollection:
+    def __init__(self, docs=None):
+        self._docs = docs or {}
+        self.replace_calls = []
+
+    def find_one(self, query):
+        return self._docs.get(query["_id"])
+
+    def replace_one(self, query, doc, upsert=False):
+        self.replace_calls.append(doc)
+        self._docs[query["_id"]] = doc
+
+
+class _FakeDB:
+    def __init__(self, collection):
+        self._collection = collection
+
+    def __getitem__(self, name):
+        return self._collection
+
+
+def test_fetch_point_in_time_bvps_cached_uses_fresh_cache_without_network_call(monkeypatch):
+    fake_collection = _FakeCollection({
+        "TEST": {
+            "_id": "TEST",
+            "rows": [{"filed_date": "2021-02-15", "book_value_per_share": 4.2}],
+            "fetched_at": datetime.now(timezone.utc) - timedelta(days=1),  # well within the 7-day window
+        },
+    })
+    monkeypatch.setattr(storage, "get_db", lambda: _FakeDB(fake_collection))
+    calls = []
+    monkeypatch.setattr(sec_fundamentals, "fetch_point_in_time_book_value_per_share", lambda t: calls.append(t))
+
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share_cached("TEST")
+    assert calls == []  # cache hit -- never touched the real (network-bound) fetch
+    assert len(bvps) == 1
+    assert bvps.iloc[0]["book_value_per_share"] == pytest.approx(4.2)
+    assert bvps.iloc[0]["filed_date"] == pd.Timestamp("2021-02-15")
+
+
+def test_fetch_point_in_time_bvps_cached_refetches_when_stale(monkeypatch):
+    fake_collection = _FakeCollection({
+        "TEST": {
+            "_id": "TEST",
+            "rows": [{"filed_date": "2021-02-15", "book_value_per_share": 4.2}],
+            "fetched_at": datetime.now(timezone.utc) - timedelta(days=30),  # past the 7-day window
+        },
+    })
+    monkeypatch.setattr(storage, "get_db", lambda: _FakeDB(fake_collection))
+    fresh_df = pd.DataFrame({"filed_date": [pd.Timestamp("2026-01-01")], "book_value_per_share": [9.9]})
+    monkeypatch.setattr(sec_fundamentals, "fetch_point_in_time_book_value_per_share", lambda t: fresh_df)
+
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share_cached("TEST")
+    assert bvps.iloc[0]["book_value_per_share"] == pytest.approx(9.9)  # got the FRESH value, not the stale cache
+    assert len(fake_collection.replace_calls) == 1  # cache was refreshed
+
+
+def test_fetch_point_in_time_bvps_cached_refetches_when_missing(monkeypatch):
+    fake_collection = _FakeCollection({})
+    monkeypatch.setattr(storage, "get_db", lambda: _FakeDB(fake_collection))
+    fresh_df = pd.DataFrame({"filed_date": [pd.Timestamp("2026-01-01")], "book_value_per_share": [5.5]})
+    calls = []
+
+    def fake_fetch(t):
+        calls.append(t)
+        return fresh_df
+
+    monkeypatch.setattr(sec_fundamentals, "fetch_point_in_time_book_value_per_share", fake_fetch)
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share_cached("TEST")
+    assert calls == ["TEST"]
+    assert bvps.iloc[0]["book_value_per_share"] == pytest.approx(5.5)
+    assert len(fake_collection.replace_calls) == 1
+
+
+def test_fetch_point_in_time_bvps_cached_degrades_to_live_fetch_when_mongo_unavailable(monkeypatch):
+    def raise_not_configured():
+        raise RuntimeError("MONGODB_URI not set")
+
+    monkeypatch.setattr(storage, "get_db", raise_not_configured)
+    fresh_df = pd.DataFrame({"filed_date": [pd.Timestamp("2026-01-01")], "book_value_per_share": [7.7]})
+    monkeypatch.setattr(sec_fundamentals, "fetch_point_in_time_book_value_per_share", lambda t: fresh_df)
+
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share_cached("TEST")
+    assert bvps.iloc[0]["book_value_per_share"] == pytest.approx(7.7)  # never crashed, just skipped the cache
+
+
+def test_build_book_value_per_share_panel_cached_forward_fills_without_look_ahead(monkeypatch):
+    date_index = pd.date_range("2020-01-01", periods=10, freq="D")
+    monkeypatch.setattr(storage, "get_db", lambda: (_ for _ in ()).throw(RuntimeError("no mongo in this test")))
+
+    def fake_fetch_cached(ticker, max_age_days=sec_fundamentals.BVPS_CACHE_MAX_AGE_DAYS):
+        if ticker == "A":
+            return pd.DataFrame({"filed_date": [pd.Timestamp("2020-01-05")], "book_value_per_share": [20.0]})
+        return pd.DataFrame(columns=["filed_date", "book_value_per_share"])
+
+    monkeypatch.setattr(sec_fundamentals, "fetch_point_in_time_book_value_per_share_cached", fake_fetch_cached)
+    panel = sec_fundamentals.build_book_value_per_share_panel_cached(["A", "B"], date_index)
+
+    assert pd.isna(panel.loc["2020-01-01", "A"])
+    assert panel.loc["2020-01-05", "A"] == pytest.approx(20.0)
+    assert panel.loc["2020-01-10", "A"] == pytest.approx(20.0)
     assert panel["B"].isna().all()

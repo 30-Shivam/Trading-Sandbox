@@ -282,6 +282,115 @@ def build_book_value_per_share_panel(tickers: list[str], date_index: pd.Datetime
     return pd.DataFrame(columns)
 
 
+BVPS_CACHE_COLLECTION = "Fundamentals_Cache_BVPS"
+BVPS_CACHE_MAX_AGE_DAYS = 7  # book value per share only changes once per
+                                           # fiscal year per ticker (a new
+                                           # 10-K) -- re-fetching SEC's full
+                                           # company-facts payload (2
+                                           # network calls per ticker as of
+                                           # the 2026-09-21 split-adjustment
+                                           # fix) on every single daily
+                                           # automation run is unnecessary
+                                           # network cost and unnecessary
+                                           # load on SEC's own servers. A
+                                           # week is a deliberately
+                                           # conservative refresh cadence,
+                                           # not tuned to filing frequency.
+
+
+def fetch_point_in_time_book_value_per_share_cached(
+    ticker: str, max_age_days: int = BVPS_CACHE_MAX_AGE_DAYS,
+) -> pd.DataFrame:
+    """Cached wrapper around fetch_point_in_time_book_value_per_share() --
+    see BVPS_CACHE_MAX_AGE_DAYS above for why caching matters here. Checks
+    MongoDB's `Fundamentals_Cache_BVPS` collection first (one document per
+    ticker, `{"_id": ticker, "rows": [...], "fetched_at": <UTC datetime>}`);
+    only re-fetches from SEC EDGAR/yfinance if the cached entry is missing
+    or older than `max_age_days`. Deliberately a SEPARATE function from
+    fetch_point_in_time_book_value_per_share() rather than a modification
+    of it -- the backtest path (benchmark_random_entry.py) keeps calling
+    the uncached original directly, unaffected by this at all, matching
+    this module's own "small independent functions" convention. Safe to
+    call from a GH Actions cron (a fresh container every run, no local
+    disk persistence) since the cache lives in the already-persistent
+    Mongo cluster this project already depends on, not local disk.
+    Degrades to an uncached live fetch (never crashes) if Mongo is
+    unavailable -- same "missing optional infrastructure never blocks a
+    real signal" convention as every other storage-touching function in
+    this codebase."""
+    import storage  # local import: keeps this module's own test suite
+                                           # (network-mocked, Mongo-free)
+                                           # working unchanged for every
+                                           # function that doesn't need
+                                           # this cache, same "storage is
+                                           # optional infrastructure"
+                                           # posture as the rest of this
+                                           # codebase
+    from datetime import datetime, timezone
+
+    columns = ["filed_date", "book_value_per_share"]
+    db = None
+    try:
+        db = storage.get_db()
+        cached = db[BVPS_CACHE_COLLECTION].find_one({"_id": ticker})
+    except Exception:
+        cached = None
+
+    if cached is not None:
+        fetched_at = cached.get("fetched_at")
+        if fetched_at is not None:
+            if fetched_at.tzinfo is None:
+                fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 86400
+            if age_days <= max_age_days:
+                rows = cached.get("rows", [])
+                if not rows:
+                    return pd.DataFrame(columns=columns)
+                out = pd.DataFrame(rows)
+                out["filed_date"] = pd.to_datetime(out["filed_date"])
+                return out[columns]
+
+    fresh = fetch_point_in_time_book_value_per_share(ticker)
+    if db is not None:
+        try:
+            db[BVPS_CACHE_COLLECTION].replace_one(
+                {"_id": ticker},
+                {
+                    "_id": ticker,
+                    "rows": fresh.assign(filed_date=fresh["filed_date"].astype(str)).to_dict("records"),
+                    "fetched_at": datetime.now(timezone.utc),
+                },
+                upsert=True,
+            )
+        except Exception:
+            pass  # cache write failure never blocks returning the real, freshly-fetched data
+    return fresh
+
+
+def build_book_value_per_share_panel_cached(
+    tickers: list[str], date_index: pd.DatetimeIndex, max_age_days: int = BVPS_CACHE_MAX_AGE_DAYS,
+) -> pd.DataFrame:
+    """Cached counterpart to build_book_value_per_share_panel() -- exact
+    same forward-fill-never-backfill construction, but sourced from
+    fetch_point_in_time_book_value_per_share_cached() instead of the
+    uncached fetch. Intended for the LIVE daily automation path
+    (ingest.py), not the backtest path -- benchmark_random_entry.py keeps
+    calling build_book_value_per_share_panel() directly, unaffected."""
+    columns = {}
+    for i, ticker in enumerate(tickers):
+        if i > 0:
+            time.sleep(REQUEST_DELAY_SEC)
+        bvps_history = fetch_point_in_time_book_value_per_share_cached(ticker, max_age_days)
+        if bvps_history.empty:
+            columns[ticker] = pd.Series(index=date_index, dtype=float)
+            continue
+        series = pd.Series(
+            bvps_history["book_value_per_share"].values, index=pd.DatetimeIndex(bvps_history["filed_date"]),
+        )
+        columns[ticker] = series.reindex(series.index.union(date_index)).ffill().reindex(date_index)
+    return pd.DataFrame(columns)
+
+
 def build_roe_panel(tickers: list[str], date_index: pd.DatetimeIndex) -> pd.DataFrame:
     """Builds the wide (dates x tickers) point-in-time ROE panel every
     cross-sectional rank strategy in this codebase needs (same shape/role
