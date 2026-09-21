@@ -2379,6 +2379,164 @@ def compute_quality_levels(
     return quality_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def compute_value_rank_frame(price_panel: pd.DataFrame, bvps_panel: pd.DataFrame) -> pd.DataFrame:
+    """Cross-sectional percentile rank of every ticker's own daily
+    Price-to-Book ratio, INVERTED so the CHEAPEST ticker (lowest P/B) gets
+    the HIGHEST percentile (100) -- the VALUE-factor counterpart to
+    compute_quality_rank_frame()'s ROE-based ranking. Deliberately the
+    opposite ranking direction from every other rank frame in this
+    codebase: momentum/lowvol/quality all rank "biggest raw value = best,"
+    value ranks "smallest raw ratio = best."
+
+    `price_panel` (wide Close-price panel, e.g. market_data.build_momentum_panel())
+    and `bvps_panel` (wide, already-forward-filled point-in-time Book Value
+    Per Share, from sec_fundamentals.build_book_value_per_share_panel())
+    must share the same tickers/columns -- aligned via pandas' own
+    elementwise division on their shared index/columns, any ticker/date
+    combination present in one but not the other reads NaN, same
+    "missing data doesn't fabricate a signal" convention as every other
+    optional per-ticker input. A ticker with no BVPS data at all (Canadian
+    cross-listed names, fetch failures) reads NaN every day and is
+    correctly excluded from the day's percentile computation entirely
+    (pandas .rank() already skips NaN by construction)."""
+    price_to_book = price_panel / bvps_panel
+    # ascending=False means the LARGEST raw ratio (most expensive) gets
+    # rank=1 (worst), and the SMALLEST raw ratio (cheapest) gets rank=N
+    # (best) -- pct=True then turns that into cheapest=100%, most
+    # expensive=~1/N, the same "best case reads near 100" convention
+    # compute_quality_rank_frame() uses for its own (non-inverted) ROE rank.
+    return price_to_book.rank(axis=1, pct=True, ascending=False) * 100
+
+
+def precompute_value_frame(
+    df: pd.DataFrame,
+    rank_column: pd.Series | None = None,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> pd.DataFrame:
+    """Vectorized precompute of the cross-sectional VALUE RANK strategy's
+    columns -- exact structural mirror of precompute_quality_frame(),
+    differing only in which precomputed percentile column/label is used
+    (`Value_Percentile` here, already inverted so higher=cheaper=better by
+    the time it reaches this function -- see compute_value_rank_frame()).
+
+    `rank_column`, if given, should be THIS ticker's own column already
+    sliced from a shared universe-wide rank frame built once via
+    compute_value_rank_frame(). Missing (None) degrades to "never fires,"
+    same convention as every sibling cross-sectional strategy."""
+    df = precompute_breakout_frame(df, config)
+    df["Value_Percentile"] = rank_column.reindex(df.index) if rank_column is not None else np.nan
+    return df
+
+
+def value_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract the cross-sectional VALUE RANK strategy's dict for one row
+    of a frame already built by precompute_value_frame() -- exact
+    structural mirror of quality_levels_from_frame(), differing only in
+    which percentile column gates the signal."""
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, rsi = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"], last_row["RSI"],
+    )
+    value_percentile = last_row["Value_Percentile"]
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+
+    last_close, sma_trend, atr, avg_volume = float(last_close), float(sma_trend), float(atr), float(avg_volume)
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    if pd.isna(value_percentile):
+        value_signal = False
+        value_percentile_out = None
+        signal_strength_pct = 0.0
+    else:
+        value_percentile = float(value_percentile)
+        value_signal = bool(value_percentile >= config.value_top_percentile_min)
+        value_percentile_out = round(value_percentile, 2)
+        signal_strength_pct = (
+            round(value_percentile - config.value_top_percentile_min, 2) if value_signal else 0.0
+        )
+
+    buy_price = round(last_close, 2)
+    distance_to_buy_pct = 0.0
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "Value_Percentile": value_percentile_out,
+        "Value_Signal": value_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": distance_to_buy_pct,
+        "Signal_Strength_Pct": signal_strength_pct,
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+        "Dollar_Volume": round(dollar_volume, 2),
+    }
+
+
+def compute_value_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+    rank_column: pd.Series | None = None,
+) -> dict:
+    """Compute cross-sectional VALUE RANK levels for one ticker's OHLCV
+    history -- see precompute_value_frame()'s own docstring for the full
+    mechanism. Thin wrapper, exact mirror of compute_quality_levels()."""
+    frame = precompute_value_frame(df, rank_column, config)
+    as_of = frame.index[-1]
+    return value_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def classify_insider_transaction(text) -> str:
     """Classifies one yfinance insider_transactions row's free-text "Text"
     field -- the "Transaction" column itself returns empty in the

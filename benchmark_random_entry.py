@@ -165,7 +165,7 @@ from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
 EARNINGS_AWARE_STRATEGIES = (
     "squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank", "pead", "lowvol_rank",
-    "sector_rotation", "quality_rank",
+    "sector_rotation", "quality_rank", "value_rank",
 )  # the only
                                                                    # simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
@@ -200,6 +200,17 @@ QUALITY_AWARE_STRATEGIES = ("quality_rank",)  # same "only the REAL simulate_*_s
                                                                    # fetch (SEC EDGAR, network-bound,
                                                                    # not reused from already-fetched
                                                                    # OHLCV like every other rank frame)
+VALUE_AWARE_STRATEGIES = ("value_rank",)  # same "only the REAL simulate_*_signals() accepts
+                                                                   # rank_column" precedent as
+                                                                   # QUALITY_AWARE_STRATEGIES -- a
+                                                                   # SEPARATE tuple because value_rank's
+                                                                   # rank_column ALSO needs a fresh SEC
+                                                                   # EDGAR fetch (book value per share,
+                                                                   # not ROE), combined with a Close-
+                                                                   # price panel (already-fetched OHLCV,
+                                                                   # no extra network cost) to form the
+                                                                   # Price-to-Book ratio -- see
+                                                                   # swingtrade.compute_value_rank_frame()
 LOWVOL_AWARE_STRATEGIES = ("lowvol_rank",)  # same "only the REAL simulate_*_signals() accepts
                                                                    # rank_column" precedent as
                                                                    # MOMENTUM_AWARE_STRATEGIES -- a
@@ -247,6 +258,7 @@ STRENGTH_CAP_FIELD = {
     "lowvol_rank": "lowvol_strength_cap_pct",
     "sector_rotation": "sector_rotation_strength_cap_pct",
     "quality_rank": "quality_strength_cap_pct",
+    "value_rank": "value_strength_cap_pct",
 }
 
 # Strategy -> its own precompute_*_frame() function (2026-09-13,
@@ -341,6 +353,7 @@ def main():
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
             "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover", "pairs",
             "insider_buying", "momentum_rank", "pead", "lowvol_rank", "sector_rotation", "quality_rank",
+            "value_rank",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -750,6 +763,22 @@ def main():
               "(tickers with none -- e.g. Canadian cross-listed names -- read as 'never fires').")
         quality_rank_frame = swingtrade.compute_quality_rank_frame(roe_panel)
 
+    value_rank_frame: pd.DataFrame | None = None
+    if args.strategy in VALUE_AWARE_STRATEGIES:
+        # Same "genuinely fetches new data" cost as quality_rank_frame above
+        # -- a SEPARATE SEC EDGAR concept (book value per share, not ROE),
+        # combined with a Close-price panel (no new fetch, OHLCV already in
+        # hand) to form the Price-to-Book ratio this strategy ranks on.
+        full_date_range = pd.date_range(start, end, freq="D")
+        print(f"\nFetching point-in-time Book Value Per Share for {len(ticker_data)} ticker(s) from "
+              "SEC EDGAR (one request per ticker, paced -- this is the slow part)...")
+        bvps_panel = sec_fundamentals.build_book_value_per_share_panel(list(ticker_data.keys()), full_date_range)
+        covered = bvps_panel.notna().any().sum()
+        print(f"Got real SEC EDGAR fundamentals for {covered}/{len(ticker_data)} ticker(s) "
+              "(tickers with none -- e.g. Canadian cross-listed names -- read as 'never fires').")
+        price_panel = pd.DataFrame({t: ticker_data[t]["Close"] for t in ticker_data})
+        value_rank_frame = swingtrade.compute_value_rank_frame(price_panel, bvps_panel)
+
     if args.with_lookahead_audit:
         precompute_fn = LOOKAHEAD_PRECOMPUTE_FN.get(args.strategy)
         if precompute_fn is None:
@@ -843,6 +872,9 @@ def main():
     elif args.strategy == "quality_rank":
         real_fn, random_fn = swingtrade.simulate_quality_signals, swingtrade.simulate_random_quality_entries
         real_label = "Quality_Rank-timed"
+    elif args.strategy == "value_rank":
+        real_fn, random_fn = swingtrade.simulate_value_signals, swingtrade.simulate_random_value_entries
+        real_label = "Value_Rank-timed"
     else:
         real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
         real_label = "MA_Crossover-timed"
@@ -897,13 +929,19 @@ def main():
         if quality_rank_frame is None or ticker not in quality_rank_frame.columns:
             return {"rank_column": None}
         return {"rank_column": quality_rank_frame[ticker]}
+    def value_kwargs(ticker):
+        if args.strategy not in VALUE_AWARE_STRATEGIES:
+            return {}
+        if value_rank_frame is None or ticker not in value_rank_frame.columns:
+            return {"rank_column": None}
+        return {"rank_column": value_rank_frame[ticker]}
     for i, (ticker, ohlcv) in enumerate(ticker_data.items()):
         sector = sector_lookup.get(ticker, "Unknown")
         real = real_fn(
             ticker, ohlcv, market_data, start, end, config,
             **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker), **peer_kwargs(ticker),
             **insider_kwargs(ticker), **momentum_kwargs(ticker), **pead_kwargs(ticker), **lowvol_kwargs(ticker),
-            **sector_rotation_kwargs(ticker), **quality_kwargs(ticker),
+            **sector_rotation_kwargs(ticker), **quality_kwargs(ticker), **value_kwargs(ticker),
         )
         real_trades.extend(real)
         real_counts[ticker] = len(real)

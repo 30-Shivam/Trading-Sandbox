@@ -22,11 +22,32 @@ No API key required -- SEC's own fair-use policy just asks for a
 descriptive User-Agent identifying the requester and reasonable request
 pacing (a courtesy, not an enforced rate limit the way most vendor APIs
 are), hence REQUEST_DELAY_SEC below.
+
+REAL BUG FOUND+FIXED 2026-09-21, while validating the "value_rank" strategy
+built on top of fetch_point_in_time_book_value_per_share() below: a stock
+split creates a systematic Price-to-Book mismatch if left uncorrected.
+yfinance's historical Close (see run_backtest.fetch_history(), even with
+auto_adjust=False) is always expressed on TODAY's post-split share-count
+basis -- confirmed directly (NVDA's real 2023-01-03 close was ~$143;
+yfinance reports ~$14.3, already divided by its June-2024 10:1 split
+ratio). SEC's own filed `dei:EntityCommonStockSharesOutstanding`, by
+contrast, is whatever the company's cover page said AT THAT TIME -- the
+PRE-split count for any filing before a later split. Dividing a split-
+ADJUSTED price by a book-value-per-share built from PRE-split shares
+deflates the ratio by roughly the split factor for every date before the
+split, making a real, expensive growth stock (NVDA's real historical P/B
+was ~16x) look falsely CHEAP (computed as ~1.6x) throughout its entire
+pre-split history -- exactly backwards. Fixed via `_cumulative_split_factor()`
+below, which multiplies each filing's raw shares-outstanding by the
+product of every real stock split (from yfinance's own `Ticker.splits`)
+that happened AFTER that filing, so the denominator lands on the SAME
+modern-share-count basis the price series already uses.
 """
 import time
 
 import pandas as pd
 import requests
+import yfinance as yf
 
 USER_AGENT = "Trading-Sandbox research contact: ks3032004@gmail.com"
 REQUEST_DELAY_SEC = 0.15  # SEC's own fair-use guidance is ~10 req/sec max; well under that
@@ -132,6 +153,133 @@ def fetch_point_in_time_roe(ticker: str) -> pd.DataFrame:
     out = out.drop_duplicates(subset="fiscal_year_end", keep="last")
     out["filed_date"] = pd.to_datetime(out["filed_date"])
     return out[columns].reset_index(drop=True)
+
+
+def _cumulative_split_factor(splits: pd.Series, filed_date) -> float:
+    """Product of every real stock-split ratio in `splits` (yfinance's own
+    Ticker.splits, a date-indexed Series of ratios like 10.0 for a 10:1
+    split) that occurred AFTER `filed_date` -- see this module's own
+    top-of-file bug writeup (2026-09-21) for why this matters. Returns 1.0
+    (no adjustment) when there are no later splits or `splits` is empty,
+    same "missing optional data never fabricates a signal" convention as
+    every other optional lookup here."""
+    if splits is None or splits.empty:
+        return 1.0
+    filed_ts = pd.Timestamp(filed_date)
+    if filed_ts.tzinfo is None and splits.index.tz is not None:
+        filed_ts = filed_ts.tz_localize(splits.index.tz)
+    elif filed_ts.tzinfo is not None and splits.index.tz is None:
+        filed_ts = filed_ts.tz_localize(None)
+    later_splits = splits[splits.index > filed_ts]
+    if later_splits.empty:
+        return 1.0
+    return float(later_splits.prod())
+
+
+def fetch_point_in_time_book_value_per_share(ticker: str) -> pd.DataFrame:
+    """Real, point-in-time-correct annual Book Value Per Share history for
+    one ticker -- the VALUE-factor counterpart to fetch_point_in_time_roe()
+    (a QUALITY factor). BVPS = StockholdersEquity / shares outstanding,
+    matched by FISCAL YEAR (same `end` date) within the SAME 10-K filing
+    (same `accn` accession number), exact same discipline as
+    fetch_point_in_time_roe() -- see that function's docstring for the
+    filed-vs-end date reasoning, which applies identically here.
+
+    Shares outstanding comes from `dei:EntityCommonStockSharesOutstanding`
+    (a cover-page fact, not `us-gaap`) -- a required disclosure on every
+    10-K's cover page for essentially all SEC filers, unlike some us-gaap
+    concepts that vary by company's own chart-of-accounts choices, making
+    it a reliably populated fact to build a universe-wide panel from.
+
+    Returns a DataFrame with columns ["filed_date", "book_value_per_share"],
+    one row per fiscal year, sorted by filed_date. Degrades to an empty
+    DataFrame (ticker not in SEC's map, no CIK match, fetch failure, or no
+    matched StockholdersEquity/shares-outstanding pairs) rather than
+    crashing, same convention as fetch_point_in_time_roe().
+
+    Each row's raw (as-filed) share count is scaled by
+    _cumulative_split_factor() to land on the SAME modern post-split share
+    basis run_backtest.fetch_history()'s Close prices already use -- without
+    this, any ticker that split during (or after) the backtest window would
+    show a falsely deflated Price-to-Book for its entire pre-split history
+    (real bug found+fixed 2026-09-21, see this module's own top-of-file
+    writeup)."""
+    columns = ["filed_date", "book_value_per_share"]
+    cik_map = fetch_cik_map()
+    cik = cik_map.get(ticker)
+    if cik is None:
+        return pd.DataFrame(columns=columns)
+
+    try:
+        resp = requests.get(
+            COMPANY_FACTS_URL.format(cik=cik), headers={"User-Agent": USER_AGENT}, timeout=15,
+        )
+        if resp.status_code != 200:
+            return pd.DataFrame(columns=columns)
+        payload = resp.json().get("facts", {})
+    except Exception:
+        return pd.DataFrame(columns=columns)
+
+    equity = payload.get("us-gaap", {}).get("StockholdersEquity", {}).get("units", {}).get("USD", [])
+    shares = (
+        payload.get("dei", {}).get("EntityCommonStockSharesOutstanding", {}).get("units", {}).get("shares", [])
+    )
+    if not equity or not shares:
+        return pd.DataFrame(columns=columns)
+
+    eq_10k = {u["accn"]: u for u in equity if u.get("form") == "10-K" and u.get("end")}
+    # dei:EntityCommonStockSharesOutstanding is a COVER-PAGE fact -- its own
+    # "end" date is the cover page's as-of date (close to, but not always
+    # identical to, the fiscal year end), so match by accession number only
+    # (same filing), not by exact end-date equality like ROE's NetIncomeLoss
+    # match does -- accession number alone is sufficient since both facts
+    # come from the SAME 10-K.
+    sh_10k = {u["accn"]: u for u in shares if u.get("form") == "10-K"}
+
+    try:
+        splits = yf.Ticker(ticker).splits
+    except Exception:
+        splits = pd.Series(dtype=float)
+
+    rows = []
+    for accn, eq in eq_10k.items():
+        sh = sh_10k.get(accn)
+        if sh is None:
+            continue
+        shares_val = sh.get("val")
+        equity_val = eq.get("val")
+        if not shares_val or shares_val <= 0 or equity_val is None:
+            continue
+        raw_bvps = equity_val / shares_val
+        adjusted_bvps = raw_bvps / _cumulative_split_factor(splits, eq["filed"])
+        rows.append({"filed_date": eq["filed"], "book_value_per_share": adjusted_bvps, "fiscal_year_end": eq.get("end")})
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    out = pd.DataFrame(rows).sort_values("filed_date")
+    out = out.drop_duplicates(subset="fiscal_year_end", keep="last")
+    out["filed_date"] = pd.to_datetime(out["filed_date"])
+    return out[columns].reset_index(drop=True)
+
+
+def build_book_value_per_share_panel(tickers: list[str], date_index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Builds the wide (dates x tickers) point-in-time Book Value Per Share
+    panel the "value_rank" strategy needs -- exact structural mirror of
+    build_roe_panel(), same forward-fill-never-backfill discipline."""
+    columns = {}
+    for i, ticker in enumerate(tickers):
+        if i > 0:
+            time.sleep(REQUEST_DELAY_SEC)
+        bvps_history = fetch_point_in_time_book_value_per_share(ticker)
+        if bvps_history.empty:
+            columns[ticker] = pd.Series(index=date_index, dtype=float)
+            continue
+        series = pd.Series(
+            bvps_history["book_value_per_share"].values, index=pd.DatetimeIndex(bvps_history["filed_date"]),
+        )
+        columns[ticker] = series.reindex(series.index.union(date_index)).ffill().reindex(date_index)
+    return pd.DataFrame(columns)
 
 
 def build_roe_panel(tickers: list[str], date_index: pd.DatetimeIndex) -> pd.DataFrame:

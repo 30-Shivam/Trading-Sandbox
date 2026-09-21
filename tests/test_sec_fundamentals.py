@@ -177,6 +177,159 @@ def test_fetch_point_in_time_roe_unmapped_ticker_returns_empty_without_network_c
     assert calls == []  # no CIK -> never even tries the network, same convention as every other fetch function
 
 
+def _fake_companyfacts_bvps(equity_rows, shares_rows):
+    return _FakeResponse({
+        "facts": {
+            "us-gaap": {"StockholdersEquity": {"units": {"USD": equity_rows}}},
+            "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": shares_rows}}},
+        }
+    })
+
+
+class _FakeYfTicker:
+    def __init__(self, splits):
+        self.splits = splits
+
+
+def _mock_no_splits(monkeypatch):
+    """No real stock splits -- _cumulative_split_factor() should return 1.0
+    (no adjustment), same as every existing BVPS test's pre-fix expected
+    values."""
+    monkeypatch.setattr(sec_fundamentals.yf, "Ticker", lambda t: _FakeYfTicker(pd.Series(dtype=float)))
+
+
+def test_fetch_point_in_time_bvps_computes_from_matched_10k_pair(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+    _mock_no_splits(monkeypatch)
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_bvps(
+            equity_rows=[{"accn": "A1", "end": "2020-12-31", "val": 10_000_000, "form": "10-K", "filed": "2021-02-15"}],
+            shares_rows=[{"accn": "A1", "end": "2021-02-10", "val": 1_000_000, "form": "10-K", "filed": "2021-02-15"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share("TEST")
+    assert len(bvps) == 1
+    assert bvps.iloc[0]["book_value_per_share"] == pytest.approx(10.0)  # 10,000,000 / 1,000,000
+    assert bvps.iloc[0]["filed_date"] == pd.Timestamp("2021-02-15")
+
+
+def test_fetch_point_in_time_bvps_ignores_non_10k_forms(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+    _mock_no_splits(monkeypatch)
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_bvps(
+            equity_rows=[{"accn": "Q1", "end": "2020-09-30", "val": 5_000_000, "form": "10-Q", "filed": "2020-11-01"}],
+            shares_rows=[{"accn": "Q1", "end": "2020-09-30", "val": 500_000, "form": "10-Q", "filed": "2020-11-01"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share("TEST")
+    assert bvps.empty
+
+
+def test_fetch_point_in_time_bvps_wont_pair_mismatched_accession(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+    _mock_no_splits(monkeypatch)
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_bvps(
+            equity_rows=[{"accn": "A1", "end": "2020-12-31", "val": 10_000_000, "form": "10-K", "filed": "2021-02-15"}],
+            shares_rows=[{"accn": "A2", "end": "2020-02-10", "val": 900_000, "form": "10-K", "filed": "2020-02-15"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share("TEST")
+    assert bvps.empty
+
+
+def test_fetch_point_in_time_bvps_skips_zero_shares(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+    _mock_no_splits(monkeypatch)
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_bvps(
+            equity_rows=[{"accn": "A1", "end": "2020-12-31", "val": 10_000_000, "form": "10-K", "filed": "2021-02-15"}],
+            shares_rows=[{"accn": "A1", "end": "2021-02-10", "val": 0, "form": "10-K", "filed": "2021-02-15"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share("TEST")
+    assert bvps.empty
+
+
+def test_fetch_point_in_time_bvps_unmapped_ticker_returns_empty_without_network_call(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {})
+    calls = []
+    monkeypatch.setattr(sec_fundamentals.requests, "get", lambda *a, **k: calls.append(1))
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share("ATD")
+    assert bvps.empty
+    assert calls == []
+
+
+def test_cumulative_split_factor_multiplies_only_splits_after_filed_date():
+    splits = pd.Series(
+        [4.0, 10.0],
+        index=pd.DatetimeIndex(["2021-06-01", "2024-06-10"]),
+    )
+    # A filing well before BOTH splits picks up both (4x * 10x = 40x).
+    assert sec_fundamentals._cumulative_split_factor(splits, "2020-01-01") == pytest.approx(40.0)
+    # A filing between the two splits picks up only the later one.
+    assert sec_fundamentals._cumulative_split_factor(splits, "2022-01-01") == pytest.approx(10.0)
+    # A filing after both splits gets no adjustment.
+    assert sec_fundamentals._cumulative_split_factor(splits, "2025-01-01") == pytest.approx(1.0)
+
+
+def test_cumulative_split_factor_empty_splits_returns_one():
+    assert sec_fundamentals._cumulative_split_factor(pd.Series(dtype=float), "2020-01-01") == 1.0
+    assert sec_fundamentals._cumulative_split_factor(None, "2020-01-01") == 1.0
+
+
+def test_fetch_point_in_time_bvps_adjusts_pre_split_filing_for_a_later_split(monkeypatch):
+    """The real bug this test locks in: a 10:1 split AFTER a filing must
+    scale that filing's raw book-value-per-share DOWN by 10x, so it lands
+    on the same modern post-split share basis run_backtest.fetch_history()'s
+    Close prices already use (2026-09-21 fix, NVDA was the real incident --
+    see this module's own top-of-file writeup)."""
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+    monkeypatch.setattr(
+        sec_fundamentals.yf, "Ticker",
+        lambda t: _FakeYfTicker(pd.Series([10.0], index=pd.DatetimeIndex(["2024-06-10"]))),
+    )
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_bvps(
+            # Pre-split filing (raw, as-filed share count) -- filed BEFORE the 10:1 split.
+            equity_rows=[{"accn": "A1", "end": "2023-01-31", "val": 22_000_000_000, "form": "10-K", "filed": "2023-02-24"}],
+            shares_rows=[{"accn": "A1", "end": "2023-02-20", "val": 2_470_000_000, "form": "10-K", "filed": "2023-02-24"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    bvps = sec_fundamentals.fetch_point_in_time_book_value_per_share("TEST")
+    raw_bvps = 22_000_000_000 / 2_470_000_000
+    assert bvps.iloc[0]["book_value_per_share"] == pytest.approx(raw_bvps / 10.0)
+
+
+def test_build_book_value_per_share_panel_forward_fills_without_look_ahead(monkeypatch):
+    date_index = pd.date_range("2020-01-01", periods=10, freq="D")
+
+    def fake_fetch(ticker):
+        if ticker == "A":
+            return pd.DataFrame({"filed_date": [pd.Timestamp("2020-01-05")], "book_value_per_share": [20.0]})
+        return pd.DataFrame(columns=["filed_date", "book_value_per_share"])
+
+    monkeypatch.setattr(sec_fundamentals, "fetch_point_in_time_book_value_per_share", fake_fetch)
+    panel = sec_fundamentals.build_book_value_per_share_panel(["A", "B"], date_index)
+
+    assert pd.isna(panel.loc["2020-01-01", "A"])
+    assert pd.isna(panel.loc["2020-01-04", "A"])
+    assert panel.loc["2020-01-05", "A"] == pytest.approx(20.0)
+    assert panel.loc["2020-01-10", "A"] == pytest.approx(20.0)
+    assert panel["B"].isna().all()
+
+
 def test_build_roe_panel_forward_fills_without_look_ahead(monkeypatch):
     date_index = pd.date_range("2020-01-01", periods=10, freq="D")
 

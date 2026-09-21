@@ -986,6 +986,33 @@ class TradingConfig:
                                            # in from day one per the item-37
                                            # lesson
 
+    # Cross-sectional VALUE rank (2026-09-21) -- buys the CHEAPEST decile of
+    # the watchlist by Price-to-Book (cheapest Price/BookValuePerShare, the
+    # classic Fama-French value premium, "HML" factor's proxy) instead of
+    # the most PROFITABLE decile quality_rank above uses. Same real point-
+    # in-time SEC EDGAR data source (sec_fundamentals.py's
+    # build_book_value_per_share_panel(), not build_roe_panel()) and same
+    # cross-sectional rank-once-per-universe architecture, deliberately the
+    # OPPOSITE ranking direction (lowest Price/Book, not highest ROE) --
+    # see swingtrade.levels.compute_value_rank_frame(). Same real
+    # limitation as quality_rank: SEC EDGAR only covers US-listed filers,
+    # Canadian cross-listed tickers read no data and never fire.
+    value_top_percentile_min: float = 90.0  # a ticker's "cheapness"
+                                           # percentile (100 = cheapest
+                                           # Price/Book in the universe that
+                                           # day) must clear this to fire --
+                                           # same "buy the top decile"
+                                           # framing quality_rank uses, just
+                                           # applied to inverted cheapness
+                                           # rather than raw ROE
+    value_strength_cap_pct: float = 10.0  # extra percentile points past
+                                           # value_top_percentile_min that
+                                           # earn full Signal_Strength_Pct
+                                           # credit -- same reused-field
+                                           # pattern as quality_strength_cap_pct
+    value_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle
+                                           # every other strategy has
+
     # Insider-buying (2026-08-21) -- buy when recent, real-dollar insider
     # Form-4 purchases cluster within a lookback window, in a confirmed
     # macro uptrend. See run_backtest.fetch_insider_purchases() for the
