@@ -127,6 +127,63 @@ def fetch_earnings_dates(ticker: str) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(dates).tz_convert("UTC")
 
 
+def fetch_analyst_revisions(ticker: str, config: swingtrade.TradingConfig = swingtrade.DEFAULT_CONFIG) -> pd.DataFrame:
+    """Real, point-in-time analyst rating CHANGE history -- see
+    swingtrade/config.py's analyst_revision_* fields and
+    swingtrade/levels.precompute_analyst_revision_frame() for how this
+    feeds the "analyst_revision" strategy. Confirmed (2026-09-21, not
+    assumed) that yfinance's `Ticker.upgrades_downgrades` carries GENUINE
+    multi-year history, unlike the 5-7-quarter snapshot limit that blocked
+    fundamentals-via-yfinance earlier this project (AAPL back to 2012,
+    971 real rows; MSFT to 2012; NVDA to 2017) -- each row carries its own
+    real `GradeDate` (the actual report/wire timestamp, not a period-end
+    date needing a separate filed-vs-covered distinction the way SEC data
+    does).
+
+    Only real rating CHANGES count -- `Action in ("up", "down")`, encoded
+    as direction +1/-1. `Action in ("main", "reit", "init")` (reiteration
+    of an existing rating, or a brand-new firm initiating coverage with no
+    prior rating to compare against) carry no revision signal and are
+    dropped, not counted as neutral 0s that would dilute the net count.
+
+    IMPORTANT no-look-ahead handling: `GradeDate` includes a real
+    intraday timestamp (a report/wire time, often mid-trading-session),
+    unlike fetch_earnings_dates()'s clean calendar date. Rather than
+    debate same-day intraday availability, `effective_date` conservatively
+    pushes every event forward by `config.analyst_revision_reporting_lag_days`
+    (default 1) calendar day -- same "explicit, conservative assumption
+    over a silent one" discipline fetch_insider_purchases() established
+    for its own date-ambiguity problem.
+
+    Degrades to an empty DataFrame (same shape, zero rows) rather than
+    crashing when a ticker has no revision data at all -- same convention
+    every other optional-data fetch function here follows."""
+    columns = ["effective_date", "direction"]
+    try:
+        raw = yf.Ticker(ticker).upgrades_downgrades
+    except Exception:
+        raw = None
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=columns)
+
+    revisions = raw[raw["Action"].isin(["up", "down"])].copy()
+    if revisions.empty:
+        return pd.DataFrame(columns=columns)
+
+    direction = revisions["Action"].map({"up": 1.0, "down": -1.0})
+    lag = pd.Timedelta(days=config.analyst_revision_reporting_lag_days)
+    grade_date = revisions.index if revisions.index.name == "GradeDate" else revisions["GradeDate"]
+    effective_date = pd.to_datetime(grade_date) + lag
+    effective_date = (
+        effective_date.tz_localize("UTC") if effective_date.tz is None else effective_date.tz_convert("UTC")
+    )
+
+    return pd.DataFrame({
+        "effective_date": effective_date.values,
+        "direction": direction.to_numpy(dtype=float),
+    })
+
+
 def fetch_insider_purchases(ticker: str, config: swingtrade.TradingConfig = swingtrade.DEFAULT_CONFIG) -> pd.DataFrame:
     """Real, open-market insider Form-4 purchases -- see
     swingtrade/config.py's insider_* fields and

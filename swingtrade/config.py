@@ -1013,6 +1013,45 @@ class TradingConfig:
     value_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle
                                            # every other strategy has
 
+    # Analyst revision momentum (2026-09-21) -- buy when real analyst rating
+    # CHANGES (not reiterations) cluster net-positive within a trailing
+    # window, in a confirmed macro uptrend. A classic, well-documented
+    # academic factor (analyst recommendation revisions predicting short-
+    # term returns), never tried in this codebase before. See
+    # run_backtest.fetch_analyst_revisions() for the data source
+    # (yfinance's Ticker.upgrades_downgrades -- confirmed real multi-year
+    # history, unlike the 5-7-quarter snapshot limit that blocked
+    # fundamentals-via-yfinance) and its reporting-lag no-look-ahead
+    # handling. Same event-count-threshold architecture as insider_buying
+    # (a small real event count per ticker, not a cross-sectional
+    # universe-wide rank like quality/value_rank).
+    analyst_revision_lookback_days: int = 90  # trailing window real
+                                           # upgrade/downgrade EVENTS (not
+                                           # reiterations) are summed over --
+                                           # wider than insider_lookback_days
+                                           # since analyst coverage events
+                                           # are naturally sparser per ticker
+    analyst_revision_min_net_upgrades: float = 2.0  # net (upgrades minus
+                                           # downgrades) count within the
+                                           # window must clear this to fire
+    analyst_revision_strength_cap: float = 3.0  # extra net-upgrade count
+                                           # beyond the minimum that earns
+                                           # full Signal_Strength_Pct credit
+                                           # -- same reused-field-name,
+                                           # different-units pattern as
+                                           # insider_strength_cap_buyers
+    analyst_revision_reporting_lag_days: int = 1  # GradeDate carries a real
+                                           # intraday timestamp (often
+                                           # mid-trading-session) -- pushed
+                                           # forward by this many calendar
+                                           # days rather than debating
+                                           # same-day availability, same
+                                           # "explicit conservative
+                                           # assumption" discipline
+                                           # insider_reporting_lag_days uses
+    analyst_revision_entry_fill: str = "limit"  # same "limit" vs. "next_open"
+                                           # toggle every other strategy has
+
     # Insider-buying (2026-08-21) -- buy when recent, real-dollar insider
     # Form-4 purchases cluster within a lookback window, in a confirmed
     # macro uptrend. See run_backtest.fetch_insider_purchases() for the

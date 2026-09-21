@@ -158,14 +158,14 @@ from swingtrade.levels import (
     precompute_squeeze_breakout_frame,
 )
 from run_backtest import (
-    LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, RESEARCH_HOLDOUT_CUTOFF, fetch_earnings_dates,
-    fetch_earnings_surprises, fetch_history, fetch_insider_purchases,
+    LOOKBACK_BUFFER_DAYS, MARKET_INDEX_TICKER, RESEARCH_HOLDOUT_CUTOFF, fetch_analyst_revisions,
+    fetch_earnings_dates, fetch_earnings_surprises, fetch_history, fetch_insider_purchases,
 )
 from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
 EARNINGS_AWARE_STRATEGIES = (
     "squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank", "pead", "lowvol_rank",
-    "sector_rotation", "quality_rank", "value_rank",
+    "sector_rotation", "quality_rank", "value_rank", "analyst_revision",
 )  # the only
                                                                    # simulate_*_signals()/
                                                                    # simulate_random_*_entries() that
@@ -182,6 +182,10 @@ PAIR_AWARE_STRATEGIES = ("pairs",)  # the only REAL simulate_*_signals() (not th
                                                                    # SECTOR_AWARE_STRATEGIES above) that
                                                                    # accepts peer_prices -- see
                                                                    # improvements.txt item 82
+ANALYST_REVISION_AWARE_STRATEGIES = ("analyst_revision",)  # the only REAL simulate_*_signals()
+                                                                   # (not the random baseline -- same
+                                                                   # reasoning as INSIDER_AWARE_STRATEGIES
+                                                                   # below) that accepts analyst_revisions
 INSIDER_AWARE_STRATEGIES = ("insider_buying",)  # the only REAL simulate_*_signals() (not the
                                                                    # random baseline -- same reasoning as
                                                                    # PAIR_AWARE_STRATEGIES above) that
@@ -259,6 +263,7 @@ STRENGTH_CAP_FIELD = {
     "sector_rotation": "sector_rotation_strength_cap_pct",
     "quality_rank": "quality_strength_cap_pct",
     "value_rank": "value_strength_cap_pct",
+    "analyst_revision": "analyst_revision_strength_cap",
 }
 
 # Strategy -> its own precompute_*_frame() function (2026-09-13,
@@ -353,7 +358,7 @@ def main():
             "rsi", "breakout", "pullback", "breakout_retest", "week52_high",
             "momentum_burst", "squeeze_breakout", "adx_trend_entry", "ma_crossover", "pairs",
             "insider_buying", "momentum_rank", "pead", "lowvol_rank", "sector_rotation", "quality_rank",
-            "value_rank",
+            "value_rank", "analyst_revision",
         ],
         default="rsi",
         help="Which signal to benchmark against random entries. Default: rsi.",
@@ -698,6 +703,17 @@ def main():
         total_events = sum(len(d) for d in insider_data.values())
         print(f"Got {total_events} real purchase event(s) across {found}/{len(ticker_data)} ticker(s).")
 
+    analyst_revision_data: dict[str, pd.DataFrame] = {}
+    if args.strategy in ANALYST_REVISION_AWARE_STRATEGIES:
+        print(f"\nFetching analyst rating-change history for {len(ticker_data)} ticker(s)...")
+        for i, ticker in enumerate(ticker_data):
+            if i > 0:
+                time.sleep(REQUEST_DELAY_SEC)
+            analyst_revision_data[ticker] = fetch_analyst_revisions(ticker, config)
+        found = sum(1 for d in analyst_revision_data.values() if len(d) > 0)
+        total_events = sum(len(d) for d in analyst_revision_data.values())
+        print(f"Got {total_events} real rating-change event(s) across {found}/{len(ticker_data)} ticker(s).")
+
     earnings_surprise_data: dict[str, pd.DataFrame] = {}
     if args.strategy in PEAD_AWARE_STRATEGIES:
         print(f"\nFetching earnings-surprise history for {len(ticker_data)} ticker(s)... "
@@ -875,6 +891,9 @@ def main():
     elif args.strategy == "value_rank":
         real_fn, random_fn = swingtrade.simulate_value_signals, swingtrade.simulate_random_value_entries
         real_label = "Value_Rank-timed"
+    elif args.strategy == "analyst_revision":
+        real_fn, random_fn = swingtrade.simulate_analyst_revision_signals, swingtrade.simulate_random_analyst_revision_entries
+        real_label = "Analyst_Revision-timed"
     else:
         real_fn, random_fn = swingtrade.simulate_ma_crossover_signals, swingtrade.simulate_random_ma_crossover_entries
         real_label = "MA_Crossover-timed"
@@ -900,6 +919,10 @@ def main():
         return {"peer_prices": panel.drop(columns=[ticker])}
     insider_kwargs = lambda ticker: (  # noqa: E731 -- see INSIDER_AWARE_STRATEGIES
         {"insider_purchases": insider_data.get(ticker)} if args.strategy in INSIDER_AWARE_STRATEGIES else {}
+    )
+    analyst_revision_kwargs = lambda ticker: (  # noqa: E731 -- see ANALYST_REVISION_AWARE_STRATEGIES
+        {"analyst_revisions": analyst_revision_data.get(ticker)}
+        if args.strategy in ANALYST_REVISION_AWARE_STRATEGIES else {}
     )
     pead_kwargs = lambda ticker: (  # noqa: E731 -- see PEAD_AWARE_STRATEGIES
         {"earnings_surprises": earnings_surprise_data.get(ticker)} if args.strategy in PEAD_AWARE_STRATEGIES else {}
@@ -942,6 +965,7 @@ def main():
             **earnings_kwargs(ticker), sector=sector, **sector_kwargs(ticker), **peer_kwargs(ticker),
             **insider_kwargs(ticker), **momentum_kwargs(ticker), **pead_kwargs(ticker), **lowvol_kwargs(ticker),
             **sector_rotation_kwargs(ticker), **quality_kwargs(ticker), **value_kwargs(ticker),
+            **analyst_revision_kwargs(ticker),
         )
         real_trades.extend(real)
         real_counts[ticker] = len(real)

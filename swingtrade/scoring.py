@@ -544,6 +544,36 @@ def add_insider_buying_trade_score(df: pd.DataFrame, config: TradingConfig = DEF
     return df
 
 
+def add_analyst_revision_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
+    """ANALYST REVISION MOMENTUM counterpart to add_insider_buying_trade_score()
+    -- blends RRR and Signal_Strength_Pct (net-upgrade count beyond
+    analyst_revision_min_net_upgrades, see analyst_revision_levels_from_frame())
+    into a 0-100 Trade_Score for rows produced by
+    analyst_revision_levels_from_frame(). Exact structural mirror of
+    add_insider_buying_trade_score().
+
+    Hard gate, not just a scoring input: a ticker whose
+    Analyst_Revision_Signal is False gets Trade_Score=0/Ignore, full stop --
+    same "not eligible at all" semantics as every other strategy's hard
+    gate. Lean v1, no optional filters yet, same launch discipline every
+    other strategy here started with."""
+    df = df.copy()
+
+    rrr_score = (df["RRR"].clip(lower=0, upper=config.rrr_score_cap) / config.rrr_score_cap) * config.rrr_score_weight
+
+    strength_clipped = df["Signal_Strength_Pct"].clip(lower=0, upper=config.analyst_revision_strength_cap)
+    strength_score = (strength_clipped / config.analyst_revision_strength_cap) * config.distance_score_weight
+
+    total_weight = config.rrr_score_weight + config.distance_score_weight
+    rescale = (100 / total_weight) if total_weight > 0 else 0.0
+
+    raw_score = ((rrr_score + strength_score) * rescale).clip(lower=0)
+
+    df["Trade_Score"] = raw_score.where(df["Analyst_Revision_Signal"], 0.0).round(1)
+    df["Signal"] = df["Trade_Score"].apply(lambda score: signal_for_score(score, config))
+    return df
+
+
 def add_pead_trade_score(df: pd.DataFrame, config: TradingConfig = DEFAULT_CONFIG) -> pd.DataFrame:
     """PEAD (post-earnings-announcement drift) counterpart to
     add_trade_score()/add_squeeze_breakout_trade_score()/

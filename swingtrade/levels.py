@@ -2773,6 +2773,161 @@ def compute_insider_buying_levels(
     return insider_buying_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
 
 
+def precompute_analyst_revision_frame(
+    df: pd.DataFrame,
+    analyst_revisions: pd.DataFrame | None = None,
+    config: TradingConfig = DEFAULT_CONFIG,
+) -> pd.DataFrame:
+    """Vectorized precompute of the ANALYST REVISION MOMENTUM strategy's
+    columns -- built on top of precompute_breakout_frame() (reused
+    wholesale for SMA_TREND/ATR/AvgVolume/etc.), exact structural mirror
+    of precompute_insider_buying_frame() -- a small real per-ticker event
+    count, not a cross-sectional universe-wide rank.
+
+    `analyst_revisions`, if given, should be
+    run_backtest.fetch_analyst_revisions()'s own output: a DataFrame with
+    columns ["effective_date", "direction"] (direction +1.0=upgrade,
+    -1.0=downgrade; reiterations/initiations already excluded), already
+    reporting-lag-adjusted.
+
+    For each trading day, sums `direction` over every event whose
+    effective_date falls within the trailing config.analyst_revision_lookback_days
+    CALENDAR days (inclusive) -- a net-upgrade count that can go negative
+    (net downgrades). Same (days x events) boolean window-matrix
+    vectorization as precompute_insider_buying_frame(), cheap given a real
+    ticker's revision history is tens to low hundreds of events, not
+    thousands."""
+    df = precompute_breakout_frame(df, config)
+    df["Net_Upgrades"] = 0.0
+
+    if analyst_revisions is None or analyst_revisions.empty:
+        return df
+
+    event_dates_idx = pd.DatetimeIndex(analyst_revisions["effective_date"])
+    if event_dates_idx.tz is not None:
+        event_dates_idx = event_dates_idx.tz_convert("UTC").tz_localize(None)
+
+    day_index = df.index.values
+    event_dates = event_dates_idx.values
+    event_directions = analyst_revisions["direction"].to_numpy(dtype=float)
+
+    lookback = np.timedelta64(config.analyst_revision_lookback_days, "D")
+    in_window = (
+        (day_index[:, None] >= event_dates[None, :])
+        & (day_index[:, None] <= (event_dates[None, :] + lookback))
+    )
+    df["Net_Upgrades"] = (in_window * event_directions[None, :]).sum(axis=1)
+
+    return df
+
+
+def analyst_revision_levels_from_frame(
+    ticker: str,
+    frame: pd.DataFrame,
+    as_of,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+) -> dict:
+    """Extract the ANALYST REVISION MOMENTUM strategy's dict for one row of
+    a frame already built by precompute_analyst_revision_frame() -- exact
+    structural mirror of insider_buying_levels_from_frame()."""
+    last_row = frame.loc[as_of]
+    last_date = as_of
+    last_close, sma_trend, atr, avg_volume, rsi = (
+        last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"], last_row["RSI"],
+    )
+    net_upgrades = last_row["Net_Upgrades"]
+    if pd.isna(last_close):
+        raise RuntimeError("insufficient history: no Close price for the most recent bar")
+    if pd.isna(sma_trend):
+        raise RuntimeError(f"insufficient history to compute {config.sma_trend_window}-day SMA")
+    if pd.isna(atr):
+        raise RuntimeError(f"insufficient history to compute {config.atr_window}-day ATR")
+    if pd.isna(avg_volume):
+        raise RuntimeError(f"insufficient history to compute {config.volume_lookback_days}-day average volume")
+
+    last_close, sma_trend, atr, avg_volume = float(last_close), float(sma_trend), float(atr), float(avg_volume)
+    # Informational only, not used for gating -- same treatment every other
+    # non-RSI-triggered strategy gives it.
+    rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+
+    if last_close < sma_trend:
+        raise RuntimeError(
+            f"excluded: macro downtrend (Last_Close {last_close:.2f} < SMA{config.sma_trend_window} {sma_trend:.2f})"
+        )
+
+    dollar_volume = avg_volume * last_close
+    if dollar_volume < config.min_dollar_volume:
+        raise RuntimeError(
+            f"excluded: insufficient liquidity (20d $ volume ${dollar_volume:,.0f} "
+            f"< ${config.min_dollar_volume:,.0f})"
+        )
+
+    net_upgrades = float(net_upgrades) if not pd.isna(net_upgrades) else 0.0
+    analyst_revision_signal = bool(net_upgrades >= config.analyst_revision_min_net_upgrades)
+    # How far past the minimum net-upgrade count -- same "distance past the
+    # trigger" differentiating-term role Signal_Strength_Pct plays for
+    # insider_buying/pairs/squeeze_breakout.
+    signal_strength_pct = (
+        round(net_upgrades - config.analyst_revision_min_net_upgrades, 2) if analyst_revision_signal else 0.0
+    )
+
+    buy_price = round(last_close, 2)
+    distance_to_buy_pct = 0.0
+
+    sell_price = round(buy_price + (config.atr_take_profit_multiplier * atr), 2)
+    stop_loss = round(buy_price - (config.stop_loss_atr_multiplier * atr), 2)
+    risk = buy_price - stop_loss
+    rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
+
+    as_of_ts = pd.Timestamp(last_date)
+    as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+    if next_earnings_date is not None:
+        days_to_earnings = (next_earnings_date - as_of_ts).total_seconds() / 86400
+        catalyst_warning = days_to_earnings <= config.earnings_warning_days
+        next_earnings_date_out = next_earnings_date.date()
+    else:
+        catalyst_warning = False
+        next_earnings_date_out = None
+
+    return {
+        "Ticker": ticker,
+        "As_Of": last_date.date(),
+        "Last_Close": round(last_close, 2),
+        "RSI": rsi,
+        "ATR": round(atr, 2),
+        "Net_Upgrades": round(net_upgrades, 2),
+        "Analyst_Revision_Signal": analyst_revision_signal,
+        "Buy_Price": buy_price,
+        "Sell_Price": sell_price,
+        "Stop_Loss": stop_loss,
+        "RRR": rrr,
+        "Distance_to_Buy_Pct": distance_to_buy_pct,
+        "Signal_Strength_Pct": signal_strength_pct,
+        "Next_Earnings_Date": next_earnings_date_out,
+        "Catalyst_Warning": catalyst_warning,
+        "Top_Headline": top_headline,
+    }
+
+
+def compute_analyst_revision_levels(
+    ticker: str,
+    df: pd.DataFrame,
+    config: TradingConfig = DEFAULT_CONFIG,
+    next_earnings_date=None,
+    top_headline: str = "",
+    analyst_revisions: pd.DataFrame | None = None,
+) -> dict:
+    """Compute ANALYST REVISION MOMENTUM levels for one ticker's OHLCV
+    history -- see precompute_analyst_revision_frame()'s own docstring for
+    the full mechanism. Thin wrapper, exact mirror of
+    compute_insider_buying_levels()."""
+    frame = precompute_analyst_revision_frame(df, analyst_revisions, config)
+    as_of = frame.index[-1]
+    return analyst_revision_levels_from_frame(ticker, frame, as_of, config, next_earnings_date, top_headline)
+
+
 def precompute_pead_frame(
     df: pd.DataFrame,
     earnings_surprises: pd.DataFrame | None = None,
