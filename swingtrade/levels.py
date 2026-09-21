@@ -1561,8 +1561,9 @@ def pairs_levels_from_frame(
     precompute_breakout_frame(), reused wholesale)."""
     last_row = frame.loc[as_of]
     last_date = as_of
-    last_close, sma_trend, atr, avg_volume, rsi = (
+    last_close, sma_trend, atr, avg_volume, rsi, adx = (
         last_row["Close"], last_row["SMA_TREND"], last_row["ATR"], last_row["AvgVolume"], last_row["RSI"],
+        last_row["ADX"],
     )
     pair_partner, pair_correlation, pair_spread_zscore = (
         last_row["Pair_Partner"], last_row["Pair_Correlation"], last_row["Pair_Spread_Zscore"],
@@ -1588,6 +1589,20 @@ def pairs_levels_from_frame(
     # call site AND restoring RSI here closes the whole gap, not just the
     # one instance found.
     rsi = None if pd.isna(rsi) else round(float(rsi), 2)
+    # ADX (2026-09-21 real bug fix): also informational only, not used for
+    # gating -- but regime_switcher.select_regime_pick() reads it from
+    # WHATEVER strategy row is available to classify that ticker's regime,
+    # and "pairs" is choppy's own preferred strategy. Never exposing ADX
+    # here meant regime_switcher could only ever resolve a regime on a day
+    # ma_crossover ALSO fired for the identical ticker (supplying ADX from
+    # its own row) -- given ma_crossover/pairs' near-zero same-ticker/day
+    # overlap (confirmed ~0.23%, see improvements.txt item 149), this left
+    # the "choppy" regime pick effectively dead since the 2026-08-31 fix
+    # that pointed it at "pairs" (previously squeeze_breakout, which DID
+    # carry ADX) -- confirmed via a real diagnostic run finding regime_switcher
+    # had logged zero signals in 18 days despite ma_crossover/pairs both
+    # producing real non-Ignore candidates throughout that window.
+    adx = None if pd.isna(adx) else round(float(adx), 2)
 
     if last_close < sma_trend:
         raise RuntimeError(
@@ -1649,6 +1664,7 @@ def pairs_levels_from_frame(
         "Last_Close": round(last_close, 2),
         "RSI": rsi,
         "ATR": round(atr, 2),
+        "ADX": adx,
         "Pair_Partner": None if pd.isna(pair_partner) else str(pair_partner),
         "Pair_Correlation": None if pd.isna(pair_correlation) else round(float(pair_correlation), 4),
         "Pair_Spread_Zscore": pair_spread_zscore_out,
