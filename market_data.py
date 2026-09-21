@@ -577,6 +577,7 @@ def score_bundle_for_strategy(
     pair_price_panels: dict[str, pd.DataFrame] | None = None,
     momentum_rank_frame: pd.DataFrame | None = None,
     value_rank_frame: pd.DataFrame | None = None,
+    accruals_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """Compute levels for every ticker in an already-fetched bundle (see
@@ -630,6 +631,10 @@ def score_bundle_for_strategy(
             value_rank_frame[ticker]
             if value_rank_frame is not None and ticker in value_rank_frame.columns else None
         )
+        accruals_rank_column = (
+            accruals_rank_frame[ticker]
+            if accruals_rank_frame is not None and ticker in accruals_rank_frame.columns else None
+        )
         try:
             if config.strategy == "breakout":
                 levels = swingtrade.compute_breakout_levels(
@@ -682,6 +687,11 @@ def score_bundle_for_strategy(
                 levels = swingtrade.compute_value_levels(
                     ticker, df, config, next_earnings_date=next_earnings,
                     top_headline=top_headline, rank_column=value_rank_column,
+                )
+            elif config.strategy == "accruals_rank":
+                levels = swingtrade.compute_accruals_levels(
+                    ticker, df, config, next_earnings_date=next_earnings,
+                    top_headline=top_headline, rank_column=accruals_rank_column,
                 )
             else:
                 levels = swingtrade.compute_levels(

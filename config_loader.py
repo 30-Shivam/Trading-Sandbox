@@ -287,6 +287,25 @@ EXPERIMENTAL_STRATEGY_VERSIONS = {
     # floor over real weeks before any capital-eligibility question is
     # even asked. v76.
     "Value Rank": 76,
+    # Accruals Rank (Sloan 1996's classic accruals anomaly, buys the
+    # lowest-accruals decile) added 2026-09-21 -- the 2nd new strategy this
+    # cycle to actually PASS (after value_rank), and the cleanest result
+    # found yet: TUNE/HOLDOUT agree, permutation p=0.0000, REAL beats
+    # RANDOM in ALL 8/8 calendar years (the most consistent year-by-year
+    # result of any strategy in this project), both volatility regimes,
+    # LOWER max drawdown AND higher return than random, portfolio-
+    # constrained $10k replay +280% vs random's +140% (the strongest
+    # capital-realistic result of any strategy this session). Given the
+    # project's own track record of strategy failures (and the real
+    # value_rank stock-split bug found the same day), independently
+    # re-verified before trusting: permutation math confirmed correct on
+    # the SAME code that correctly returned p=0.846 for analyst_revision
+    # hours earlier, look-ahead audit clean (0/100 real date-checks), and
+    # the accruals ratio is scaled by total assets (never price or shares
+    # outstanding) -- structurally immune to the stock-split confound
+    # class of bug value_rank needed a real fix for. Same experimental/
+    # tracked-only staging as every strategy here. v77.
+    "Accruals Rank": 77,
 }
 
 # RSI Mean-Reversion (Small/Mid-Cap), added 2026-09-01 -- NOT in

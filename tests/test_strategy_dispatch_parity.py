@@ -51,6 +51,7 @@ COMPUTE_LEVELS_FN = {
     "pairs": swingtrade.compute_pairs_levels,
     "momentum_rank": swingtrade.compute_momentum_levels,
     "value_rank": swingtrade.compute_value_levels,
+    "accruals_rank": swingtrade.compute_accruals_levels,
 }
 STRATEGIES = list(COMPUTE_LEVELS_FN.keys())
 

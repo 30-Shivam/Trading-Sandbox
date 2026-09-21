@@ -132,6 +132,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_momentum_trade_score(df, config)
     elif config.strategy == "value_rank":
         return swingtrade.add_value_trade_score(df, config)
+    elif config.strategy == "accruals_rank":
+        return swingtrade.add_accruals_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -526,9 +528,18 @@ def run_experimental_strategies(
             price_panel = momentum_panel  # same wide Close-price panel, no extra fetch
             bvps_panel = sec_fundamentals.build_book_value_per_share_panel_cached(tickers, price_panel.index)
             value_rank_frame = swingtrade.compute_value_rank_frame(price_panel, bvps_panel)
+        accruals_rank_frame = None
+        if config.strategy == "accruals_rank":
+            # Same live-fetch/caching pattern as value_rank_frame above --
+            # a different SEC EDGAR concept trio, no price panel involved
+            # in the ratio itself (accruals is scaled by total assets).
+            tickers = list(bundle.keys())
+            accruals_panel = sec_fundamentals.build_accruals_panel_cached(tickers, momentum_panel.index)
+            accruals_rank_frame = swingtrade.compute_accruals_rank_frame(accruals_panel)
         results, score_skipped = market_data.score_bundle_for_strategy(
             bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-            momentum_rank_frame=momentum_rank_frame, value_rank_frame=value_rank_frame, yield_curve=yield_curve,
+            momentum_rank_frame=momentum_rank_frame, value_rank_frame=value_rank_frame,
+            accruals_rank_frame=accruals_rank_frame, yield_curve=yield_curve,
         )
         if not results:
             print(f"{label} (v{version}, experimental): no tickers scored today.")

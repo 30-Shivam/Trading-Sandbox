@@ -562,6 +562,8 @@ def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> p
         return swingtrade.add_momentum_trade_score(df, config)
     elif config.strategy == "value_rank":
         return swingtrade.add_value_trade_score(df, config)
+    elif config.strategy == "accruals_rank":
+        return swingtrade.add_accruals_trade_score(df, config)
     else:
         return swingtrade.add_trade_score(df, config)
 
@@ -780,9 +782,21 @@ def render_experimental_section(
                 list(momentum_panel.columns), momentum_panel.index,
             )
         value_rank_frame = swingtrade.compute_value_rank_frame(momentum_panel, bvps_panel)
+    accruals_rank_frame = None
+    if config.strategy == "accruals_rank" and momentum_panel is not None:
+        # Same live-fetch/caching pattern as value_rank_frame above, just a
+        # different SEC EDGAR concept trio (NetIncomeLoss/CFO/Assets) and
+        # no price panel needed at all (accruals is scaled by total
+        # assets, never price).
+        with st.spinner("Fetching point-in-time Accruals from SEC EDGAR..."):
+            accruals_panel = sec_fundamentals.build_accruals_panel_cached(
+                list(momentum_panel.columns), momentum_panel.index,
+            )
+        accruals_rank_frame = swingtrade.compute_accruals_rank_frame(accruals_panel)
     results, score_skipped = market_data.score_bundle_for_strategy(
         bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-        momentum_rank_frame=momentum_rank_frame, value_rank_frame=value_rank_frame, yield_curve=yield_curve,
+        momentum_rank_frame=momentum_rank_frame, value_rank_frame=value_rank_frame,
+        accruals_rank_frame=accruals_rank_frame, yield_curve=yield_curve,
         pair_price_panels=pair_price_panels,
     )
     if not results:
@@ -827,6 +841,8 @@ def render_experimental_section(
         trigger_columns = ["Momentum_Percentile"]
     elif config.strategy == "value_rank":
         trigger_columns = ["Value_Percentile"]
+    elif config.strategy == "accruals_rank":
+        trigger_columns = ["Accruals_Percentile"]
     else:
         trigger_columns = []
     display_columns = [

@@ -493,6 +493,91 @@ def build_accruals_panel(tickers: list[str], date_index: pd.DatetimeIndex) -> pd
     return pd.DataFrame(columns)
 
 
+ACCRUALS_CACHE_COLLECTION = "Fundamentals_Cache_Accruals"
+ACCRUALS_CACHE_MAX_AGE_DAYS = 7  # same reasoning as BVPS_CACHE_MAX_AGE_DAYS
+                                           # above -- accruals only changes
+                                           # once per fiscal year per ticker
+
+
+def fetch_point_in_time_accruals_cached(
+    ticker: str, max_age_days: int = ACCRUALS_CACHE_MAX_AGE_DAYS,
+) -> pd.DataFrame:
+    """Cached wrapper around fetch_point_in_time_accruals() -- exact
+    structural mirror of fetch_point_in_time_book_value_per_share_cached().
+    Checks MongoDB's `Fundamentals_Cache_Accruals` collection first; only
+    re-fetches from SEC EDGAR if the cached entry is missing or older than
+    `max_age_days`. Deliberately a SEPARATE function from
+    fetch_point_in_time_accruals() -- the backtest path
+    (benchmark_random_entry.py) keeps calling the uncached original
+    directly, unaffected. Degrades to an uncached live fetch (never
+    crashes) if Mongo is unavailable, same convention as every other
+    storage-touching function here."""
+    import storage  # local import: see fetch_point_in_time_book_value_per_share_cached()'s
+                                           # own identical comment
+    from datetime import datetime, timezone
+
+    columns = ["filed_date", "accruals"]
+    db = None
+    try:
+        db = storage.get_db()
+        cached = db[ACCRUALS_CACHE_COLLECTION].find_one({"_id": ticker})
+    except Exception:
+        cached = None
+
+    if cached is not None:
+        fetched_at = cached.get("fetched_at")
+        if fetched_at is not None:
+            if fetched_at.tzinfo is None:
+                fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 86400
+            if age_days <= max_age_days:
+                rows = cached.get("rows", [])
+                if not rows:
+                    return pd.DataFrame(columns=columns)
+                out = pd.DataFrame(rows)
+                out["filed_date"] = pd.to_datetime(out["filed_date"])
+                return out[columns]
+
+    fresh = fetch_point_in_time_accruals(ticker)
+    if db is not None:
+        try:
+            db[ACCRUALS_CACHE_COLLECTION].replace_one(
+                {"_id": ticker},
+                {
+                    "_id": ticker,
+                    "rows": fresh.assign(filed_date=fresh["filed_date"].astype(str)).to_dict("records"),
+                    "fetched_at": datetime.now(timezone.utc),
+                },
+                upsert=True,
+            )
+        except Exception:
+            pass
+    return fresh
+
+
+def build_accruals_panel_cached(
+    tickers: list[str], date_index: pd.DatetimeIndex, max_age_days: int = ACCRUALS_CACHE_MAX_AGE_DAYS,
+) -> pd.DataFrame:
+    """Cached counterpart to build_accruals_panel() -- exact same forward-
+    fill-never-backfill construction, but sourced from
+    fetch_point_in_time_accruals_cached() instead of the uncached fetch.
+    Intended for the LIVE daily automation path (ingest.py), not the
+    backtest path."""
+    columns = {}
+    for i, ticker in enumerate(tickers):
+        if i > 0:
+            time.sleep(REQUEST_DELAY_SEC)
+        accruals_history = fetch_point_in_time_accruals_cached(ticker, max_age_days)
+        if accruals_history.empty:
+            columns[ticker] = pd.Series(index=date_index, dtype=float)
+            continue
+        series = pd.Series(
+            accruals_history["accruals"].values, index=pd.DatetimeIndex(accruals_history["filed_date"]),
+        )
+        columns[ticker] = series.reindex(series.index.union(date_index)).ffill().reindex(date_index)
+    return pd.DataFrame(columns)
+
+
 def build_roe_panel(tickers: list[str], date_index: pd.DatetimeIndex) -> pd.DataFrame:
     """Builds the wide (dates x tickers) point-in-time ROE panel every
     cross-sectional rank strategy in this codebase needs (same shape/role
