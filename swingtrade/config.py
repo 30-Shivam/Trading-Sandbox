@@ -1052,6 +1052,32 @@ class TradingConfig:
     analyst_revision_entry_fill: str = "limit"  # same "limit" vs. "next_open"
                                            # toggle every other strategy has
 
+    # Cross-sectional ACCRUALS rank (2026-09-21) -- Sloan (1996)'s classic
+    # accruals anomaly, one of the most robust, longest-replicated findings
+    # in the academic asset-pricing literature: buys the LOWEST-accruals
+    # decile (earnings most backed by real cash flow, least by accounting
+    # adjustments). Accruals = (NetIncomeLoss - CFO) / Assets -- scaled by
+    # total assets, NEVER by price or shares outstanding, which structurally
+    # avoids the stock-split mismatch class of bug value_rank's own P/B
+    # ratio needed a real fix for. Same cross-sectional rank-once-per-
+    # universe architecture as quality_rank/value_rank -- see
+    # sec_fundamentals.fetch_point_in_time_accruals()/build_accruals_panel()
+    # and swingtrade.levels.compute_accruals_rank_frame() (inverted ranking,
+    # same direction as value_rank's cheapest-P/B convention). Same real
+    # limitation as quality_rank/value_rank: SEC EDGAR only covers
+    # US-listed filers.
+    accruals_top_percentile_min: float = 90.0  # a ticker's "low accruals"
+                                           # percentile (100 = lowest/best
+                                           # accruals in the universe that
+                                           # day) must clear this to fire
+    accruals_strength_cap_pct: float = 10.0  # extra percentile points past
+                                           # accruals_top_percentile_min that
+                                           # earn full Signal_Strength_Pct
+                                           # credit -- same reused-field
+                                           # pattern as value_strength_cap_pct
+    accruals_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle
+                                           # every other strategy has
+
     # Insider-buying (2026-08-21) -- buy when recent, real-dollar insider
     # Form-4 purchases cluster within a lookback window, in a confirmed
     # macro uptrend. See run_backtest.fetch_insider_purchases() for the

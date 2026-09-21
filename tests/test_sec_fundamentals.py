@@ -456,3 +456,105 @@ def test_build_book_value_per_share_panel_cached_forward_fills_without_look_ahea
     assert panel.loc["2020-01-05", "A"] == pytest.approx(20.0)
     assert panel.loc["2020-01-10", "A"] == pytest.approx(20.0)
     assert panel["B"].isna().all()
+
+
+def _fake_companyfacts_accruals(ni_rows, cfo_rows, assets_rows):
+    return _FakeResponse({
+        "facts": {
+            "us-gaap": {
+                "NetIncomeLoss": {"units": {"USD": ni_rows}},
+                "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": cfo_rows}},
+                "Assets": {"units": {"USD": assets_rows}},
+            }
+        }
+    })
+
+
+def test_fetch_point_in_time_accruals_computes_from_matched_10k_triple(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_accruals(
+            ni_rows=[{"accn": "A1", "end": "2020-12-31", "val": 1_000_000, "form": "10-K", "filed": "2021-02-15"}],
+            cfo_rows=[{"accn": "A1", "end": "2020-12-31", "val": 1_500_000, "form": "10-K", "filed": "2021-02-15"}],
+            assets_rows=[{"accn": "A1", "end": "2020-12-31", "val": 10_000_000, "form": "10-K", "filed": "2021-02-15"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    accruals = sec_fundamentals.fetch_point_in_time_accruals("TEST")
+    assert len(accruals) == 1
+    # (1,000,000 - 1,500,000) / 10,000,000 = -0.05 -- negative accruals (cash > earnings, the "good" case)
+    assert accruals.iloc[0]["accruals"] == pytest.approx(-0.05)
+    assert accruals.iloc[0]["filed_date"] == pd.Timestamp("2021-02-15")
+
+
+def test_fetch_point_in_time_accruals_ignores_non_10k_forms(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_accruals(
+            ni_rows=[{"accn": "Q1", "end": "2020-09-30", "val": 250_000, "form": "10-Q", "filed": "2020-11-01"}],
+            cfo_rows=[{"accn": "Q1", "end": "2020-09-30", "val": 300_000, "form": "10-Q", "filed": "2020-11-01"}],
+            assets_rows=[{"accn": "Q1", "end": "2020-09-30", "val": 5_000_000, "form": "10-Q", "filed": "2020-11-01"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    accruals = sec_fundamentals.fetch_point_in_time_accruals("TEST")
+    assert accruals.empty
+
+
+def test_fetch_point_in_time_accruals_wont_pair_mismatched_periods(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_accruals(
+            ni_rows=[{"accn": "A1", "end": "2020-12-31", "val": 1_000_000, "form": "10-K", "filed": "2021-02-15"}],
+            cfo_rows=[{"accn": "A2", "end": "2019-12-31", "val": 900_000, "form": "10-K", "filed": "2020-02-10"}],
+            assets_rows=[{"accn": "A1", "end": "2020-12-31", "val": 10_000_000, "form": "10-K", "filed": "2021-02-15"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    accruals = sec_fundamentals.fetch_point_in_time_accruals("TEST")
+    assert accruals.empty
+
+
+def test_fetch_point_in_time_accruals_skips_zero_or_missing_assets(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_accruals(
+            ni_rows=[{"accn": "A1", "end": "2020-12-31", "val": 1_000_000, "form": "10-K", "filed": "2021-02-15"}],
+            cfo_rows=[{"accn": "A1", "end": "2020-12-31", "val": 1_500_000, "form": "10-K", "filed": "2021-02-15"}],
+            assets_rows=[{"accn": "A1", "end": "2020-12-31", "val": 0, "form": "10-K", "filed": "2021-02-15"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    accruals = sec_fundamentals.fetch_point_in_time_accruals("TEST")
+    assert accruals.empty
+
+
+def test_fetch_point_in_time_accruals_unmapped_ticker_returns_empty_without_network_call(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {})
+    calls = []
+    monkeypatch.setattr(sec_fundamentals.requests, "get", lambda *a, **k: calls.append(1))
+    accruals = sec_fundamentals.fetch_point_in_time_accruals("ATD")
+    assert accruals.empty
+    assert calls == []
+
+
+def test_build_accruals_panel_forward_fills_without_look_ahead(monkeypatch):
+    date_index = pd.date_range("2020-01-01", periods=10, freq="D")
+
+    def fake_fetch(ticker):
+        if ticker == "A":
+            return pd.DataFrame({"filed_date": [pd.Timestamp("2020-01-05")], "accruals": [-0.05]})
+        return pd.DataFrame(columns=["filed_date", "accruals"])
+
+    monkeypatch.setattr(sec_fundamentals, "fetch_point_in_time_accruals", fake_fetch)
+    panel = sec_fundamentals.build_accruals_panel(["A", "B"], date_index)
+
+    assert pd.isna(panel.loc["2020-01-01", "A"])
+    assert pd.isna(panel.loc["2020-01-04", "A"])
+    assert panel.loc["2020-01-05", "A"] == pytest.approx(-0.05)
+    assert panel.loc["2020-01-10", "A"] == pytest.approx(-0.05)
+    assert panel["B"].isna().all()

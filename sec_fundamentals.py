@@ -391,6 +391,108 @@ def build_book_value_per_share_panel_cached(
     return pd.DataFrame(columns)
 
 
+def fetch_point_in_time_accruals(ticker: str) -> pd.DataFrame:
+    """Real, point-in-time-correct annual ACCRUALS history for one ticker
+    -- the "accruals_rank" strategy's data source, implementing Sloan
+    (1996)'s classic accruals anomaly (one of the most robust, longest-
+    replicated findings in the academic asset-pricing literature): firms
+    whose earnings are mostly real cash flow (LOW accruals) outperform
+    firms whose earnings are mostly accounting adjustments (HIGH
+    accruals), because investors systematically overweight the less-
+    persistent accrual component.
+
+    Accruals = (NetIncomeLoss - NetCashProvidedByUsedInOperatingActivities)
+    / Assets -- scaled by TOTAL ASSETS, deliberately NOT by market cap or
+    shares outstanding, which structurally avoids the real stock-split
+    mismatch class of bug fetch_point_in_time_book_value_per_share() above
+    had to fix (see this module's own top-of-file writeup) -- this ratio
+    never touches price or share count at all.
+
+    NetIncomeLoss and NetCashProvidedByUsedInOperatingActivities are both
+    FLOW concepts (matched by accession number AND `end` date, same
+    discipline as fetch_point_in_time_roe()'s NetIncomeLoss/StockholdersEquity
+    pairing). Assets is a POINT-IN-TIME concept (matched by accession
+    number alone, same "cover-page fact from the same filing" convention
+    fetch_point_in_time_book_value_per_share() uses for shares outstanding).
+    Uses only `form == "10-K"` entries -- deliberately ANNUAL, same
+    "low-turnover fundamentals factor" reasoning as fetch_point_in_time_roe().
+
+    Returns a DataFrame with columns ["filed_date", "accruals"], one row
+    per fiscal year, sorted by filed_date -- `filed_date` is the real date
+    the public first saw this figure (the 10-K filing date), never the
+    fiscal year-end date, same no-look-ahead discipline as every other
+    function here. Degrades to an empty DataFrame rather than crashing,
+    same convention as fetch_point_in_time_roe()."""
+    columns = ["filed_date", "accruals"]
+    cik_map = fetch_cik_map()
+    cik = cik_map.get(ticker)
+    if cik is None:
+        return pd.DataFrame(columns=columns)
+
+    try:
+        resp = requests.get(
+            COMPANY_FACTS_URL.format(cik=cik), headers={"User-Agent": USER_AGENT}, timeout=15,
+        )
+        if resp.status_code != 200:
+            return pd.DataFrame(columns=columns)
+        facts = resp.json().get("facts", {}).get("us-gaap", {})
+    except Exception:
+        return pd.DataFrame(columns=columns)
+
+    net_income = facts.get("NetIncomeLoss", {}).get("units", {}).get("USD", [])
+    cfo = facts.get("NetCashProvidedByUsedInOperatingActivities", {}).get("units", {}).get("USD", [])
+    assets = facts.get("Assets", {}).get("units", {}).get("USD", [])
+    if not net_income or not cfo or not assets:
+        return pd.DataFrame(columns=columns)
+
+    ni_10k = {u["accn"]: u for u in net_income if u.get("form") == "10-K" and u.get("end")}
+    cfo_10k = {u["accn"]: u for u in cfo if u.get("form") == "10-K" and u.get("end")}
+    assets_10k = {u["accn"]: u for u in assets if u.get("form") == "10-K" and u.get("end")}
+
+    rows = []
+    for accn, ni in ni_10k.items():
+        cf = cfo_10k.get(accn)
+        if cf is None or cf.get("end") != ni.get("end"):
+            continue
+        at = assets_10k.get(accn)
+        if at is None:
+            continue
+        assets_val = at.get("val")
+        ni_val = ni.get("val")
+        cfo_val = cf.get("val")
+        if not assets_val or assets_val <= 0 or ni_val is None or cfo_val is None:
+            continue
+        accruals = (ni_val - cfo_val) / assets_val
+        rows.append({"filed_date": ni["filed"], "accruals": accruals, "fiscal_year_end": ni.get("end")})
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    out = pd.DataFrame(rows).sort_values("filed_date")
+    out = out.drop_duplicates(subset="fiscal_year_end", keep="last")
+    out["filed_date"] = pd.to_datetime(out["filed_date"])
+    return out[columns].reset_index(drop=True)
+
+
+def build_accruals_panel(tickers: list[str], date_index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Builds the wide (dates x tickers) point-in-time ACCRUALS panel the
+    "accruals_rank" strategy needs -- exact structural mirror of
+    build_roe_panel(), same forward-fill-never-backfill discipline."""
+    columns = {}
+    for i, ticker in enumerate(tickers):
+        if i > 0:
+            time.sleep(REQUEST_DELAY_SEC)
+        accruals_history = fetch_point_in_time_accruals(ticker)
+        if accruals_history.empty:
+            columns[ticker] = pd.Series(index=date_index, dtype=float)
+            continue
+        series = pd.Series(
+            accruals_history["accruals"].values, index=pd.DatetimeIndex(accruals_history["filed_date"]),
+        )
+        columns[ticker] = series.reindex(series.index.union(date_index)).ffill().reindex(date_index)
+    return pd.DataFrame(columns)
+
+
 def build_roe_panel(tickers: list[str], date_index: pd.DatetimeIndex) -> pd.DataFrame:
     """Builds the wide (dates x tickers) point-in-time ROE panel every
     cross-sectional rank strategy in this codebase needs (same shape/role
