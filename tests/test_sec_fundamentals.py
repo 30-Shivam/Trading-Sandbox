@@ -558,3 +558,84 @@ def test_build_accruals_panel_forward_fills_without_look_ahead(monkeypatch):
     assert panel.loc["2020-01-05", "A"] == pytest.approx(-0.05)
     assert panel.loc["2020-01-10", "A"] == pytest.approx(-0.05)
     assert panel["B"].isna().all()
+
+
+def _fake_companyfacts_cash_profitability(cfo_rows, assets_rows):
+    return _FakeResponse({
+        "facts": {
+            "us-gaap": {
+                "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": cfo_rows}},
+                "Assets": {"units": {"USD": assets_rows}},
+            }
+        }
+    })
+
+
+def test_fetch_point_in_time_cash_profitability_computes_from_matched_10k_pair(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_cash_profitability(
+            cfo_rows=[{"accn": "A1", "end": "2020-12-31", "val": 2_000_000, "form": "10-K", "filed": "2021-02-15"}],
+            assets_rows=[{"accn": "A1", "end": "2020-12-31", "val": 10_000_000, "form": "10-K", "filed": "2021-02-15"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    result = sec_fundamentals.fetch_point_in_time_cash_profitability("TEST")
+    assert len(result) == 1
+    assert result.iloc[0]["cash_profitability"] == pytest.approx(0.2)  # 2,000,000 / 10,000,000
+    assert result.iloc[0]["filed_date"] == pd.Timestamp("2021-02-15")
+
+
+def test_fetch_point_in_time_cash_profitability_ignores_non_10k_forms(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_cash_profitability(
+            cfo_rows=[{"accn": "Q1", "end": "2020-09-30", "val": 500_000, "form": "10-Q", "filed": "2020-11-01"}],
+            assets_rows=[{"accn": "Q1", "end": "2020-09-30", "val": 5_000_000, "form": "10-Q", "filed": "2020-11-01"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    result = sec_fundamentals.fetch_point_in_time_cash_profitability("TEST")
+    assert result.empty
+
+
+def test_fetch_point_in_time_cash_profitability_skips_zero_assets(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {"TEST": "0000000001"})
+
+    def fake_get(url, headers=None, timeout=None):
+        return _fake_companyfacts_cash_profitability(
+            cfo_rows=[{"accn": "A1", "end": "2020-12-31", "val": 2_000_000, "form": "10-K", "filed": "2021-02-15"}],
+            assets_rows=[{"accn": "A1", "end": "2020-12-31", "val": 0, "form": "10-K", "filed": "2021-02-15"}],
+        )
+
+    monkeypatch.setattr(sec_fundamentals.requests, "get", fake_get)
+    result = sec_fundamentals.fetch_point_in_time_cash_profitability("TEST")
+    assert result.empty
+
+
+def test_fetch_point_in_time_cash_profitability_unmapped_ticker_returns_empty_without_network_call(monkeypatch):
+    monkeypatch.setattr(sec_fundamentals, "fetch_cik_map", lambda: {})
+    calls = []
+    monkeypatch.setattr(sec_fundamentals.requests, "get", lambda *a, **k: calls.append(1))
+    result = sec_fundamentals.fetch_point_in_time_cash_profitability("ATD")
+    assert result.empty
+    assert calls == []
+
+
+def test_build_cash_profitability_panel_forward_fills_without_look_ahead(monkeypatch):
+    date_index = pd.date_range("2020-01-01", periods=10, freq="D")
+
+    def fake_fetch(ticker):
+        if ticker == "A":
+            return pd.DataFrame({"filed_date": [pd.Timestamp("2020-01-05")], "cash_profitability": [0.25]})
+        return pd.DataFrame(columns=["filed_date", "cash_profitability"])
+
+    monkeypatch.setattr(sec_fundamentals, "fetch_point_in_time_cash_profitability", fake_fetch)
+    panel = sec_fundamentals.build_cash_profitability_panel(["A", "B"], date_index)
+
+    assert pd.isna(panel.loc["2020-01-01", "A"])
+    assert panel.loc["2020-01-05", "A"] == pytest.approx(0.25)
+    assert panel.loc["2020-01-10", "A"] == pytest.approx(0.25)
+    assert panel["B"].isna().all()

@@ -70,6 +70,7 @@ from .config import DEFAULT_CONFIG, TradingConfig
 from .levels import (
     accruals_levels_from_frame,
     adx_trend_entry_levels_from_frame,
+    cash_profitability_levels_from_frame,
     analyst_revision_levels_from_frame,
     breakout_levels_from_frame,
     breakout_retest_levels_from_frame,
@@ -84,6 +85,7 @@ from .levels import (
     momentum_levels_from_frame,
     precompute_accruals_frame,
     precompute_adx_trend_entry_frame,
+    precompute_cash_profitability_frame,
     precompute_analyst_revision_frame,
     precompute_breakout_frame,
     precompute_breakout_retest_frame,
@@ -114,6 +116,7 @@ from .levels import (
 from .scoring import (
     add_accruals_trade_score,
     add_analyst_revision_trade_score,
+    add_cash_profitability_trade_score,
     add_ma_crossover_trade_score,
     add_lowvol_trade_score,
     add_momentum_trade_score,
@@ -3080,6 +3083,197 @@ def simulate_random_accruals_entries(
     return trades
 
 
+def simulate_cash_profitability_signals(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+    rank_column: pd.Series | None = None,
+) -> list[dict]:
+    """Cross-sectional CASH PROFITABILITY RANK counterpart to
+    simulate_accruals_signals() -- buys a ticker whose cash-profitability
+    (CFO/Assets) percentile rank clears
+    config.cash_profitability_top_percentile_min, in a confirmed macro
+    uptrend. See swingtrade/config.py's cash_profitability_* fields and
+    swingtrade.levels.compute_cash_profitability_rank_frame()/
+    precompute_cash_profitability_frame() for the full mechanism. Exact
+    structural mirror of simulate_accruals_signals()/simulate_value_signals()
+    otherwise.
+
+    `rank_column` should be THIS ticker's own column already sliced from a
+    shared universe-wide rank frame (see
+    swingtrade.levels.compute_cash_profitability_rank_frame(), built from
+    sec_fundamentals.build_cash_profitability_panel()). Without it,
+    Cash_Profitability_Signal is always False."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    trades = []
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_cash_profitability_frame(ohlcv, rank_column, config)
+
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = cash_profitability_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        if not levels["Cash_Profitability_Signal"]:
+            continue
+
+        scored = add_cash_profitability_trade_score(pd.DataFrame([levels]), config).iloc[0]
+
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.cash_profitability_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(levels["Buy_Price"], bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        atr = float(levels["ATR"])
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+            dollar_volume=levels.get("Dollar_Volume"),
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Cash_Profitability_Rank",
+            "trade_score": float(scored["Trade_Score"]),
+            "signal_strength_pct": float(levels["Signal_Strength_Pct"]),
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": levels["Buy_Price"],
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": bool(levels["Catalyst_Warning"]),
+            **result,
+        })
+
+    return trades
+
+
+def simulate_random_cash_profitability_entries(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    market_ohlcv: pd.DataFrame,
+    window_start,
+    window_end,
+    n_trades: int,
+    rng,
+    config: TradingConfig = DEFAULT_CONFIG,
+    earnings_dates: pd.DatetimeIndex | None = None,
+    sector: str = "Unknown",
+) -> list[dict]:
+    """Random-entry benchmark for simulate_cash_profitability_signals() --
+    exact structural mirror of simulate_random_accruals_entries(). Called
+    with rank_column=None (Cash_Profitability_Signal always False), same
+    "answers whether TIMING adds value" precedent every other random
+    baseline follows."""
+    window_start = pd.Timestamp(window_start)
+    window_end = pd.Timestamp(window_end)
+
+    eligible_dates = ohlcv.index[(ohlcv.index >= window_start) & (ohlcv.index < window_end)]
+
+    market_frame = precompute_rsi_frame(market_ohlcv, config)
+    frame = precompute_cash_profitability_frame(ohlcv, None, config)
+
+    candidates = []
+    for as_of in eligible_dates:
+        try:
+            market_uptrend, _, _ = market_uptrend_from_frame(market_frame, as_of, config)
+        except RuntimeError:
+            continue
+        if not market_uptrend:
+            continue
+
+        next_earnings = _next_earnings_date(earnings_dates, as_of)
+        try:
+            levels = cash_profitability_levels_from_frame(ticker, frame, as_of, config, next_earnings_date=next_earnings)
+        except RuntimeError:
+            continue
+
+        candidates.append(
+            (as_of, levels["Buy_Price"], float(levels["ATR"]), bool(levels["Catalyst_Warning"]), levels.get("Dollar_Volume"))
+        )
+
+    if not candidates or n_trades <= 0:
+        return []
+
+    chosen = rng.sample(candidates, k=min(n_trades, len(candidates)))
+    chosen.sort(key=lambda c: c[0])
+
+    trades = []
+    for as_of, buy_price, atr, catalyst_warning, dollar_volume in chosen:
+        bars_after_signal = ohlcv[ohlcv.index > as_of]
+        if config.cash_profitability_entry_fill == "next_open":
+            fill = _find_next_open_fill(bars_after_signal)
+        else:
+            fill = _find_entry_fill(buy_price, bars_after_signal, config.max_entry_wait_days)
+        if fill is None:
+            continue
+        entry_date, entry_price = fill
+
+        stop_loss = round(entry_price - config.stop_loss_atr_multiplier * atr, 2)
+        sell_price = round(entry_price + config.atr_take_profit_multiplier * atr, 2)
+
+        bars_since_entry = ohlcv[ohlcv.index > entry_date]
+        result = _settle(
+            buy_price=entry_price,
+            stop_loss=stop_loss,
+            sell_price=sell_price,
+            atr=atr,
+            bars_since_entry=bars_since_entry,
+            config=config,
+            dollar_volume=dollar_volume,
+        )
+
+        trades.append({
+            "ticker": ticker,
+            "signal_date": as_of.date(),
+            "entry_date": entry_date.date(),
+            "sector": sector,
+            "signal": "Random_Cash_Profitability_Rank",
+            "atr": atr,
+            "buy_price": entry_price,
+            "signal_buy_price": buy_price,
+            "stop_loss": stop_loss,
+            "sell_price": sell_price,
+            "catalyst_warning": catalyst_warning,
+            **result,
+        })
+
+    return trades
+
+
 def simulate_random_quality_entries(
     ticker: str,
     ohlcv: pd.DataFrame,
@@ -4464,6 +4658,7 @@ def run_backtest(
     quality_rank_frame: pd.DataFrame | None = None,
     value_rank_frame: pd.DataFrame | None = None,
     accruals_rank_frame: pd.DataFrame | None = None,
+    cash_profitability_rank_frame: pd.DataFrame | None = None,
     yield_curve: pd.Series | None = None,
     skew_regime: pd.Series | None = None,
     earnings_surprise_data: dict[str, pd.DataFrame] | None = None,
@@ -4694,6 +4889,11 @@ def run_backtest(
             if accruals_rank_frame is not None and ticker in accruals_rank_frame.columns
             else None
         )
+        cash_profitability_rank_column = (
+            cash_profitability_rank_frame[ticker]
+            if cash_profitability_rank_frame is not None and ticker in cash_profitability_rank_frame.columns
+            else None
+        )
         if strategy == "rsi":
             trades = simulate_signals(
                 ticker, ohlcv, market_data, window_start, window_end, config,
@@ -4785,13 +4985,18 @@ def run_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector, rank_column=accruals_rank_column,
             )
+        elif strategy == "cash_profitability_rank":
+            trades = simulate_cash_profitability_signals(
+                ticker, ohlcv, market_data, window_start, window_end, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector, rank_column=cash_profitability_rank_column,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
                 "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
                 "'insider_buying', 'momentum_rank', 'pead', 'lowvol_rank', 'sector_rotation', "
-                "'quality_rank', 'value_rank', 'analyst_revision', or 'accruals_rank')"
+                "'quality_rank', 'value_rank', 'analyst_revision', 'accruals_rank', or 'cash_profitability_rank')"
             )
         all_trades.extend(trades)
     return all_trades
@@ -4937,13 +5142,18 @@ def run_random_backtest(
                 ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
                 earnings_dates=earnings_data.get(ticker), sector=sector,
             )
+        elif strategy == "cash_profitability_rank":
+            trades = simulate_random_cash_profitability_entries(
+                ticker, ohlcv, market_data, window_start, window_end, n_trades, rng, config,
+                earnings_dates=earnings_data.get(ticker), sector=sector,
+            )
         else:
             raise ValueError(
                 f"unknown strategy: {strategy!r} "
                 "(expected 'rsi', 'breakout', 'pullback', 'breakout_retest', 'week52_high', "
                 "'momentum_burst', 'squeeze_breakout', 'adx_trend_entry', 'ma_crossover', 'pairs', "
                 "'insider_buying', 'momentum_rank', 'pead', 'lowvol_rank', 'sector_rotation', "
-                "'quality_rank', 'value_rank', 'analyst_revision', or 'accruals_rank')"
+                "'quality_rank', 'value_rank', 'analyst_revision', 'accruals_rank', or 'cash_profitability_rank')"
             )
         all_trades.extend(trades)
     return all_trades

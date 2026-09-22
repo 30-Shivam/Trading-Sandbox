@@ -1078,6 +1078,30 @@ class TradingConfig:
     accruals_entry_fill: str = "limit"  # same "limit" vs. "next_open" toggle
                                            # every other strategy has
 
+    # Cross-sectional CASH-BASED OPERATING PROFITABILITY rank (2026-09-21)
+    # -- Ball/Gerakos/Linnainmaa/Nikolaev (2016)'s refinement over raw
+    # accruals: buys the HIGHEST decile of CFO/Assets (most cash generated
+    # per dollar of assets), the opposite direction from accruals_rank's
+    # inverted "lowest is best" convention -- same non-inverted direction
+    # as quality_rank's ROE ranking. Same 3 SEC concepts as accruals_rank
+    # (NetIncomeLoss not needed here, just CFO/Assets), see
+    # sec_fundamentals.fetch_point_in_time_cash_profitability()/
+    # build_cash_profitability_panel() and
+    # swingtrade.levels.compute_cash_profitability_rank_frame().
+    cash_profitability_top_percentile_min: float = 90.0  # a ticker's cash
+                                           # profitability percentile (100 =
+                                           # highest CFO/Assets in the
+                                           # universe that day) must clear
+                                           # this to fire
+    cash_profitability_strength_cap_pct: float = 10.0  # extra percentile
+                                           # points past
+                                           # cash_profitability_top_percentile_min
+                                           # that earn full
+                                           # Signal_Strength_Pct credit
+    cash_profitability_entry_fill: str = "limit"  # same "limit" vs.
+                                           # "next_open" toggle every other
+                                           # strategy has
+
     # Insider-buying (2026-08-21) -- buy when recent, real-dollar insider
     # Form-4 purchases cluster within a lookback window, in a confirmed
     # macro uptrend. See run_backtest.fetch_insider_purchases() for the

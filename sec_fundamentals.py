@@ -578,6 +578,170 @@ def build_accruals_panel_cached(
     return pd.DataFrame(columns)
 
 
+def fetch_point_in_time_cash_profitability(ticker: str) -> pd.DataFrame:
+    """Real, point-in-time-correct annual CASH-BASED OPERATING PROFITABILITY
+    history for one ticker -- the "cash_profitability_rank" strategy's data
+    source. A close cousin of fetch_point_in_time_accruals() above (same 3
+    SEC concepts, same fetch), but answers a DIFFERENT question: accruals
+    measures earnings QUALITY (how much of reported earnings is real cash
+    vs. accounting adjustment); this measures raw cash PROFITABILITY LEVEL
+    (how much operating cash flow a business actually generates relative
+    to its asset base) -- the literature (Ball, Gerakos, Linnainmaa,
+    Nikolaev 2016) finds cash-based operating profitability measures
+    outperform profitability measures that still include the accrual
+    component, i.e. this is a genuinely different signal from accruals
+    even though it's built from the same three underlying numbers.
+
+    Cash Profitability = NetCashProvidedByUsedInOperatingActivities /
+    Assets -- HIGHER is better here (buy the top decile, same direction as
+    quality_rank's ROE, NOT accruals_rank's inverted "lowest is best"
+    convention), since more cash generated per dollar of assets is
+    straightforwardly good, unlike accruals where the sign matters for a
+    different reason (earnings composition, not magnitude). Scaled by
+    total assets, never price or shares outstanding -- same structural
+    immunity to the stock-split confound as fetch_point_in_time_accruals().
+
+    Same FLOW-vs-POINT-IN-TIME concept matching discipline as
+    fetch_point_in_time_accruals() (CFO matched to Assets by accession
+    number, using CFO's own `end` date as the fiscal-year key). Returns a
+    DataFrame with columns ["filed_date", "cash_profitability"], one row
+    per fiscal year. Degrades to an empty DataFrame rather than crashing,
+    same convention as every other function here."""
+    columns = ["filed_date", "cash_profitability"]
+    cik_map = fetch_cik_map()
+    cik = cik_map.get(ticker)
+    if cik is None:
+        return pd.DataFrame(columns=columns)
+
+    try:
+        resp = requests.get(
+            COMPANY_FACTS_URL.format(cik=cik), headers={"User-Agent": USER_AGENT}, timeout=15,
+        )
+        if resp.status_code != 200:
+            return pd.DataFrame(columns=columns)
+        facts = resp.json().get("facts", {}).get("us-gaap", {})
+    except Exception:
+        return pd.DataFrame(columns=columns)
+
+    cfo = facts.get("NetCashProvidedByUsedInOperatingActivities", {}).get("units", {}).get("USD", [])
+    assets = facts.get("Assets", {}).get("units", {}).get("USD", [])
+    if not cfo or not assets:
+        return pd.DataFrame(columns=columns)
+
+    cfo_10k = {u["accn"]: u for u in cfo if u.get("form") == "10-K" and u.get("end")}
+    assets_10k = {u["accn"]: u for u in assets if u.get("form") == "10-K" and u.get("end")}
+
+    rows = []
+    for accn, cf in cfo_10k.items():
+        at = assets_10k.get(accn)
+        if at is None:
+            continue
+        assets_val = at.get("val")
+        cfo_val = cf.get("val")
+        if not assets_val or assets_val <= 0 or cfo_val is None:
+            continue
+        cash_profitability = cfo_val / assets_val
+        rows.append({"filed_date": cf["filed"], "cash_profitability": cash_profitability, "fiscal_year_end": cf.get("end")})
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    out = pd.DataFrame(rows).sort_values("filed_date")
+    out = out.drop_duplicates(subset="fiscal_year_end", keep="last")
+    out["filed_date"] = pd.to_datetime(out["filed_date"])
+    return out[columns].reset_index(drop=True)
+
+
+def build_cash_profitability_panel(tickers: list[str], date_index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Builds the wide (dates x tickers) point-in-time CASH PROFITABILITY
+    panel the "cash_profitability_rank" strategy needs -- exact structural
+    mirror of build_accruals_panel()/build_roe_panel()."""
+    columns = {}
+    for i, ticker in enumerate(tickers):
+        if i > 0:
+            time.sleep(REQUEST_DELAY_SEC)
+        history = fetch_point_in_time_cash_profitability(ticker)
+        if history.empty:
+            columns[ticker] = pd.Series(index=date_index, dtype=float)
+            continue
+        series = pd.Series(
+            history["cash_profitability"].values, index=pd.DatetimeIndex(history["filed_date"]),
+        )
+        columns[ticker] = series.reindex(series.index.union(date_index)).ffill().reindex(date_index)
+    return pd.DataFrame(columns)
+
+
+CASH_PROFITABILITY_CACHE_COLLECTION = "Fundamentals_Cache_CashProfitability"
+CASH_PROFITABILITY_CACHE_MAX_AGE_DAYS = 7  # same reasoning as ACCRUALS_CACHE_MAX_AGE_DAYS above
+
+
+def fetch_point_in_time_cash_profitability_cached(
+    ticker: str, max_age_days: int = CASH_PROFITABILITY_CACHE_MAX_AGE_DAYS,
+) -> pd.DataFrame:
+    """Cached wrapper around fetch_point_in_time_cash_profitability() --
+    exact structural mirror of fetch_point_in_time_accruals_cached()."""
+    import storage  # local import: see fetch_point_in_time_book_value_per_share_cached()'s own identical comment
+    from datetime import datetime, timezone
+
+    columns = ["filed_date", "cash_profitability"]
+    db = None
+    try:
+        db = storage.get_db()
+        cached = db[CASH_PROFITABILITY_CACHE_COLLECTION].find_one({"_id": ticker})
+    except Exception:
+        cached = None
+
+    if cached is not None:
+        fetched_at = cached.get("fetched_at")
+        if fetched_at is not None:
+            if fetched_at.tzinfo is None:
+                fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 86400
+            if age_days <= max_age_days:
+                rows = cached.get("rows", [])
+                if not rows:
+                    return pd.DataFrame(columns=columns)
+                out = pd.DataFrame(rows)
+                out["filed_date"] = pd.to_datetime(out["filed_date"])
+                return out[columns]
+
+    fresh = fetch_point_in_time_cash_profitability(ticker)
+    if db is not None:
+        try:
+            db[CASH_PROFITABILITY_CACHE_COLLECTION].replace_one(
+                {"_id": ticker},
+                {
+                    "_id": ticker,
+                    "rows": fresh.assign(filed_date=fresh["filed_date"].astype(str)).to_dict("records"),
+                    "fetched_at": datetime.now(timezone.utc),
+                },
+                upsert=True,
+            )
+        except Exception:
+            pass
+    return fresh
+
+
+def build_cash_profitability_panel_cached(
+    tickers: list[str], date_index: pd.DatetimeIndex, max_age_days: int = CASH_PROFITABILITY_CACHE_MAX_AGE_DAYS,
+) -> pd.DataFrame:
+    """Cached counterpart to build_cash_profitability_panel() -- intended
+    for the LIVE daily automation path, not the backtest path."""
+    columns = {}
+    for i, ticker in enumerate(tickers):
+        if i > 0:
+            time.sleep(REQUEST_DELAY_SEC)
+        history = fetch_point_in_time_cash_profitability_cached(ticker, max_age_days)
+        if history.empty:
+            columns[ticker] = pd.Series(index=date_index, dtype=float)
+            continue
+        series = pd.Series(
+            history["cash_profitability"].values, index=pd.DatetimeIndex(history["filed_date"]),
+        )
+        columns[ticker] = series.reindex(series.index.union(date_index)).ffill().reindex(date_index)
+    return pd.DataFrame(columns)
+
+
 def build_roe_panel(tickers: list[str], date_index: pd.DatetimeIndex) -> pd.DataFrame:
     """Builds the wide (dates x tickers) point-in-time ROE panel every
     cross-sectional rank strategy in this codebase needs (same shape/role
