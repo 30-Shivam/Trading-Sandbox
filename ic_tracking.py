@@ -196,6 +196,59 @@ def _weighted_corr(x: pd.Series, y: pd.Series, w: pd.Series) -> float | None:
     return cov / (var_x ** 0.5 * var_y ** 0.5)
 
 
+EXPECTANCY_CONFIDENT_Z = -1.645   # one-sided 95% z-threshold: how far below
+                                   # zero a methodology's weighted mean pnl_pct
+                                   # has to sit (in effective-sample standard
+                                   # errors) before ensemble_weight() treats it
+                                   # as a confirmed money-loser rather than
+                                   # noise. Same 95% convention the rest of
+                                   # this project's validation pipeline uses
+                                   # for its own permutation tests.
+
+
+def weighted_expectancy(pnls, weights) -> dict | None:
+    """Weighted mean realized pnl_pct and a one-sided z-test for whether
+    that mean is CONFIDENTLY negative -- the question rank_ic()/IC never
+    asks. IC only measures whether a methodology's score ranks its OWN
+    fired trades in the right order; a methodology can have strong
+    positive IC (correctly ranks its worse losers below its better ones)
+    while still losing money on every single trade it fires. This module's
+    own top-of-file docstring explains why IC/IR were chosen over
+    win_rate/sharpe for CROSS-methodology comparison (win_rate alone is
+    confounded by stop/target bracket geometry) -- that reasoning doesn't
+    extend to net pnl_pct itself: a trade's realized pnl_pct already nets
+    out win/loss size, so a confidently negative weighted mean isn't a
+    payoff-geometry artifact, it's a real "capital deployed here has lost
+    money" finding.
+
+    Uses the same Kish effective-sample-size (_effective_count()) and
+    tier/cluster `weights` convention as rank_ic()/methodology_report(),
+    so this reads as directly comparable evidence, not a separate metric
+    on a separate scale.
+
+    Returns None if fewer than MIN_TRADES_FOR_ANY_IC pairs or non-positive
+    total weight. Returns {"expectancy_pct": float, "z": float | None,
+    "effective_n": float} otherwise -- `z` is None when weighted variance
+    is degenerate (e.g. every pnl_pct identical) or effective_n <= 1, since
+    a standard error isn't meaningful there."""
+    if not pnls or len(pnls) < MIN_TRADES_FOR_ANY_IC:
+        return None
+    w = pd.Series(list(weights), dtype=float)
+    p = pd.Series(list(pnls), dtype=float)
+    total = float(w.sum())
+    if total <= 0:
+        return None
+    mean = float((w * p).sum() / total)
+    var = float((w * (p - mean) ** 2).sum() / total)
+    eff_n = _effective_count(list(weights))
+    z = None
+    if eff_n > 1 and var > 0:
+        se = (var / eff_n) ** 0.5
+        if se > 0:
+            z = mean / se
+    return {"expectancy_pct": mean, "z": z, "effective_n": eff_n}
+
+
 def rank_ic(scores, pnls, weights=None) -> float | None:
     """Spearman rank correlation between `scores` (a methodology's own
     score at signal time) and `pnls` (realized forward pnl_pct at
@@ -493,11 +546,15 @@ def methodology_report(strategy: str, score_field: str = "trade_score", window_d
     )
     ic_series = windowed_ic_series(combined_pairs, window_days=window_days)
     ir = information_ratio([w["ic"] for w in ic_series])
+    expectancy = (
+        weighted_expectancy([p["pnl_pct"] for p in pairs], combined_weights) if pairs else None
+    )
     return {
         "strategy": strategy, "n_settled": n_settled, "effective_n_settled": effective_n_settled,
         "tier_only_effective_n_settled": tier_only_effective_n_settled,
         "overall_ic": overall_ic, "ic_series": ic_series, "ir": ir,
         "trust_floor_met": effective_n_settled >= TRUST_FLOOR_TRADES,
+        "expectancy": expectancy,
     }
 
 
@@ -594,7 +651,27 @@ def ensemble_weight(report: dict, neutral_prior: float = 0.0) -> float:
     and still meaningful for display (a "has this cleared the traditional
     bar" summary caption), but is no longer read by this function at all
     -- the continuous credibility formula fully subsumes what that boolean
-    used to gate."""
+    used to gate.
+
+    EXPECTANCY GATE (added 2026-09-22): IC/IR only measure whether a
+    methodology ranks its OWN fired trades in the right order -- they say
+    nothing about whether those trades make money at all. Found live:
+    rsi_mean_reversion v66 carries this project's dominant composite
+    weight (overall_ic ~0.45-0.55) while its real settled-trade record
+    (391 v66-era trades since the 2026-08-25 promotion) shows a weighted
+    mean pnl_pct confidently negative (~-3%/trade both August and
+    September, nowhere near a one-off unlucky window) -- it correctly
+    ranks its own losing trades from worse to less-bad, while reliably
+    losing money on all of them. Before blending, `signal` is now
+    overridden to 0.0 (same treatment as a raw negative IC/IR -- excluded
+    from positive influence, not inverted into a contrarian bet) whenever
+    `report["expectancy"]` shows a weighted mean pnl_pct with
+    z <= EXPECTANCY_CONFIDENT_Z, i.e. confidently negative at the same 95%
+    threshold this project's other validation checks use. This does NOT
+    reintroduce the win_rate confound this module's own docstring warns
+    against -- a trade's pnl_pct already nets out win/loss size, so a
+    confidently negative WEIGHTED MEAN pnl_pct isn't a payoff-geometry
+    artifact the way win_rate alone can be."""
     windows = report.get("ic_series") or []
     if report.get("ir") is not None and len(windows) >= MIN_WINDOWS_FOR_IR_TRUST:
         signal = report["ir"]
@@ -602,6 +679,9 @@ def ensemble_weight(report: dict, neutral_prior: float = 0.0) -> float:
         signal = report["overall_ic"]
     else:
         return neutral_prior
+    expectancy = report.get("expectancy") or {}
+    if expectancy.get("z") is not None and expectancy["z"] <= EXPECTANCY_CONFIDENT_Z:
+        signal = 0.0
     effective_n = report.get("effective_n_settled") or 0.0
     credibility = effective_n / (effective_n + CREDIBILITY_HALF_LIFE_TRADES)
     return credibility * max(signal, 0.0) + (1 - credibility) * neutral_prior

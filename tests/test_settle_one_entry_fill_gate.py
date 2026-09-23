@@ -121,6 +121,48 @@ def test_unconfirmed_filled_via_gap_down_open_grades_from_real_fill_price(monkey
     assert kwargs["confirmed_filled"] is False
 
 
+def test_split_desync_rescales_stale_stop_instead_of_false_loss(monkeypatch):
+    # Real bug (2026-09-22, found auditing momentum_rank's live win rate):
+    # signal buy_price=160.08/stop_loss=139.09/sell_price=195.91 (momentum_rank's
+    # real APH 2026-09-02 signal), but APH had a real 2-for-1 split on
+    # 2026-09-03 -- every bar after the signal comes back on the new,
+    # roughly-half price scale. find_entry_fill() correctly fills at the new
+    # scale (any post-split Open trivially satisfies "open_ <= 160.08"), but
+    # the OLD settle_one() then handed the stale pre-split stop_loss/sell_price
+    # straight to settle_trade(), which immediately read "Open 82.84 <=
+    # stop_loss 139.09" as a real stop-hit -- a false LOSS on a trade that
+    # actually gained +2.5% (entry 80.82 -> exit 82.84). The fix detects the
+    # structurally-impossible state (stop_loss >= entry_price can never be
+    # legitimate for a real long entry) and rescales stop_loss/sell_price
+    # proportionally to the real fill price instead of mislabeling it.
+    bars = _bars([
+        {"Open": 80.82, "High": 81.50, "Low": 80.50, "Close": 81.00},  # fills here (post-split scale)
+        {"Open": 82.84, "High": 83.50, "Low": 82.00, "Close": 83.00},  # real gain, must NOT read as a stop-hit
+    ])
+    monkeypatch.setattr(settle_trades, "fetch_bars_since", lambda ticker, signal_date: bars)
+    logged, settled = _patch_storage(monkeypatch)
+
+    # max_holding_days=1 forces a definitive resolution (EXPIRED, at the
+    # real post-split Close) from the single bar strictly after the fill --
+    # enough to prove the stale stop/target no longer falsely fires, without
+    # needing a longer bar sequence to also clear a rescaled target/stop.
+    config = swingtrade.TradingConfig(**{**swingtrade.DEFAULT_CONFIG.to_dict(),
+                                          "max_entry_wait_days": 5, "max_holding_days": 1})
+    signal = {
+        "ticker": "APH", "signal_date": "2026-09-02", "buy_price": 160.08,
+        "stop_loss": 139.09, "sell_price": 195.91, "config_snapshot": config.to_dict(),
+        "confirmed_filled": False, "tier": "research",
+    }
+    outcome, notify = settle_trades.settle_one(signal)
+
+    assert len(logged) == 1
+    args, kwargs = logged[0]
+    ticker, signal_date, strategy, entry_price, result = args
+    assert entry_price == 80.82
+    assert result["pnl_pct"] > 0          # a real gain
+    assert result["status"] != "LOSS"     # must not be mislabeled a stop-hit
+
+
 def test_confirmed_fill_skips_the_gate_entirely_unchanged_behavior(monkeypatch):
     # A CONFIRMED real trade (the user actually filled it) must be graded
     # exactly as before -- unconditionally trusted from day one, no

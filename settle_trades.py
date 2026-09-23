@@ -63,13 +63,28 @@ REQUEST_DELAY_SEC = 0.5   # pause between yfinance calls to avoid rate-limiting
 
 
 def fetch_bars_since(ticker: str, signal_date: str) -> pd.DataFrame:
-    """Daily OHLCV strictly AFTER signal_date, chronological order."""
+    """Daily OHLCV strictly AFTER signal_date, chronological order.
+
+    Drops any trailing row with a NaN Close (2026-09-22, real bug found
+    while auditing why 39/83 -- 47% -- of EXPIRED Trade_Outcomes carried a
+    NaN pnl_pct): yfinance returns TODAY's row with real Open/High/Low/
+    Volume but a NaN Close while the market is still mid-session -- the
+    day genuinely hasn't resolved yet. settle_trade()'s EXPIRED branch
+    (reached when a trade survives to config.max_holding_days without
+    hitting its stop/target) uses the LAST walked bar's Close as the exit
+    price unconditionally, so an in-progress trading day silently produced
+    a NaN pnl_pct instead of correctly treating that day as not-yet-
+    available. Same 'missing data doesn't fabricate a signal/outcome'
+    convention this codebase already uses elsewhere (e.g.
+    momentum_levels_from_frame()'s missing-percentile handling) -- an
+    incomplete day is excluded, not walked with a fabricated close."""
     df = yf.download(ticker, start=signal_date, progress=False, auto_adjust=False)
     if df.empty:
         return df
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    return df[df.index > pd.Timestamp(signal_date)]
+    df = df[df.index > pd.Timestamp(signal_date)]
+    return df[df["Close"].notna()]
 
 
 def settle_one(signal: dict) -> tuple[str, dict | None]:
@@ -138,10 +153,44 @@ def settle_one(signal: dict) -> tuple[str, dict | None]:
         entry_price = fill_price
         bars_since_entry = bars[bars.index > fill_date]
 
+    stop_loss = signal["stop_loss"]
+    sell_price = signal["sell_price"]
+    # Corporate-action desync guard (2026-09-22, real bug found while
+    # auditing momentum_rank's 0% live win rate -- see improvements.txt).
+    # stop_loss/sell_price are ABSOLUTE levels computed once at signal time
+    # from the signal's own buy_price (never rescaled afterward -- see this
+    # module's own docstring, "Stop_Loss/Sell_Price never change"). That
+    # design assumes the eventual entry_price stays close to that original
+    # buy_price, true for ordinary slippage/delayed-limit-fill cases. A
+    # stock split (or a large special dividend, which yfinance also
+    # retroactively price-adjusts) between signal_date and the fill can
+    # break that assumption badly: fetch_bars_since() returns bars already
+    # rescaled to the new post-split price level, but stop_loss/sell_price
+    # stay on the old pre-split scale. Confirmed real case: APH's momentum_rank
+    # signal on 2026-09-02 (buy_price=160.08, stop_loss=139.09) hit a real
+    # 2-for-1 split on 2026-09-03 -- find_entry_fill() correctly filled at
+    # the new ~80 price level (any post-split Open trivially satisfies
+    # "open_ <= 160.08"), but settle_trade() then compared that ~80 scale
+    # against the stale ~139 stop, guaranteeing an immediate false
+    # "gap_down_stop"/LOSS on a trade that actually gained +2.5%. A stop
+    # above (or a target below) the real entry price is structurally
+    # impossible for a legitimate long entry (stop_loss/sell_price are
+    # always buy_price -/+ an ATR multiple, see e.g. momentum_levels_from_frame())
+    # -- so detecting exactly that inversion, rather than guessing at split
+    # ratios from a corporate-actions feed, catches this class of desync
+    # precisely with no false positives on ordinary fills. Rescaling
+    # proportionally (not excluding the trade) preserves the original
+    # risk/reward distances around the price the trade was ACTUALLY entered
+    # at, the same correction a human would make by hand.
+    if stop_loss >= entry_price or sell_price <= entry_price:
+        scale = entry_price / signal["buy_price"] if signal["buy_price"] else 1.0
+        stop_loss = round(stop_loss * scale, 2)
+        sell_price = round(sell_price * scale, 2)
+
     result = swingtrade.settle_trade(
         buy_price=entry_price,
-        stop_loss=signal["stop_loss"],
-        sell_price=signal["sell_price"],
+        stop_loss=stop_loss,
+        sell_price=sell_price,
         bars_since_entry=bars_since_entry,
         config=config,
     )

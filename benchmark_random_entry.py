@@ -163,6 +163,65 @@ from run_backtest import (
 )
 from watchlist import SECTOR_ETF, read_ticker_sectors, read_tickers
 
+MULTIPLE_TESTING_REGISTRY_PATH = Path(__file__).parent / "validation_trials_registry.txt"
+
+
+def bonferroni_check(strategy: str, p_value: float | None, registry_path: Path = MULTIPLE_TESTING_REGISTRY_PATH) -> dict:
+    """Family-wise multiple-testing correction across every DISTINCT
+    strategy architecture this project has ever run through
+    permutation_test_gap() -- a real gap found 2026-09-23: DSR
+    (optimize.deflated_sharpe_ratio()) corrects for overfitting WITHIN one
+    strategy's own Optuna search (selection bias across many trials of the
+    SAME architecture), and permutation_test_gap() itself answers whether
+    one already-fixed real-vs-random gap is unlikely by chance -- but
+    nothing in this pipeline ever corrected for how many SEPARATE strategy
+    architectures have been tried across the project's lifetime (breakout,
+    squeeze_breakout, momentum_burst, adx_trend_entry, breakout_retest,
+    week52_high, rsi/rsi_mean_reversion, pairs, ma_crossover, momentum_rank,
+    insider_buying, pead, lowvol_rank, sector_rotation, quality_rank,
+    value_rank, analyst_revision, accruals_rank, cash_profitability_rank --
+    19 and counting). At an uncorrected p<0.05 bar tested that many times,
+    the chance that AT LEAST ONE "pass" is pure noise -- even if nothing
+    here has any real edge at all -- is 1-(0.95)^19 ~= 62%. Concretely: the
+    two strategies actually promoted to real capital-eligible status
+    (ma_crossover p=0.009, rsi_mean_reversion p=0.020) do NOT survive a
+    Bonferroni-corrected bar and are confirmed live money-losers; the two
+    with the strongest results (value_rank, accruals_rank, both p<0.001)
+    do survive and were never given live capital, so remain unconfirmed
+    either way.
+
+    `registry_path` is a plain append-only, deduplicated text file (one
+    strategy name per line) -- every DISTINCT architecture this function
+    has ever been asked to check gets recorded here permanently, so the
+    correction's denominator (how many trials have EVER been run) only
+    grows, exactly mirroring the real, cumulative multiple-comparisons
+    exposure this project has actually taken on. `strategy` is added to
+    the registry (if new) BEFORE the correction is computed, so the very
+    trial being checked counts toward its own denominator -- the honest
+    convention (a strategy doesn't get to test itself for free).
+
+    Returns {"n_trials_ever_tested": int, "bonferroni_alpha": float,
+    "survives_uncorrected": bool | None, "survives_corrected": bool |
+    None} -- both `survives_*` are None when p_value is None (undefined
+    gap, same convention permutation_test_gap() itself uses)."""
+    existing = set()
+    if registry_path.exists():
+        existing = {line.strip() for line in registry_path.read_text().splitlines() if line.strip()}
+    if strategy not in existing:
+        existing.add(strategy)
+        registry_path.write_text("\n".join(sorted(existing)) + "\n")
+    n_trials = len(existing)
+    bonferroni_alpha = 0.05 / n_trials
+    survives_uncorrected = None if p_value is None else p_value < 0.05
+    survives_corrected = None if p_value is None else p_value < bonferroni_alpha
+    return {
+        "n_trials_ever_tested": n_trials,
+        "bonferroni_alpha": bonferroni_alpha,
+        "survives_uncorrected": survives_uncorrected,
+        "survives_corrected": survives_corrected,
+    }
+
+
 EARNINGS_AWARE_STRATEGIES = (
     "squeeze_breakout", "ma_crossover", "pairs", "insider_buying", "momentum_rank", "pead", "lowvol_rank",
     "sector_rotation", "quality_rank", "value_rank", "analyst_revision", "accruals_rank",
@@ -440,6 +499,11 @@ def main():
              "the third-universe generalization test).",
     )
     parser.add_argument("--seed", type=int, default=1, help="Seed for the random-entry day selection.")
+    parser.add_argument("--n-permutations", type=int, default=1000,
+                         help="Shuffles for permutation_test_gap()'s null distribution. The default (1000) "
+                              "floors p_value at 0.0010 -- bump to 100000 for a real number when a result "
+                              "prints p_value=0.0000 and you need to know how far below that floor it is "
+                              "(e.g. to compare against a Bonferroni-corrected bar).")
     parser.add_argument(
         "--random-baseline-seeds", default=None,
         help="Comma-separated seeds to average the RANDOM baseline's OWN ALL-TICKERS summary over, "
@@ -1120,7 +1184,9 @@ def main():
     # own docstring for the full method (a standard permutation/shuffle
     # test) and how this differs from DSR (selection bias across MANY
     # Optuna trials, not sampling uncertainty within this ONE comparison).
-    perm_test = swingtrade.permutation_test_gap(real_trades, random_trades, summarize)
+    perm_test = swingtrade.permutation_test_gap(
+        real_trades, random_trades, summarize, n_permutations=args.n_permutations
+    )
     print("\n=== PERMUTATION TEST (how likely is this GAP by pure chance, if REAL/RANDOM were truly interchangeable?) ===")
     if perm_test["p_value"] is None:
         print(f"  observed_gap={perm_test['observed_gap']} -- p_value undefined (too few resolved trades "
@@ -1131,6 +1197,25 @@ def main():
               f"{perm_test['n_permutations']} shuffles)")
         print("  LOW p_value = the observed gap would be unusual/rare under 'no real timing skill' -- "
               "real evidence of a genuine edge, not just a single favorably-framed comparison.")
+        if perm_test["p_value"] == 0.0 and args.n_permutations < 10000:
+            print(f"  [NOTE] p_value=0.0000 with only {args.n_permutations} shuffles means p < "
+                  f"{1/args.n_permutations:.4f}, not literally zero -- rerun with --n-permutations 100000 "
+                  "for a real number before treating this as this project's strongest result.")
+
+    bonf = bonferroni_check(args.strategy, perm_test["p_value"])
+    print(f"\n=== MULTIPLE-TESTING CORRECTION ({bonf['n_trials_ever_tested']} distinct strategy architectures "
+          f"ever run through this gate, see {MULTIPLE_TESTING_REGISTRY_PATH.name}) ===")
+    print(f"  bonferroni_alpha=0.05/{bonf['n_trials_ever_tested']}={bonf['bonferroni_alpha']:.5f}")
+    if bonf["survives_corrected"] is None:
+        print("  correction undefined (p_value itself was undefined).")
+    elif bonf["survives_corrected"]:
+        print("  [PASS] survives the family-wise-corrected bar, not just the uncorrected p<0.05 one.")
+    elif bonf["survives_uncorrected"]:
+        print("  [FLAG] clears p<0.05 alone, but NOT the Bonferroni-corrected bar across every strategy "
+              "this project has tried -- treat this as noise-level evidence, not a real edge, until a "
+              "genuinely prospective (not retrospective-holdout) track record says otherwise.")
+    else:
+        print("  [FAIL] does not even clear the uncorrected p<0.05 bar.")
 
     print(f"\n=== BY YEAR (does the edge hold up over time, or is it concentrated in one stretch? "
           f"RANDOM avg of {len(random_baseline_seeds)} seeds) ===")

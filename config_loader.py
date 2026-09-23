@@ -274,18 +274,35 @@ EXPERIMENTAL_STRATEGY_VERSIONS = {
     # derivation loop actually PASSED (4 prior candidates -- Low-Volatility
     # Rank, discrete + rebalanced Sector Rotation, Quality Rank -- all hit
     # the TUNE-good/HOLDOUT-reverses disqualifying pattern). Full 407-ticker
-    # validation: TUNE/HOLDOUT agree (no reversal), permutation test
-    # p=0.0000 (strongest significance found anywhere in this project,
-    # beats ma_crossover's own p=0.009), edge holds 6/8 calendar years and
-    # both volatility regimes, portfolio-constrained $10k replay +105% vs
-    # random's +62%. A real stock-split/book-value bug (SEC's as-filed
-    # share count vs yfinance's split-adjusted price falsely deflating
-    # Price-to-Book for any pre-split date, e.g. NVDA) was found and fixed
-    # BEFORE this result was trusted -- see sec_fundamentals.py's own
-    # top-of-file writeup. Same experimental/tracked-only staging as every
-    # strategy here -- real settled-trade IC has to clear its own trust
-    # floor over real weeks before any capital-eligibility question is
-    # even asked. v76.
+    # validation: TUNE/HOLDOUT agree (no reversal), edge holds 6/8 calendar
+    # years and both volatility regimes, portfolio-constrained $10k replay
+    # +105% vs random's +62%. A real stock-split/book-value bug (SEC's
+    # as-filed share count vs yfinance's split-adjusted price falsely
+    # deflating Price-to-Book for any pre-split date, e.g. NVDA) was found
+    # and fixed BEFORE this result was trusted -- see sec_fundamentals.py's
+    # own top-of-file writeup. Same experimental/tracked-only staging as
+    # every strategy here -- real settled-trade IC has to clear its own
+    # trust floor over real weeks before any capital-eligibility question
+    # is even asked. v76.
+    #
+    # CORRECTION (2026-09-23): the "permutation test p=0.0000, strongest
+    # significance found anywhere in this project" claim above was WRONG --
+    # a measurement artifact of permutation_test_gap()'s default
+    # n_permutations=1000, which floors any p_value below 0.001 at exactly
+    # 0.0000 rather than reporting how far below. Rerun at n_permutations=
+    # 100000 (benchmark_random_entry.py --strategy value_rank
+    # --n-permutations 100000): the real p_value is 0.0169, not ~0 -- and
+    # backtest_ic is -0.009 (no real trade-by-trade ranking power, the
+    # project-wide pattern, not an exception). Against
+    # bonferroni_check()'s corrected bar (0.05/20 strategy architectures
+    # ever tested = 0.0025), value_rank does NOT survive. Demoted from
+    # this project's strongest result to noise-level evidence -- see
+    # [[trading-strategy-status]]'s CURRENT STATE and
+    # feedback_continuous_algorithm_derivation_loop for the fuller context.
+    # Left in EXPERIMENTAL_STRATEGY_VERSIONS (not deleted) since it's
+    # already tracked-only with zero capital exposure -- no real-money
+    # consequence to correct, just a false claim about its evidence
+    # strength.
     "Value Rank": 76,
     # Accruals Rank (Sloan 1996's classic accruals anomaly, buys the
     # lowest-accruals decile) added 2026-09-21 -- the 2nd new strategy this
