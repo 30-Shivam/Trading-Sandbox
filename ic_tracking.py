@@ -96,6 +96,29 @@ TRUST_FLOOR_TRADES = 20     # matches llm_agent.py's own established
                              # ensemble_weight()'s own blend -- see
                              # CREDIBILITY_HALF_LIFE_TRADES/ensemble_weight()
                              # below for the continuous replacement.
+MINIMUM_PROSPECTIVE_DAYS = 60  # prospective_status()'s calendar-time floor
+                             # (2026-09-23, added after the multiple-testing
+                             # audit found every strategy this project has
+                             # ever promoted to real capital was judged on
+                             # RETROSPECTIVE tune/holdout evidence alone --
+                             # the promotion decision itself always preceded
+                             # any genuinely out-of-sample data, so
+                             # TRUST_FLOOR_TRADES's pure trade-COUNT floor
+                             # could clear on a short burst of correlated
+                             # signals (see methodology_report()'s own
+                             # cluster-weighting fix, motivated by exactly
+                             # this: rsi_mean_reversion's first 39 settled
+                             # signals all fired the SAME calendar day).
+                             # This is a SEPARATE, additional gate: real
+                             # elapsed calendar time since a strategy's
+                             # config was FROZEN, not just how many
+                             # (weighted) trades have resolved. 60 days is
+                             # a deliberately conservative floor, not a
+                             # statistically derived one -- the point is
+                             # "give the market enough distinct regimes/
+                             # conditions a chance to show up," which a
+                             # trade count alone can't guarantee even after
+                             # cluster-weighting.
 CREDIBILITY_HALF_LIFE_TRADES = TRUST_FLOOR_TRADES  # ensemble_weight()'s
                              # continuous shrinkage constant (2026-08-29,
                              # per explicit user request to replace the old
@@ -555,6 +578,47 @@ def methodology_report(strategy: str, score_field: str = "trade_score", window_d
         "overall_ic": overall_ic, "ic_series": ic_series, "ir": ir,
         "trust_floor_met": effective_n_settled >= TRUST_FLOOR_TRADES,
         "expectancy": expectancy,
+    }
+
+
+def prospective_status(strategy: str, min_days: int = MINIMUM_PROSPECTIVE_DAYS) -> dict:
+    """Whether `strategy` has cleared BOTH the trade-count trust floor
+    (methodology_report()'s trust_floor_met) AND a minimum real ELAPSED
+    CALENDAR TIME since its earliest logged signal -- a separate axis
+    methodology_report() never checked (see MINIMUM_PROSPECTIVE_DAYS's own
+    comment for why trade count alone isn't enough). `days_tracked` is
+    calendar days from the strategy's EARLIEST Trade_Signals document
+    (regardless of settlement) to today -- deliberately using every logged
+    signal, not just settled ones, since the question is "how long has
+    this config been exposed to live market conditions," not "how many
+    trades have resolved."
+
+    Meant as a manual pre-promotion checklist (this project's
+    EXPERIMENTAL_STRATEGY_VERSIONS -> SECONDARY_STRATEGY_VERSIONS move in
+    config_loader.py is a hand-edited dict, not an automated pipeline --
+    there's nothing to programmatically gate), not a live-code enforcement
+    point. Returns {"strategy":, "days_tracked": int | None,
+    "min_days": int, "days_floor_met": bool, "trust_floor_met": bool,
+    "effective_n_settled": float, "overall_ic": float | None,
+    "prospective_floor_met": bool} -- `days_tracked` is None (and every
+    `*_met` False) if the strategy has no logged signals at all yet."""
+    db = get_db()
+    first = db["Trade_Signals"].find_one({"strategy": strategy}, sort=[("signal_date", 1)])
+    if first is None:
+        return {
+            "strategy": strategy, "days_tracked": None, "min_days": min_days,
+            "days_floor_met": False, "trust_floor_met": False, "effective_n_settled": 0.0,
+            "overall_ic": None, "prospective_floor_met": False,
+        }
+    first_date = pd.Timestamp(first["signal_date"])
+    days_tracked = (pd.Timestamp.now().normalize() - first_date.normalize()).days
+    report = methodology_report(strategy)
+    days_floor_met = days_tracked >= min_days
+    return {
+        "strategy": strategy, "days_tracked": days_tracked, "min_days": min_days,
+        "days_floor_met": days_floor_met, "trust_floor_met": report["trust_floor_met"],
+        "effective_n_settled": report["effective_n_settled"], "overall_ic": report["overall_ic"],
+        "prospective_floor_met": days_floor_met and report["trust_floor_met"],
     }
 
 
