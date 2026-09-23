@@ -857,6 +857,33 @@ def render_experimental_section(
         with st.expander(f"Skipped for {label} ({len(all_skipped)})"):
             st.dataframe(pd.DataFrame(all_skipped, columns=["Ticker", "Reason"]), hide_index=True)
 
+    # Validation progress (2026-09-23) -- same calendar-time-floor concept
+    # this tab's LLM Agent counterpart already shows further down ("at
+    # least 20-30 settled trades AND at least 4-6 weeks since the first
+    # one"), now available for every mechanical experimental strategy via
+    # ic_tracking.prospective_status() instead of being LLM-Agent-only.
+    # Offline validation (benchmark_random_entry.py) already happened
+    # before this tab ever renders a strategy (see this function's own
+    # docstring) -- this caption answers the DIFFERENT question of how
+    # much real, live time has passed since, which nothing here checked
+    # before the multiple-testing audit that added this function.
+    if storage_ok:
+        try:
+            status = ic_tracking.prospective_status(log_strategy_override or config.strategy)
+            if status["days_tracked"] is None:
+                st.caption("**Validation progress:** 0 signals logged yet.")
+            else:
+                floor_note = "PASSED" if status["prospective_floor_met"] else "not yet met"
+                st.caption(
+                    f"**Validation progress:** {status['days_tracked']}/{status['min_days']} days tracked, "
+                    f"{status['effective_n_settled']:.1f} effective settled trades "
+                    f"(trust floor {'met' if status['trust_floor_met'] else 'not met'}) -- "
+                    f"prospective floor {floor_note}. Don't treat this strategy as validated for real "
+                    "capital until both clear, regardless of how strong its offline backtest looked."
+                )
+        except Exception:
+            pass  # display-only -- never block the tab over a validation-progress lookup failure
+
     return results_df
 
 
