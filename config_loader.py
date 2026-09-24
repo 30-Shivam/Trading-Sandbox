@@ -169,7 +169,27 @@ SECONDARY_STRATEGY_VERSIONS = {
     # (sharpe_like 0.412 vs 0.057) -- though its real-vs-random gap check
     # did not improve on DEFAULT_CONFIG's own, so treat this as "fixes a
     # real bug and beats what was live," not "found genuine new alpha."
-    "RSI Mean-Reversion": 66,
+    #
+    # REMOVED 2026-09-23 (same "confirmed-negative live evidence -> full
+    # removal" treatment squeeze_breakout got above, not a lesser
+    # caveat-only response): a full audit found ic_tracking.ensemble_weight()
+    # only ever measured rank-IC, never real expectancy -- this strategy
+    # carried this project's dominant Best Ideas composite weight almost
+    # entirely from a strong IC (+0.45) while confidently LOSING ~3%/trade
+    # on 391+ real v66-era settled trades (both August and September, not a
+    # one-off drawdown; z=-4.58 on ic_tracking.weighted_expectancy(), the
+    # most decisively negative result of any strategy this project has
+    # measured). Separately, its own original promotion permutation
+    # significance (p=0.020) does not survive a fair Bonferroni correction
+    # across the ~20 distinct strategy architectures this project has tried
+    # (see benchmark_random_entry.bonferroni_check(),
+    # validation_trials_registry.txt) -- so even the CLAIM this was
+    # "validated" in the first place doesn't hold up, independent of the
+    # live-loss finding. Code/historical trades untouched, just no longer
+    # scanned/traded -- revisit only if a future retune clears BOTH a
+    # Bonferroni-corrected significance bar AND a real, non-negative live
+    # expectancy over ic_tracking.MINIMUM_PROSPECTIVE_DAYS of genuinely
+    # prospective data, the same standard now required of every strategy.
     "Mean-Reversion Pairs": 58,
 }
 

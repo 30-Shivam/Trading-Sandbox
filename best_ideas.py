@@ -142,9 +142,20 @@ REQUEST_DELAY_SEC = 0.5  # same pacing every other yfinance-calling loop in
 # Fixed by actually stopping the score injection (not just the weight
 # computation), matching what this comment always claimed was already true.
 METHODOLOGIES = [
-    "ma_crossover", "rsi_mean_reversion", "pairs", "llm_agent",
+    "ma_crossover", "pairs", "llm_agent",
     "best_ideas_qualitative", "best_ideas_meta",
 ]
+# rsi_mean_reversion REMOVED 2026-09-23 (matching squeeze_breakout's own
+# treatment above) -- confirmed a decisively negative live methodology
+# (weighted-expectancy z=-4.58 on 391+ real settled trades, see
+# config_loader.SECONDARY_STRATEGY_VERSIONS' own removal comment for the
+# full finding). Its upstream removal from SECONDARY_STRATEGY_VERSIONS
+# already stops `strategy_frames`/`ticker_mech` from ever carrying an
+# "rsi" key (see ingest.py's strategy_frames construction), which is what
+# actually prevents `available_scores["rsi_mean_reversion"]` injection a
+# few lines below -- removing it from this list too is just hygiene
+# (skips a pointless ensemble_weight() call every scan), not the real
+# safety mechanism.
 
 # Composite/sub-methodology score -> Signal thresholds, all on Best Ideas'
 # own 0-100 "ensemble conviction" scale -- distinct from (not directly

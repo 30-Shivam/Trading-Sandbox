@@ -202,25 +202,33 @@ DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available c
 # strategy that clears validation still gets the normal $5,000 default --
 # see improvements.txt item 79.
 SECONDARY_DEFAULT_CASH_OVERRIDES: dict[str, float] = {}
-DEFAULT_PRIMARY_CASH = 5000       # default $ sidebar value for whichever strategy holds
+DEFAULT_PRIMARY_CASH = 0          # default $ sidebar value for whichever strategy holds
                                   # the PRIMARY slot. Originally set to 0 on 2026-08-11
                                   # because breakout (v43), primary at the time, was found
                                   # to lose to random-entry timing (improvements.txt items
                                   # 44/47) -- deliberately not DEFAULT_TOTAL_CASH so nothing
                                   # would size against a known-losing strategy by default.
                                   # ma_crossover took over the primary slot 2026-08-16 (item
-                                  # 73) and is validated (beats random-entry on every cut) --
-                                  # this constant was never revisited when the slot changed
-                                  # hands, so it kept a caution meant for breakout applied to
-                                  # a genuinely different, cleared strategy for 2 weeks.
-                                  # Raised to $5,000 (2026-08-29, per explicit user approval)
-                                  # -- same default every other newly-validated strategy gets
-                                  # the moment it clears validation (item 51's precedent,
-                                  # applied to RSI/Pairs too). Still just a sidebar default;
-                                  # you can always type in a different amount on any given
-                                  # day, and this has zero effect on signal logging, IC/
-                                  # trust-floor tracking, or ingest.py's own separate flat
-                                  # --position-budget sizing -- all independent of this value.
+                                  # 73) and was believed validated (beat random-entry on
+                                  # every cut) -- raised to $5,000 (2026-08-29). RESET BACK
+                                  # TO 0 (2026-09-23): a full audit found this project's
+                                  # validation pipeline had never corrected for the ~20
+                                  # distinct strategy architectures tried across its
+                                  # lifetime (multiple-testing/data-dredging). Applying a
+                                  # Bonferroni correction retroactively, ma_crossover's own
+                                  # permutation p=0.009 does NOT survive the corrected bar
+                                  # (0.05/20=0.0025) -- the exact same situation that
+                                  # justified 0 for breakout originally, now true for
+                                  # ma_crossover too. See ic_tracking.prospective_status()/
+                                  # benchmark_random_entry.bonferroni_check() and
+                                  # config_loader.py's SECONDARY_STRATEGY_VERSIONS comment
+                                  # for the full finding -- nothing currently holds the
+                                  # primary OR secondary slot on evidence that clears a fair
+                                  # bar. Still just a sidebar default; you can always type in
+                                  # a different amount on any given day, and this has zero
+                                  # effect on signal logging, IC/trust-floor tracking, or
+                                  # ingest.py's own separate flat --position-budget sizing --
+                                  # all independent of this value.
 
 SCAN_CACHE_TTL_SEC = 900         # how long a scan result stays cached (15 min)
 
@@ -894,6 +902,19 @@ def main():
         "Mechanical, rule-based output from historical data -- not a forecast or "
         "recommendation. Verify live price/liquidity before placing orders."
     )
+    st.warning(
+        "**2026-09-23 validation correction**: this project's validation pipeline never "
+        "corrected for the ~20 distinct strategy architectures tried across its lifetime "
+        "(multiple-testing/data-dredging), and never checked real trade expectancy "
+        "separately from rank-IC. Applying both corrections retroactively, `ma_crossover` "
+        "(primary, below) and `rsi_mean_reversion` -- the two strategies actually promoted "
+        "to real capital -- do NOT survive a fair bar, and `rsi_mean_reversion` is a "
+        "confirmed live money-loser (~-3%/trade across 391+ real trades). Neither strategy's "
+        "cash pool defaults to a nonzero amount anymore as a result. `accruals_rank` "
+        "(Experimental tab) is the only strategy with a statistically defensible result, and "
+        "it still needs ~55 more real days tracked before it's even eligible for promotion. "
+        "See `ic_tracking.prospective_status()` / `benchmark_random_entry.bonferroni_check()`."
+    )
 
     config, config_source = load_active_config()
     secondary_configs = {
@@ -963,9 +984,10 @@ def main():
             value=float(DEFAULT_PRIMARY_CASH),
             step=100.0,
             help="Capital pool spent greedily down the Trade_Score-ranked Buy/Strong Buy list; "
-                 "defaults to $5,000 (2026-08-29) now that ma_crossover, the current primary, "
-                 "is validated -- same default every newly-cleared strategy gets. Change or "
-                 "zero it out here any day you want a different amount. "
+                 "defaults to $0 (2026-09-23) -- ma_crossover's own promotion evidence "
+                 "(permutation p=0.009) does not survive a fair multiple-testing correction "
+                 "across every strategy this project has tried (see ic_tracking.prospective_status()). "
+                 "Type in an amount here yourself if you want to size against it anyway. "
                  "trades that no longer fit are marked Insufficient Funds, trades that would "
                  "over-concentrate one sector are marked Sector Limit Reached, and trades that "
                  "would push TOTAL spend past a portfolio-wide cap are marked Portfolio Limit "
