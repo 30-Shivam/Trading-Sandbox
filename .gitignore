@@ -28,3 +28,4 @@ misc.txt
 # Local agent/vector stores (regenerated)
 agentdb.rvf
 agentdb.rvf.*
+.claude_archive/

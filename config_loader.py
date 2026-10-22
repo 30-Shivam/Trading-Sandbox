@@ -9,131 +9,25 @@ always agree on which config is "live" -- see ARCHITECTURE_PLAN.md Phase 6/7.
 import storage
 import swingtrade
 
-# Fixed, immutable candidate System_Config versions for the validated
-# secondary strategies shown alongside the active config -- see
-# improvements.txt items 27/28. Single source of truth shared by
-# dip_buy_analyzer.py (the dashboard's secondary sections) and ingest.py
-# (the headless scheduled scan) so the two can never silently drift apart
-# on which candidate versions are "the" secondary strategies.
+# Fixed, immutable candidate System_Config versions for the secondary
+# strategies shown alongside the active config. Single source of truth shared
+# by dip_buy_analyzer.py (dashboard sections) and ingest.py (headless scan) so
+# the two can never drift apart on which versions are "the" secondaries.
 #
-# Breakout Retest (v27) and 52-Week High (v28) removed 2026-08-11 per
-# explicit user request ("remove all the losing strategies off the
-# dashboard") -- both strategies' apparent edges evaporated once forced
-# into any RRR shape that could actually clear the live scoring ceiling
-# (v44/v45, improvements.txt item 42/43): win rates collapsed to
-# statistically indistinguishable from DEFAULT_CONFIG's own unfiltered
-# baseline, regardless of which end of the RRR moved. v27/v28 themselves
-# (at their original, non-fireable RRR) are UNCHANGED in Mongo -- this is
-# purely a dashboard/capital-eligibility removal, not a data deletion; the
-# strategies could be re-added here if a genuine refinement is ever found.
-#
-# MA Crossover (v49) promoted 2026-08-11 per explicit user request
-# ("promote this to capital eligible as well") -- the first strategy since
-# squeeze_breakout to clear the full validation pipeline: real-vs-random
-# benchmark passed on all 3 cuts at untuned defaults (item 49), its own
-# core-trigger parameters (short/long window) refined with nothing beating
-# baseline (item 50), entry-fill sensitivity checked under both limit/
-# next_open (edge holds direction under both, doesn't reverse like
-# momentum_burst's did), RRR-vs-scoring-ceiling confirmed compatible
-# (clears signal_buy_threshold, same ceiling shape as active v43), and a
-# live smoke test against the real watchlist confirmed clean dispatch +
-# real per-ticker score differentiation. See improvements.txt item 51.
-#
-# MA Crossover swapped v49 -> v51 (2026-08-15) per explicit user request
-# ("promote v51"), after a full Optuna re-tune under the fully-corrected
-# objective (RRR_FLOOR + recency + correlation + ticker-holdout + multi-
-# objective drawdown, all together for the first time) found v51 beats v49
-# head-to-head on an identical 408-ticker/5-year real-vs-random benchmark
-# (ALL 0.029 vs 0.003, TUNE 0.029 vs 0.019, HOLDOUT 0.06 vs -0.038) with
-# only a mild ~21% trade-frequency reduction. v49 itself was independently
-# found to now LOSE to random-entry timing on ALL/TUNE on today's expanded
-# ticker universe -- v51 isn't just an incremental improvement, it's a real
-# fix for an edge that had quietly weakened. v51's RRR (1.6675) only just
-# clears signal_buy_threshold (best-case Trade_Score=61.1 vs the 60 floor,
-# a much thinner margin than v49's 66.7) -- worth remembering it may fire
-# live Buy signals less often than its backtested trade count implies. See
-# improvements.txt item 59/60. v49 stays in Mongo as status=candidate,
-# unchanged, in case this ever needs reverting.
-#
-# MA Crossover swapped v51 -> v55 (2026-08-16) per explicit user request
-# ("yes" to promoting v55), after a fresh Optuna re-tune using the new
-# backtest/Optuna-only sector_relative_strength_min filter (improvements.txt
-# items 68-71) found v55 (short_window=24, long_window=89,
-# sector_relative_strength_min=-3.207, tp/sl pinned at v51's own exact
-# values, so RRR=1.6675 is unchanged and the signal_buy_threshold ceiling
-# compatibility already established for v51 carries over unchanged).
-# v55's 1-year WFO screen showed a HOLDOUT reversal (the classic TUNE-wins/
-# HOLDOUT-loses overfitting shape) -- but the mandatory 5-year
-# benchmark_random_entry.py check, run with the NEW multi-seed averaged
-# holdout (item 69, applied to a real promotion decision for the first
-# time), showed that reversal was itself a single-seed artifact: v55 beats
-# RANDOM decisively on ALL/TUNE/HOLDOUT (every one of 10 TUNE seeds
-# positive; HOLDOUT's worst seed still beat RANDOM's best). Head-to-head
-# against v51 on the matched universe: v55 beats v51 on EVERY cut and
-# EVERY metric -- ALL (sharpe 0.09 vs 0.031), TUNE (0.091 vs 0.027),
-# HOLDOUT (0.078 vs 0.041), win_rate higher on all three too -- no
-# tradeoff anywhere, unlike v54's earlier ALL/TUNE-win-HOLDOUT-loss result
-# (item 65). Trade frequency stays healthy (~88% of v51's). See
-# improvements.txt item 72. v51 stays in Mongo as status=candidate,
-# unchanged, in case this ever needs reverting.
-#
-# MA Crossover PROMOTED FROM SECONDARY TO PRIMARY (2026-08-16, improvements.txt
-# item 73) per explicit user request ("promote ma_crossover v55 to primary"),
-# replacing breakout (v43) as the PRIMARY/active System_Config. Motivated by
-# two real findings the same day: (1) a clean multi-seed-averaged re-check of
-# v43 (item 69's methodology) showed only a thin, cut-dependent edge -- beats
-# RANDOM narrowly on ALL/TUNE but clearly LOSES on HOLDOUT (sharpe 0.020 vs
-# 0.046, win_rate 33.9% vs 37.0%); (2) a strict-vs-loosened-filter comparison
-# proved v43's own inherited filters (from v19, esp. breakout_volume_ratio_min
-# ~1.55) are NOT the problem -- removing them makes every cut worse, including
-# flipping HOLDOUT negative -- so the underlying "fresh 45-day high" TRIGGER
-# itself, not the filters, is the weak link, confirming a recommendation this
-# project already made and never fully acted on back on 2026-08-11 (item 47:
-# "pause new capital to breakout... or leave the slot deliberately empty").
-# Rather than leave the slot empty, replaced it with v55 -- already the
-# strongest, most cleanly-validated candidate found this entire session (see
-# item 72 above). `promote_config.py --promote 55` handles the actual Mongo
-# state change (sets v55 status=active, v43 status=retired automatically) --
-# see storage/system_config.py::promote_candidate(). MA Crossover REMOVED from
-# this dict (was "MA Crossover": 55 immediately above) since it's now covered
-# by the primary slot instead -- leaving it here too would double-scan/
-# double-display it (once as primary, once as its own secondary section).
-# v43 (breakout) is now fully retired from every live-scanning path (neither
-# primary nor secondary) -- this IS the "removal" the user asked about,
-# achieved as a natural side effect of the promotion itself, no separate code
-# needed. v43 stays in Mongo unchanged (status=retired, not deleted) in case
-# of a revert. Real capital consequence worth remembering: ma_crossover moving
-# from secondary (its own DEFAULT_TOTAL_CASH=$5,000 pool) to primary
-# (DEFAULT_PRIMARY_CASH=$0, per item 48's original breakout-specific caution)
-# means LESS capital sizes against it by default now, not more -- the user
-# must deliberately type in a primary cash amount, same "nothing moves without
-# an explicit action" posture item 48 established.
-# RSI Mean-Reversion (v17) added 2026-08-20 (improvements.txt item 81) after
-# clearing real validation (beats matched-count random-entry timing on every
-# cut, ALL/TUNE/HOLDOUT -- see item 77/80). Real capital consequence: gets
-# the same default $5,000 cash pool ma_crossover got when IT first cleared
-# this bar (item 51's precedent), per explicit user approval -- NOT added to
-# dip_buy_analyzer.py's own SECONDARY_DEFAULT_CASH_OVERRIDES. Its Trade_
-# Signals/Trade_Outcomes log under strategy="rsi_mean_reversion", NOT bare
-# "rsi" -- Mongo already has 175 settled trades tagged strategy="rsi" from
-# 2026-07-24/31, predating v17's tuning and this project's own ticker-
-# holdout/multi-seed/RRR-floor fixes; a distinct label avoids silently
-# pooling those stale, unrelated trades into v17's fresh IC/IR track record
-# -- see SECONDARY_LOG_STRATEGY_OVERRIDES immediately below.
-# Mean-Reversion Pairs (v58, lean v1 -- all DEFAULT_CONFIG values, no Optuna
-# tuning) added 2026-08-21 (improvements.txt items 82/84) after clearing the
-# same real validation gate. Deliberately the LEAN candidate, not the
-# Optuna-tuned v57 (also validated, real improvement on sharpe_like/
-# k_ratio) -- v57's HOLDOUT win_rate (12.32%) exceeded the user's own risk
-# tolerance despite the stronger aggregate numbers; v58's much higher
-# win_rate (42%) was chosen instead, per explicit user decision. v57 stays
-# an unpromoted, unwired candidate for future reconsideration once pairs
-# has its own real prospective track record. No existing Trade_Signals/
-# Trade_Outcomes contamination risk under strategy="pairs" (confirmed via a
-# direct Mongo count before wiring -- 0 documents, unlike RSI's case) -- no
-# SECONDARY_LOG_STRATEGY_OVERRIDES entry needed, logs under its own real
-# "pairs" label directly. Real capital consequence: gets the same default
-# $5,000 cash pool every other newly-cleared secondary strategy has gotten.
+# History (condensed 2026-10-22; full narrative in improvements.txt -- grep
+# the item numbers, never read that file whole):
+#   - Breakout Retest v27, 52-Week High v28: removed 2026-08-11 (edge vanished
+#     once forced into a ceiling-clearing RRR; items 42/43).
+#   - MA Crossover: v49 -> v51 -> v55 (items 51/59/72), promoted to PRIMARY
+#     2026-08-16 (item 73, replaced breakout v43); the active primary is now
+#     v71 and it FAILS the index gate (item: 2026-10-22 vs-index audit).
+#   - RSI Mean-Reversion v17/v66: secondary 2026-08-20 (item 81), removed
+#     2026-09-23 (decisively negative live, z=-4.58).
+#   - Mean-Reversion Pairs v58: secondary 2026-08-21 (items 82/84), lean v1
+#     chosen over Optuna-tuned v57 for its higher win rate; flagged failing
+#     the fair validation bar 2026-09-27 (see SECONDARY_VALIDATION_CAVEATS).
+#   - Squeeze Breakout v53: removed 2026-08-26 (portfolio simplification).
+# Retired strategies stay in Mongo (status=candidate/retired), never deleted.
 SECONDARY_STRATEGY_VERSIONS = {
     # Squeeze Breakout REMOVED 2026-08-26, per explicit user request during
     # a portfolio-simplification pass ("I don't want it influencing anything
