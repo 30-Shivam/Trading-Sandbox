@@ -78,13 +78,31 @@ def fetch_bars_since(ticker: str, signal_date: str) -> pd.DataFrame:
     convention this codebase already uses elsewhere (e.g.
     momentum_levels_from_frame()'s missing-percentile handling) -- an
     incomplete day is excluded, not walked with a fabricated close."""
-    df = yf.download(ticker, start=signal_date, progress=False, auto_adjust=False)
+    df = _download_history(ticker, signal_date)
     if df.empty:
         return df
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
     df = df[df.index > pd.Timestamp(signal_date)]
     return df[df["Close"].notna()]
+
+
+# Per-run cache: ticker -> (start_date, full frame from start_date). Many open
+# signals share a ticker (JPM, TRGP, EQR... each appear several times), and
+# each used to trigger its own network download -- the reason settle hit its
+# time cap. One fetch from the ticker's EARLIEST signal date serves them all.
+_HISTORY_CACHE: dict[str, tuple[str, pd.DataFrame]] = {}
+_EARLIEST_SIGNAL_DATE: dict[str, str] = {}
+
+
+def _download_history(ticker: str, signal_date: str) -> pd.DataFrame:
+    cached = _HISTORY_CACHE.get(ticker)
+    if cached is not None and cached[0] <= signal_date:
+        return cached[1]
+    start = min(signal_date, _EARLIEST_SIGNAL_DATE.get(ticker, signal_date))
+    df = yf.download(ticker, start=start, progress=False, auto_adjust=False, timeout=20)
+    if not df.empty and isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    _HISTORY_CACHE[ticker] = (start, df)
+    return df
 
 
 def settle_one(signal: dict) -> tuple[str, dict | None]:
@@ -246,12 +264,16 @@ def main():
     unsettled = storage.get_unsettled_signals()
     print(f"Found {len(unsettled)} unsettled signal(s).")
 
+    for signal in unsettled:
+        t, d = signal["ticker"], signal["signal_date"]
+        _EARLIEST_SIGNAL_DATE[t] = min(d, _EARLIEST_SIGNAL_DATE.get(t, d))
+
     counts: dict[str, int] = {}
     by_strategy: dict[str, list[dict]] = {}
     for i, signal in enumerate(unsettled):
-        if i > 0:
-            time.sleep(REQUEST_DELAY_SEC)
         ticker = signal["ticker"]
+        if i > 0 and ticker not in _HISTORY_CACHE:
+            time.sleep(REQUEST_DELAY_SEC)
         try:
             outcome, notify_record = settle_one(signal)
         except Exception as exc:

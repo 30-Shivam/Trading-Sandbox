@@ -51,7 +51,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 # Per-step caps sized to fit inside the workflow's 45-minute limit with room to report.
 STEP_TIMEOUT_SEC = {
-    "ingest.py": 25 * 60, "settle_trades.py": 4 * 60, "review_positions.py": 3 * 60,
+    "ingest.py": 22 * 60, "settle_trades.py": 8 * 60, "review_positions.py": 3 * 60,
     "llm_strategy_research.py": 6 * 60, "daily_briefing.py": 3 * 60,
 }
 
