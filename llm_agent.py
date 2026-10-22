@@ -880,6 +880,12 @@ def _build_meta_synthesis_prompt(ticker: str, context: dict) -> str:
     )
 
 
+# Hard per-request cap. The openai SDK's own default is 10 min x 2 retries and
+# genai has none, so one stuck call could stall the whole daily run (see the
+# 2026-10 run of 45-minute cancellations).
+LLM_REQUEST_TIMEOUT_SEC = 60
+
+
 def call_gemini(prompt: str, parse_fn=_parse_response, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> dict | None:
     """PRIMARY provider -- see module docstring for why. Returns None
     (never raises) on any failure so callers can fall through to Groq.
@@ -899,7 +905,10 @@ def call_gemini(prompt: str, parse_fn=_parse_response, max_output_tokens: int = 
     except ImportError:
         return None
     try:
-        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        client = genai.Client(
+            api_key=os.environ.get("GEMINI_API_KEY"),
+            http_options=types.HttpOptions(timeout=LLM_REQUEST_TIMEOUT_SEC * 1000),  # ms
+        )
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
@@ -930,7 +939,8 @@ def call_groq(prompt: str, parse_fn=_parse_response, max_output_tokens: int = MA
     except ImportError:
         return None
     try:
-        client = openai.OpenAI(api_key=os.environ.get("GROQ_API_KEY"), base_url=GROQ_BASE_URL)
+        client = openai.OpenAI(api_key=os.environ.get("GROQ_API_KEY"), base_url=GROQ_BASE_URL,
+                              timeout=LLM_REQUEST_TIMEOUT_SEC, max_retries=1)
         response = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
@@ -970,7 +980,8 @@ def call_openrouter(prompt: str, parse_fn=_parse_response, max_output_tokens: in
     except ImportError:
         return None
     try:
-        client = openai.OpenAI(api_key=os.environ.get("OPENROUTER_API_KEY"), base_url=OPENROUTER_BASE_URL)
+        client = openai.OpenAI(api_key=os.environ.get("OPENROUTER_API_KEY"), base_url=OPENROUTER_BASE_URL,
+                              timeout=LLM_REQUEST_TIMEOUT_SEC, max_retries=1)
         response = client.chat.completions.create(
             model=OPENROUTER_MODEL,
             messages=[{"role": "user", "content": prompt}],
