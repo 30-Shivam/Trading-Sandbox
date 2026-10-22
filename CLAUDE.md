@@ -2,6 +2,9 @@
 - Write clean, modular code and prioritize error handling.
 - Ask for clarification before deleting large blocks of code.
 
+# Objective
+BEAT SPY (total return, net of costs, with drawdown no worse than SPY's). Every strategy and every change is judged against that. Declared by the user 2026-10-22.
+
 # Project Map (read this instead of exploring; updated 2026-10-22)
 Swing-trading research + signal system. Python 3.13, venv at `.venv` (`source .venv/bin/activate`), Mongo Atlas via `.env`, 742 tests (`python -m pytest -q`, ~25s).
 - **Daily pipeline**: `daily_run.py` (GH Actions cron 21:35 UTC) -> `ingest.py` (scan + log signals; prints a `COVERAGE` line) -> optional `paper_trade.py` -> `settle_trades.py` -> `review_positions.py` -> `llm_strategy_research.py` -> `daily_briefing.py`.

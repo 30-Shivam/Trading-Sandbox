@@ -1,7 +1,7 @@
 # Backlog (2026-10-22)  -  status: [x] done, [~] running/partial, [ ] open
 
 ## Decide what the system is for
-- [ ] Define the objective: beat SPY net of costs? learn? low-drawdown income? Everything below depends on it. Default if undecided: index core + small satellite tested on paper.
+- [x] Objective set by user 2026-10-22: BEAT SPY (net of costs). Judge everything against holding SPY.
 
 ## Evidence (does anything beat holding the index?)
 - [x] Index gate built (`audit_vs_index`, `index_gate_verdict`, promote lock). ma_crossover FAIL (t=-0.09), value_rank FAIL (t=-0.57), accruals_rank PASS on curated list (+0.213%/trade, per-day t=4.95; random baseline also +0.061%).
@@ -10,6 +10,10 @@
 - [ ] pairs v58 vs-index (running, old per-day clustering; rerun with blocks).
 - [ ] Update `validation_trials_registry.txt` Bonferroni denominator when a strategy family is added.
 - [x] SPY 10/12-month trend timing: cuts drawdown only pre-2010, lags since (not pursued).
+
+## Beat-SPY findings (2026-10-22, `factor_portfolios.py`)
+- [x] Monthly long-only top-quintile factor portfolios vs SPY. Using TODAY's constituents (survivorship-biased): large-cap momentum_12_1 +6.0%/yr (t 1.76), trend_above_200d +6.5%/yr (t 1.80) over 7y. Point-in-time S&P 500 (10y, 88% price coverage): NOTHING beats SPY (momentum_12_1 -1.5%/yr, trend -0.9%/yr, EW S&P -1.9%/yr). The earlier gain was survivorship/lookahead. Small caps: nothing.
+- [ ] Remaining routes to beat SPY: (a) accruals_rank if it survives the block-clustered, universe-wide rerun; (b) deliberate beta/tilt (e.g. QQQ/mega-cap growth, leverage) - a risk bet, not alpha; (c) fundamentals factors (quality/value/accruals) on a point-in-time universe, long history (needs delisted data, e.g. a paid dataset); (d) accept SPY as the core and only run satellites that pass the gate.
 
 ## Execution / forward test
 - [x] Alpaca paper trading (`broker.py`, `paper_trade.py`), 9 orders queued 2026-10-22, report vs SPY via `python paper_trade.py --report`.
