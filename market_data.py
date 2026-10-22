@@ -10,6 +10,7 @@ an actively-maintained Python library.
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import requests
@@ -42,11 +43,34 @@ MACRO_HEADLINE_COUNT = 5         # macro headlines to fetch per get_macro_snapsh
 VIX_TICKER = "^VIX"              # CBOE volatility index -- free numeric market-fear proxy
 
 
+RETRY_ATTEMPTS = 3
+RETRY_BASE_DELAY_SEC = 5.0       # backoff: 5s, then 10s
+
+
+def _with_retry(fn, *args, **kwargs):
+    """Call fn, retrying on any exception with linear backoff. Yahoo
+    rate-limits bursts (YFRateLimitError); a single failed SPY fetch used to
+    silently null out market_df for the whole scan."""
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception:
+            if attempt == RETRY_ATTEMPTS:
+                raise
+            time.sleep(RETRY_BASE_DELAY_SEC * attempt)
+
+
 def fetch_data(ticker: str) -> pd.DataFrame:
     df = yf.download(
         ticker, period=LOOKBACK_PERIOD, interval="1d", progress=False, auto_adjust=False,
         timeout=YF_REQUEST_TIMEOUT_SEC,
     )
+    return _finalize_ohlcv(df, ticker)
+
+
+def _finalize_ohlcv(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Shared post-download cleanup for fetch_data() and the batched path in
+    fetch_ticker_bundle(), so both produce identical frames."""
     if df.empty:
         raise RuntimeError(f"no data returned for ticker '{ticker}'")
     if isinstance(df.columns, pd.MultiIndex):
@@ -438,6 +462,53 @@ def get_ticker_currency(ticker: str) -> str:
     return "CAD" if ticker.endswith(CANADIAN_EXCHANGE_SUFFIXES) else "USD"
 
 
+BATCH_DOWNLOAD_CHUNK = 100       # tickers per yf.download() call in the batched OHLCV path
+EXTRAS_WORKERS = 6               # threads for per-ticker earnings/headline lookups
+
+
+def fetch_ohlcv_batch(tickers: tuple[str, ...]) -> tuple[dict[str, pd.DataFrame], list[tuple[str, str]]]:
+    """OHLCV for many tickers via chunked yf.download() calls instead of one
+    request (plus a REQUEST_DELAY_SEC sleep) per ticker. Same per-ticker
+    cleanup as fetch_data(). Returns (frames, skipped); a chunk-level failure
+    skips only that chunk's tickers, with the reason recorded."""
+    frames: dict[str, pd.DataFrame] = {}
+    skipped: list[tuple[str, str]] = []
+    for i in range(0, len(tickers), BATCH_DOWNLOAD_CHUNK):
+        chunk = list(tickers[i:i + BATCH_DOWNLOAD_CHUNK])
+        try:
+            data = _with_retry(
+                yf.download, chunk, period=LOOKBACK_PERIOD, interval="1d", progress=False, auto_adjust=False,
+                group_by="ticker", threads=True, timeout=YF_REQUEST_TIMEOUT_SEC,
+            )
+        except Exception as exc:
+            skipped.extend((t, f"batch download failed: {exc}") for t in chunk)
+            continue
+        for ticker in chunk:
+            try:
+                if isinstance(data.columns, pd.MultiIndex):
+                    df = data[ticker].dropna(how="all")
+                else:  # single-ticker chunk comes back flat
+                    df = data.dropna(how="all")
+                frames[ticker] = _finalize_ohlcv(df, ticker)
+            except Exception as exc:
+                skipped.append((ticker, f"no data returned for ticker '{ticker}' ({exc})"))
+    return frames, skipped
+
+
+def _safe_extras(ticker: str, now_utc: pd.Timestamp) -> tuple[pd.Timestamp | None, str]:
+    try:
+        return _fetch_extras(ticker, now_utc)
+    except Exception:
+        return None, ""
+
+
+def _fetch_extras(ticker: str, now_utc: pd.Timestamp) -> tuple[pd.Timestamp | None, str]:
+    ticker_obj = yf.Ticker(ticker)
+    next_earnings = get_next_earnings_date(ticker_obj, now_utc)
+    headlines = get_recent_headlines(ticker_obj)
+    return next_earnings, (headlines[0] if headlines else "")
+
+
 def fetch_ticker_bundle(
     tickers: tuple[str, ...],
     sector_lookup: dict[str, str] | None = None,
@@ -481,7 +552,7 @@ def fetch_ticker_bundle(
     this ONCE and then `score_bundle_for_strategy()` once per strategy
     against the same bundle, instead of paying the fetch cost per strategy."""
     try:
-        market_df = fetch_data(MARKET_INDEX_TICKER)
+        market_df = _with_retry(fetch_data, MARKET_INDEX_TICKER)
     except Exception:
         market_df = None
 
@@ -517,23 +588,18 @@ def fetch_ticker_bundle(
                 pass  # degrades gracefully, same as market_df above
 
     bundle: dict[str, dict] = {}
-    skipped: list[tuple[str, str]] = []
     now_utc = pd.Timestamp.now(tz="UTC")
-    for i, ticker in enumerate(tickers):
-        if i > 0:
-            time.sleep(REQUEST_DELAY_SEC)
-        try:
-            df = fetch_data(ticker)
-            ticker_obj = yf.Ticker(ticker)
-            next_earnings = get_next_earnings_date(ticker_obj, now_utc)
-            headlines = get_recent_headlines(ticker_obj)
-            top_headline = headlines[0] if headlines else ""
-            bundle[ticker] = {
-                "df": df, "next_earnings": next_earnings, "top_headline": top_headline,
-                "currency": get_ticker_currency(ticker),
-            }
-        except Exception as exc:
-            skipped.append((ticker, str(exc)))
+    frames, skipped = fetch_ohlcv_batch(tickers)
+    # Earnings/headlines are best-effort extras: a failure here must not drop
+    # a ticker whose price data is fine (the old per-ticker loop did).
+    with ThreadPoolExecutor(max_workers=EXTRAS_WORKERS) as pool:
+        extras = dict(zip(frames, pool.map(lambda t: _safe_extras(t, now_utc), frames)))
+    for ticker, df in frames.items():
+        next_earnings, top_headline = extras[ticker]
+        bundle[ticker] = {
+            "df": df, "next_earnings": next_earnings, "top_headline": top_headline,
+            "currency": get_ticker_currency(ticker),
+        }
     return bundle, market_df, skipped, sector_data, yield_curve
 
 
