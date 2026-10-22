@@ -82,6 +82,12 @@ class AlpacaPaperBroker:
         }
         return self._request("POST", "/v2/orders", json=body)
 
+    def submit_market_notional(self, symbol: str, notional: float, side: str, client_order_id: str) -> dict:
+        """Day market order sized in dollars (fractional shares allowed for market orders)."""
+        body = {"symbol": symbol, "notional": f"{notional:.2f}", "side": side, "type": "market",
+                "time_in_force": "day", "client_order_id": client_order_id}
+        return self._request("POST", "/v2/orders", json=body)
+
     def portfolio_history(self, period: str = "3M", timeframe: str = "1D") -> dict:
         return self._request("GET", "/v2/account/portfolio/history", params={"period": period, "timeframe": timeframe})
 

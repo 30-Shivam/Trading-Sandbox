@@ -15,6 +15,11 @@
 - [x] Monthly long-only top-quintile factor portfolios vs SPY. Using TODAY's constituents (survivorship-biased): large-cap momentum_12_1 +6.0%/yr (t 1.76), trend_above_200d +6.5%/yr (t 1.80) over 7y. Point-in-time S&P 500 (10y, 88% price coverage): NOTHING beats SPY (momentum_12_1 -1.5%/yr, trend -0.9%/yr, EW S&P -1.9%/yr). The earlier gain was survivorship/lookahead. Small caps: nothing.
 - [ ] Remaining routes to beat SPY: (a) accruals_rank if it survives the block-clustered, universe-wide rerun; (b) deliberate beta/tilt (e.g. QQQ/mega-cap growth, leverage) - a risk bet, not alpha; (c) fundamentals factors (quality/value/accruals) on a point-in-time universe, long history (needs delisted data, e.g. a paid dataset); (d) accept SPY as the core and only run satellites that pass the gate.
 
+## Core + tilt + satellite (built 2026-10-22)
+- [x] `rebalance.py`: SPY 70% core, QQQ 15% tilt, 15% satellite reserve; drift band 3%; sells before buys; idempotent daily order IDs. Wired into daily_run behind PAPER_TRADING_ENABLED. Historical: QQQ beat SPY ~5%/yr 2016-26 with -33% vs -24% maxDD (hindsight regime bet); 80/20 blend +1.0%/yr excess (t 1.9).
+- [ ] Judge after 3+ months: account vs SPY via `python paper_trade.py --report`; tilt should be cut if QQQ underperforms SPY for 12 months or drawdown exceeds SPY's by >10pp.
+- [ ] Satellite sleeve only for strategies that pass the index gate; currently value_rank (fails) + accruals_rank (pending).
+
 ## Execution / forward test
 - [x] Alpaca paper trading (`broker.py`, `paper_trade.py`), 9 orders queued 2026-10-22, report vs SPY via `python paper_trade.py --report`.
 - [ ] After ~20 trading days: compare paper vs hypothetical settlement (execution drag) and paper equity vs SPY.

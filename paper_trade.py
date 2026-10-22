@@ -11,7 +11,7 @@ Safety rails
   * broker.py refuses any host except paper-api.alpaca.markets.
   * Only strategies in PAPER_STRATEGIES (default value_rank,accruals_rank),
     only tier "actionable", only plain USD tickers (no '.'/'-' share classes), whole shares.
-  * Caps: PAPER_MAX_POSITIONS, per-trade risk and notional, total exposure % of equity.
+  * Caps: PAPER_MAX_POSITIONS, per-trade risk and notional, satellite exposure (default 15% of equity; core ETFs from rebalance.py are excluded).
   * client_order_id = ts.<strategy>.<ticker>.<signal_date> is unique, so a
     re-run can never double-order (Alpaca rejects duplicates; we also pre-check).
   * Stale unfilled entries are cancelled after PAPER_ENTRY_TTL_DAYS; positions
@@ -30,6 +30,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 import broker as broker_mod
+import rebalance
 import storage
 
 ID_PREFIX = "ts"
@@ -38,7 +39,7 @@ DEFAULTS = {
     "PAPER_MAX_POSITIONS": "10",
     "PAPER_RISK_PER_TRADE_USD": "100",
     "PAPER_MAX_NOTIONAL_USD": "2500",
-    "PAPER_MAX_EXPOSURE_PCT": "0.5",
+    "PAPER_MAX_EXPOSURE_PCT": "0.15",  # satellite sleeve only; core ETFs are excluded below
     "PAPER_ENTRY_TTL_DAYS": "3",
     "PAPER_MAX_HOLD_DAYS": "21",
 }
@@ -253,7 +254,8 @@ def main() -> int:
     cfg = load_settings()
     equity = float(account["equity"])
     now = datetime.now(timezone.utc)
-    positions = client.positions()
+    core = rebalance.core_symbols()
+    positions = [p for p in client.positions() if p["symbol"] not in core]  # satellite view only
     cutoff = (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
     all_orders = client.orders(status="all", after=cutoff)
 

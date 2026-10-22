@@ -13,6 +13,7 @@ Swing-trading research + signal system. Python 3.13, venv at `.venv` (`source .v
 - **State**: only `value_rank` v76 / `accruals_rank` v77 (experimental) and `pairs` v58 (secondary) are positive-ish live; active primary `ma_crossover` v71 FAILS the index gate (t=-0.09). Small/mid variants, momentum_rank, regime_switcher logging were retired. Paper trading (Alpaca, paper-only) runs value_rank/accruals_rank; `python paper_trade.py --report` is the scoreboard vs SPY.
 - **Gotchas**: Yahoo rate-limits bursts (don't run several full-universe fetches at once); `.env` is read-deny for Claude (use scripts that load it); never print API secrets; `improvements.txt` is 688KB of history -- `grep -n "item N"` it, never read it whole; `scratchpad/` and `research_logs/` are old run logs, ignore them; `.claude_archive/` holds unused ruflo-generated commands/skills (move back to `.claude/` to restore).
 - **Open work**: see `docs/BACKLOG.md` (prioritized, with status).
+- **Portfolio policy (paper)**: `rebalance.py` holds CORE SPY 70% + TILT QQQ 15% (a beta bet, not alpha) with a 15% satellite reserve for `paper_trade.py` stock signals; rebalances on 3% drift. `factor_portfolios.py` showed no factor beats SPY point-in-time (10y).
 - **Retire/extend rule**: new strategy ideas are budgeted (a few per quarter); anything new must pass the index gate before capital or promotion.
 
 # Memory Storage Protocol

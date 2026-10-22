@@ -54,7 +54,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # Per-step caps sized to fit inside the workflow's 45-minute limit with room to report.
 STEP_TIMEOUT_SEC = {
     "ingest.py": 22 * 60, "settle_trades.py": 8 * 60, "review_positions.py": 3 * 60,
-    "llm_strategy_research.py": 6 * 60, "daily_briefing.py": 3 * 60, "paper_trade.py": 3 * 60,
+    "llm_strategy_research.py": 6 * 60, "daily_briefing.py": 3 * 60, "paper_trade.py": 3 * 60, "rebalance.py": 2 * 60,
 }
 
 
@@ -136,6 +136,9 @@ def main() -> int:
     if paper_enabled:
         ok_paper, output_paper = run_step("paper_trade.py", "paper_trade.py", STEP_TIMEOUT_SEC["paper_trade.py"])
         print(output_paper)
+        ok_core, output_core = run_step("rebalance.py", "rebalance.py", STEP_TIMEOUT_SEC["rebalance.py"])
+        print(output_core)
+        ok_paper, output_paper = ok_paper and ok_core, f"{output_paper}\n{output_core}"
 
     ok_settle, output_settle = run_step("settle_trades.py", "settle_trades.py", STEP_TIMEOUT_SEC["settle_trades.py"])
     print(output_settle)
