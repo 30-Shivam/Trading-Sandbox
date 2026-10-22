@@ -6804,3 +6804,25 @@ def audit_vs_index(trades: list[dict], index_close: "pd.Series") -> dict | None:
         "pct_trades_beating_index": round(float((df["excess"] > 0).mean() * 100), 2),
         "excess_t_stat_clustered_by_entry_day": round(t_stat, 2) if t_stat is not None else None,
     }
+
+
+INDEX_GATE_MIN_EXCESS_PCT = 0.0
+INDEX_GATE_MIN_T = 1.65   # one-sided ~5%; trades are clustered by entry day (see audit_vs_index)
+
+
+def index_gate_verdict(vs_index: dict | None, min_excess_pct: float = INDEX_GATE_MIN_EXCESS_PCT,
+                       min_t: float = INDEX_GATE_MIN_T) -> dict:
+    """The capital gate: a strategy must beat simply holding the index over its
+    own holding windows, with statistical support, before it earns capital or a
+    paper-trading slot. Beating RANDOM entries is necessary but not sufficient.
+    Takes audit_vs_index()'s output; returns {"passed": bool, "reason": str}."""
+    if not vs_index:
+        return {"passed": False, "reason": "no trades with usable dates"}
+    excess, t = vs_index.get("mean_excess_pct"), vs_index.get("excess_t_stat_clustered_by_entry_day")
+    if excess is None or t is None:
+        return {"passed": False, "reason": "excess or t-stat unavailable"}
+    if excess <= min_excess_pct:
+        return {"passed": False, "reason": f"mean excess {excess:+.3f}% <= {min_excess_pct}% (index did as well or better)"}
+    if t < min_t:
+        return {"passed": False, "reason": f"excess {excess:+.3f}% but t={t:.2f} < {min_t} (not distinguishable from noise)"}
+    return {"passed": True, "reason": f"excess {excess:+.3f}%, t={t:.2f}"}

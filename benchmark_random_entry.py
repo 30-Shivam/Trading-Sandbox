@@ -1312,8 +1312,8 @@ def main():
     print(f"  REAL   ({real_label}): {real_vs_index}")
     rand_vs_index = [swingtrade.audit_vs_index(t, market_data["Close"]) for t in per_seed_random_trades]
     print(f"  RANDOM (matched count): {average_summaries([d for d in rand_vs_index if d is not None])}")
-    if real_vs_index and real_vs_index["mean_excess_pct"] <= 0:
-        print("  ** Holding SPY over the same windows did at least as well as this strategy's trades. **")
+    gate = swingtrade.index_gate_verdict(real_vs_index)
+    print(f"  INDEX GATE: {'PASS' if gate['passed'] else 'FAIL'} -- {gate['reason']}")
 
     # 2026-09-14 (improvements.txt item 154) -- free (no extra fetch, just
     # re-replays real_trades already generated through simulate_portfolio_

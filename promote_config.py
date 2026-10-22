@@ -50,6 +50,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--promote", type=int, default=None, metavar="VERSION",
                          help="Promote this version to active, retiring whatever was active before.")
+    parser.add_argument("--index-gate-passed", action="store_true",
+                         help="Required with --promote: confirms this version's benchmark_random_entry.py run "
+                              "printed 'INDEX GATE: PASS' (beats holding SPY over the same windows, not just "
+                              "random entries).")
     args = parser.parse_args()
 
     try:
@@ -66,6 +70,15 @@ def main():
     if doc is None:
         print(f"[ERROR] No System_Config document with version={args.promote}", file=sys.stderr)
         sys.exit(1)
+
+    if not args.index_gate_passed:
+        print(
+            "[ERROR] Refusing to promote without --index-gate-passed. Run\n"
+            f"  python benchmark_random_entry.py --strategy {doc['params'].get('strategy')} --config-version {args.promote}\n"
+            "and promote only if it prints 'INDEX GATE: PASS' (beats holding SPY, not just random entries).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     previous_active = storage.get_active_config()
     storage.promote_candidate(args.promote)

@@ -170,6 +170,26 @@ def housekeeping(broker, orders: list[dict], positions: list[dict], cfg: dict, n
     return cancelled, closed
 
 
+def equity_vs_index(history: dict, index_close) -> dict | None:
+    """Paper account return vs SPY over the same span -- the real scoreboard.
+    `history` is Alpaca's portfolio-history payload (timestamp, equity); returns
+    None until there are at least two equity points after the first trade."""
+    import pandas as pd
+    stamps, equity = history.get("timestamp") or [], history.get("equity") or []
+    pts = [(pd.Timestamp(t, unit="s").normalize(), e) for t, e in zip(stamps, equity) if e]
+    if len(pts) < 2:
+        return None
+    (d0, e0), (d1, e1) = pts[0], pts[-1]
+    close = index_close.dropna()
+    close.index = pd.to_datetime(close.index).normalize()
+    i0, i1 = close.asof(d0), close.asof(d1)
+    if not i0 or not i1 or pd.isna(i0) or pd.isna(i1):
+        return None
+    acct, idx = (e1 / e0 - 1) * 100, (float(i1) / float(i0) - 1) * 100
+    return {"from": str(d0.date()), "to": str(d1.date()), "account_pct": round(acct, 2),
+            "spy_pct": round(idx, 2), "excess_pct": round(acct - idx, 2)}
+
+
 def report(broker) -> None:
     """Realized paper P&L per closed bracket vs the hypothetical settlement for the same signal."""
     col = storage.get_db()["Trade_Outcomes"]
@@ -186,6 +206,13 @@ def report(broker) -> None:
         paper = (exit_px / entry - 1) * 100
         sim = col.find_one({"ticker": ticker, "signal_date": signal_date, "strategy": strategy})
         rows.append((strategy, ticker, signal_date, paper, sim.get("pnl_pct") if sim else None))
+    try:
+        import yfinance as yf
+        spy = yf.download("SPY", period="1y", auto_adjust=True, progress=False)["Close"].squeeze()
+        summary = equity_vs_index(broker.portfolio_history(), spy)
+        print("PAPER vs SPY:", summary if summary else "not enough equity history yet.")
+    except Exception as exc:  # report is informational; never fail the run
+        print(f"PAPER vs SPY: unavailable ({exc})")
     if not rows:
         print("PAPER REPORT: no closed paper brackets yet.")
         return

@@ -32,3 +32,12 @@ def test_weekend_dates_use_last_available_close():
     close = pd.Series([100.0, 110.0], index=idx)
     t = [{"entry_date": date(2026, 1, 3), "exit_date": date(2026, 1, 5), "pnl_pct": 10.0}]  # Sat -> Mon
     assert swingtrade.audit_vs_index(t, close)["mean_index_pnl_pct_same_windows"] == 10.0
+
+
+def test_index_gate_requires_positive_excess_and_significance():
+    gate = swingtrade.index_gate_verdict
+    assert gate({"mean_excess_pct": 0.5, "excess_t_stat_clustered_by_entry_day": 2.0})["passed"]
+    assert not gate({"mean_excess_pct": 0.077, "excess_t_stat_clustered_by_entry_day": -0.09})["passed"]
+    assert "noise" in gate({"mean_excess_pct": 0.3, "excess_t_stat_clustered_by_entry_day": 1.0})["reason"]
+    assert not gate({"mean_excess_pct": -0.1, "excess_t_stat_clustered_by_entry_day": 3.0})["passed"]
+    assert not gate(None)["passed"]

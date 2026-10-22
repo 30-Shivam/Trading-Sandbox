@@ -82,6 +82,9 @@ class AlpacaPaperBroker:
         }
         return self._request("POST", "/v2/orders", json=body)
 
+    def portfolio_history(self, period: str = "3M", timeframe: str = "1D") -> dict:
+        return self._request("GET", "/v2/account/portfolio/history", params={"period": period, "timeframe": timeframe})
+
     def cancel_order(self, order_id: str) -> None:
         self._request("DELETE", f"/v2/orders/{order_id}")
 

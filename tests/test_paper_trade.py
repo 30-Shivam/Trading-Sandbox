@@ -128,3 +128,14 @@ def test_reconcile_confirms_only_unconfirmed_filled_orders(monkeypatch):
     ]
     assert pt.reconcile_fills(orders) == 1
     assert calls[0][0] == "confirm" and calls[0][2] == {"fill_price": 12.34}
+
+
+def test_equity_vs_index_compares_same_span():
+    import pandas as pd
+    day = 86400
+    t0 = int(pd.Timestamp("2026-10-01").timestamp())
+    hist = {"timestamp": [t0, t0 + 5 * day], "equity": [100_000, 101_000]}
+    spy = pd.Series([400.0, 408.0], index=pd.to_datetime(["2026-10-01", "2026-10-06"]))
+    r = pt.equity_vs_index(hist, spy)
+    assert r["account_pct"] == 1.0 and r["spy_pct"] == 2.0 and r["excess_pct"] == -1.0
+    assert pt.equity_vs_index({"timestamp": [t0], "equity": [100_000]}, spy) is None

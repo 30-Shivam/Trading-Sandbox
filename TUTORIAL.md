@@ -764,3 +764,17 @@ Needs `ALPACA_PAPER_KEY` / `ALPACA_PAPER_SECRET` in `.env` (local) or repo secre
 trade, 50% max exposure, stale entries cancelled after 3 days, positions closed
 after 21 days. Override with `PAPER_*` env vars (see the module docstring).
 `broker.py` refuses any host except `paper-api.alpaca.markets`.
+
+## 13. The index gate (read this before promoting anything)
+
+Beating random entries only shows the *timing* adds information. It does not show
+the strategy is worth running. `benchmark_random_entry.py` now also prints a
+**VS INDEX** section: each trade's pnl% minus SPY's return over the same
+entry-to-exit days, with a t-stat clustered by entry day, and an
+`INDEX GATE: PASS/FAIL` line (needs positive mean excess and t >= 1.65).
+`promote_config.py --promote N` refuses to run without `--index-gate-passed`.
+First result (2026-10-22, ma_crossover v71, default list): excess +0.077% per
+trade, t = -0.09, FAIL. Random entries on the same list: -0.283%, t = -2.08.
+Paper account vs SPY: `python paper_trade.py --report`.
+Rule of thumb: new strategy ideas are expensive in false positives (dozens
+already tested on the same data); budget a few per quarter, not per week.
