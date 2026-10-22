@@ -35,6 +35,7 @@ load_dotenv()
 LOOKBACK_PERIOD = "1y"           # data window to fetch (needs 200d+ for SMA200)
 MARKET_INDEX_TICKER = "SPY"      # broad-market proxy for the macro gate
 NEWS_HEADLINE_COUNT = 3          # recent news articles to fetch per ticker
+YF_REQUEST_TIMEOUT_SEC = 20       # per-request cap so one hung Yahoo call can't stall a whole scan
 REQUEST_DELAY_SEC = 0.5          # pause between API calls to avoid rate-limiting
 MACRO_HEADLINE_TICKER = "^GSPC"  # broad-index proxy for macro/market-wide headlines (LLM Agent tab)
 MACRO_HEADLINE_COUNT = 5         # macro headlines to fetch per get_macro_snapshot() call
@@ -42,7 +43,10 @@ VIX_TICKER = "^VIX"              # CBOE volatility index -- free numeric market-
 
 
 def fetch_data(ticker: str) -> pd.DataFrame:
-    df = yf.download(ticker, period=LOOKBACK_PERIOD, interval="1d", progress=False, auto_adjust=False)
+    df = yf.download(
+        ticker, period=LOOKBACK_PERIOD, interval="1d", progress=False, auto_adjust=False,
+        timeout=YF_REQUEST_TIMEOUT_SEC,
+    )
     if df.empty:
         raise RuntimeError(f"no data returned for ticker '{ticker}'")
     if isinstance(df.columns, pd.MultiIndex):

@@ -49,7 +49,16 @@ import notifications
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
-def run_step(name: str, script: str, args: list[str] | None = None) -> tuple[bool, str]:
+# Per-step caps sized to fit inside the workflow's 45-minute limit with room to report.
+STEP_TIMEOUT_SEC = {
+    "ingest.py": 25 * 60, "settle_trades.py": 4 * 60, "review_positions.py": 3 * 60,
+    "llm_strategy_research.py": 6 * 60, "daily_briefing.py": 3 * 60,
+}
+
+
+def run_step(
+    name: str, script: str, timeout_sec: int, args: list[str] | None = None,
+) -> tuple[bool, str]:
     """Runs `script` as a subprocess, returns (ok, full combined stdout+stderr
     prefixed with a one-line status header) -- untruncated, since the
     caller attaches this as a file rather than cramming it into a Discord
@@ -66,10 +75,21 @@ def run_step(name: str, script: str, args: list[str] | None = None) -> tuple[boo
     reconfigure() fix applied directly to it (2026-08-29) -- this
     subprocess-level encoding only protects daily_run.py's own capture,
     not a crash inside the child script before it ever writes output."""
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT_DIR / script), *(args or [])],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=SCRIPT_DIR,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-u", str(SCRIPT_DIR / script), *(args or [])],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=SCRIPT_DIR,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # A hang used to burn the whole workflow timeout and get the job
+        # cancelled with NO report (daily_run.py itself was killed first).
+        # Killing just this step and attaching its partial output means a
+        # hang shows up as a normal FAILED run saying where it stalled.
+        partial = "".join(
+            p.decode("utf-8", "replace") if isinstance(p, bytes) else (p or "") for p in (exc.stdout, exc.stderr)
+        )
+        return False, f"=== {name}: TIMED OUT after {timeout_sec}s ===\n{partial[-20000:]}"
     ok = result.returncode == 0
     header = f"=== {name}: {'OK' if ok else 'FAILED'} (exit {result.returncode}) ==="
     body = result.stdout + result.stderr
@@ -80,13 +100,13 @@ def main() -> int:
     start = time.time()
     started_at = datetime.now(timezone.utc)
 
-    ok_ingest, output_ingest = run_step("ingest.py", "ingest.py")
+    ok_ingest, output_ingest = run_step("ingest.py", "ingest.py", STEP_TIMEOUT_SEC["ingest.py"])
     print(output_ingest)
 
-    ok_settle, output_settle = run_step("settle_trades.py", "settle_trades.py")
+    ok_settle, output_settle = run_step("settle_trades.py", "settle_trades.py", STEP_TIMEOUT_SEC["settle_trades.py"])
     print(output_settle)
 
-    ok_review, output_review = run_step("review_positions.py", "review_positions.py")
+    ok_review, output_review = run_step("review_positions.py", "review_positions.py", STEP_TIMEOUT_SEC["review_positions.py"])
     print(output_review)
 
     # Self-contained (own fetch_history()/watchlist read, no dependency on
@@ -101,7 +121,8 @@ def main() -> int:
     # depends on daily_briefing's own output" logic every other step here
     # already follows.
     ok_research, output_research = run_step(
-        "llm_strategy_research.py", "llm_strategy_research.py", args=["--run-once"],
+        "llm_strategy_research.py", "llm_strategy_research.py", STEP_TIMEOUT_SEC["llm_strategy_research.py"],
+        args=["--run-once"],
     )
     print(output_research)
 
@@ -109,7 +130,7 @@ def main() -> int:
     # steps above already wrote, so it should report the day's FINAL
     # state even if an earlier step failed partway through (same as
     # settle_trades.py already running regardless of ingest.py's outcome).
-    ok_briefing, output_briefing = run_step("daily_briefing.py", "daily_briefing.py")
+    ok_briefing, output_briefing = run_step("daily_briefing.py", "daily_briefing.py", STEP_TIMEOUT_SEC["daily_briefing.py"])
     print(output_briefing)
 
     elapsed = time.time() - start
