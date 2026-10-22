@@ -137,9 +137,19 @@ def main() -> int:
     all_ok = ok_ingest and ok_settle and ok_review and ok_research and ok_briefing
 
     status = "OK" if all_ok else "FAILED"
-    print(f"daily_run.py: {status} ({elapsed:.0f}s elapsed).")
+    # One line naming exactly which step(s) failed -- the per-step headers
+    # are buried in a long log, and a bare "FAILED" gave no hint where.
+    step_results = {
+        "ingest": ok_ingest, "settle": ok_settle, "review": ok_review,
+        "research": ok_research, "briefing": ok_briefing,
+    }
+    step_line = " ".join(f"{n}={'ok' if ok else 'FAILED'}" for n, ok in step_results.items())
+    print(f"daily_run.py: {status} ({elapsed:.0f}s elapsed). Steps: {step_line}")
 
-    message = f"[Trading-Sandbox] daily_run.py {status} -- {elapsed:.0f}s elapsed, {started_at:%Y-%m-%d %H:%M} UTC"
+    message = (
+        f"[Trading-Sandbox] daily_run.py {status} -- {elapsed:.0f}s elapsed, "
+        f"{started_at:%Y-%m-%d %H:%M} UTC\n{step_line}"
+    )
     full_report = f"{output_ingest}\n\n{output_settle}\n\n{output_review}\n\n{output_research}\n\n{output_briefing}"
     filename = f"daily_run_{started_at:%Y%m%d_%H%M%S}.txt"
     notifications.notify_with_file(message, filename, full_report)
