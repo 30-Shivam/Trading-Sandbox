@@ -1304,6 +1304,17 @@ def main():
     print(f"  REAL   ({real_label}): {swingtrade.simulate_portfolio_constrained(real_trades, args.portfolio_starting_capital, args.portfolio_position_budget, config.max_sector_allocation_pct, config.max_total_deployed_pct, sector_lookup)}")
     print(f"  RANDOM (matched count): {random_portfolio_avg}")
 
+    # Does the strategy beat just HOLDING THE INDEX over the same holding windows?
+    # The RANDOM comparison above only asks whether the TIMING adds information;
+    # this asks whether running the strategy at all beats the passive alternative.
+    print("\n=== VS INDEX (same entry->exit windows; excess = trade pnl% - SPY return% over the same days) ===")
+    real_vs_index = swingtrade.audit_vs_index(real_trades, market_data["Close"])
+    print(f"  REAL   ({real_label}): {real_vs_index}")
+    rand_vs_index = [swingtrade.audit_vs_index(t, market_data["Close"]) for t in per_seed_random_trades]
+    print(f"  RANDOM (matched count): {average_summaries([d for d in rand_vs_index if d is not None])}")
+    if real_vs_index and real_vs_index["mean_excess_pct"] <= 0:
+        print("  ** Holding SPY over the same windows did at least as well as this strategy's trades. **")
+
     # 2026-09-14 (improvements.txt item 154) -- free (no extra fetch, just
     # re-replays real_trades already generated through simulate_portfolio_
     # constrained() at several capital levels), so unconditional like the

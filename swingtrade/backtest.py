@@ -6747,3 +6747,60 @@ def run_walk_forward(
             for fold in folds
         ]
         return [f.result() for f in futures]
+
+
+def audit_vs_index(trades: list[dict], index_close: "pd.Series") -> dict | None:
+    """Does the strategy beat simply HOLDING THE INDEX over the same days?
+
+    Every other check in this module compares a strategy to RANDOM ENTRIES of
+    the same strategy ("does the timing add information"). None asked the
+    question that decides whether a system is worth running at all: would the
+    same money have done better sitting in the index during those exact
+    holding windows? For each trade, the index return from entry_date to
+    exit_date is the opportunity cost. Excess = trade pnl_pct - index return.
+
+    The t-stat clusters trades by entry_date (trades entered the same day
+    share the same market move, so treating them as independent overstates
+    confidence). Index returns carry no slippage/commission while pnl_pct
+    does, which slightly FAVORS the index -- the realistic direction for a
+    buy-and-hold alternative with ~zero turnover cost.
+
+    Returns None if no trade has usable dates inside the index series."""
+    import math
+    import pandas as pd
+    close = index_close.dropna().sort_index()
+    if close.empty:
+        return None
+    close.index = pd.to_datetime(close.index).normalize()
+
+    def at(day):
+        day = pd.Timestamp(day).normalize()
+        pos = close.index.searchsorted(day, side="right") - 1
+        return float(close.iloc[pos]) if pos >= 0 else None
+
+    rows = []
+    for t in trades:
+        if "entry_date" not in t or "exit_date" not in t or t.get("pnl_pct") is None:
+            continue
+        p0, p1 = at(t["entry_date"]), at(t["exit_date"])
+        if not p0 or not p1:
+            continue
+        rows.append((pd.Timestamp(t["entry_date"]), float(t["pnl_pct"]), (p1 / p0 - 1) * 100))
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=["entry", "pnl", "index"])
+    df["excess"] = df["pnl"] - df["index"]
+    daily = df.groupby("entry")["excess"].mean()
+    n_days = len(daily)
+    t_stat = None
+    if n_days > 1 and daily.std(ddof=1) > 0:
+        t_stat = float(daily.mean() / (daily.std(ddof=1) / math.sqrt(n_days)))
+    return {
+        "n_trades": int(len(df)),
+        "n_entry_days": int(n_days),
+        "mean_trade_pnl_pct": round(float(df["pnl"].mean()), 3),
+        "mean_index_pnl_pct_same_windows": round(float(df["index"].mean()), 3),
+        "mean_excess_pct": round(float(df["excess"].mean()), 3),
+        "pct_trades_beating_index": round(float((df["excess"] > 0).mean() * 100), 2),
+        "excess_t_stat_clustered_by_entry_day": round(t_stat, 2) if t_stat is not None else None,
+    }
