@@ -35,7 +35,7 @@ import swingtrade
 # -0.5..-1.5%) were net negative while SPY rose, and the LLM calls consume API
 # quota and daily-run time. The dashboard tabs can still run them on demand.
 # NOTE: ma_crossover/pairs keep logging independently of this.
-DISABLED_RESEARCH_STEPS = frozenset({"llm_agent", "best_ideas"})
+DISABLED_RESEARCH_STEPS = frozenset({"llm_agent", "best_ideas", "llm_strategy_research"})
 
 SECONDARY_STRATEGY_VERSIONS = {
     # Squeeze Breakout REMOVED 2026-08-26, per explicit user request during

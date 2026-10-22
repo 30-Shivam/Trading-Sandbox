@@ -46,6 +46,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import config_loader
 import notifications
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -157,10 +158,13 @@ def main() -> int:
     # daily_briefing.py (which runs last) on the same "nothing downstream
     # depends on daily_briefing's own output" logic every other step here
     # already follows.
-    ok_research, output_research = run_step(
-        "llm_strategy_research.py", "llm_strategy_research.py", STEP_TIMEOUT_SEC["llm_strategy_research.py"],
-        args=["--run-once"],
-    )
+    if "llm_strategy_research" in config_loader.DISABLED_RESEARCH_STEPS:
+        ok_research, output_research = True, "llm_strategy_research: disabled (config_loader.DISABLED_RESEARCH_STEPS) -- skipped."
+    else:
+        ok_research, output_research = run_step(
+            "llm_strategy_research.py", "llm_strategy_research.py", STEP_TIMEOUT_SEC["llm_strategy_research.py"],
+            args=["--run-once"],
+        )
     print(output_research)
 
     # Runs LAST and unconditionally -- it only reads/synthesizes what the

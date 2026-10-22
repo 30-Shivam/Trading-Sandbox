@@ -598,14 +598,23 @@ def run(
     _size_positions(results_df, config, position_budget, risk_amount)
     results_df = _score_for_strategy(results_df, config)
 
-    logged = storage.log_trade_signals(results_df, config.to_dict())
+    # No active System_Config = deliberately no primary strategy (ma_crossover
+    # v71 retired 2026-10-22 after failing the index gate). The built-in rsi
+    # fallback still scans so secondaries/dashboards work, but its signals are
+    # not logged or notified -- RSI is a retired loser.
+    primary_active = config_source.startswith("Using System_Config")
+    if primary_active:
+        logged = storage.log_trade_signals(results_df, config.to_dict())
+    else:
+        logged = {"actionable": 0, "research": 0}
+        print("No active primary strategy -- fallback scan results are not logged.")
     strong_buys = int((results_df["Signal"] == "Strong Buy").sum())
     buys = int((results_df["Signal"] == "Buy").sum())
     watches = int((results_df["Signal"] == "Watch").sum())
     print(f"Analyzed {len(results_df)}/{len(tickers)} ticker(s): {strong_buys} Strong Buy, {buys} Buy, {watches} Watch.")
     print(f"Logged {logged['actionable']} actionable + {logged['research']} research signal(s) to MongoDB.")
 
-    message = _build_signal_notification(f"Primary ({config.strategy})", results_df)
+    message = _build_signal_notification(f"Primary ({config.strategy})", results_df) if primary_active else None
     if message:
         notifications.notify(message, webhook_url=notifications.get_strategy_webhook_url(config.strategy))
 

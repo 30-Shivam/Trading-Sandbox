@@ -30,7 +30,7 @@
 - [x] Soft-disabled llm_agent + best_ideas steps (`config_loader.DISABLED_RESEARCH_STEPS`): net negative live, burn LLM quota. Re-enable by editing the set.
 - [x] Retired small/mid variants, momentum_rank, regime_switcher logging, sector_rs logging.
 - [ ] Decide on `llm_strategy_research.py` (15 cycles in 2 months, 1 escalated, 0 promoted): throttle to weekly or drop.
-- [ ] Decide on `ma_crossover` v71 as active primary (fails gate; default capital $0). Needs a replacement or an explicit "no primary".
+- [x] ma_crossover v71 retired as primary 2026-10-22 (explicit "no primary"; ingest skips logging the rsi fallback). accruals_rank NOT promoted: universe run excess +0.001%, t=0.52 (FAIL); curated-list pass was bias.
 - [ ] Remove dead code for retired strategies (regime_switcher.py, best_ideas.py, llm_agent.py, smallmid references) once the above decisions are final.
 
 ## Reliability
@@ -43,3 +43,6 @@
 ## Code health
 - [ ] Split `optimize.py` (2.2k lines), `dip_buy_analyzer.py` (2k), `swingtrade/backtest.py` (6.8k) when touching them; no tests cover the Streamlit UI.
 - [ ] Move ~25 one-off `benchmark_*`/`audit_*`/`reoptimize_*` scripts into `research/` (needs import fixes + workflow paths).
+
+- [x] 2026-10-22: llm_strategy_research soft-disabled; Bonferroni registry now 28 trials (factor portfolios, SPY timing, QQQ tilt added).
+- [ ] Consider dropping value_rank/accruals_rank paper satellite too if they stay at excess~0 (they fail the gate); decide after ~20 trading days of paper data.

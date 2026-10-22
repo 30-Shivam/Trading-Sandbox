@@ -18,3 +18,11 @@ sector_rotation
 squeeze_breakout
 value_rank
 week52_high
+factor_momentum_12_1
+factor_momentum_6_1
+factor_low_vol_12m
+factor_reversal_1m
+factor_near_52w_high
+factor_trend_above_200d
+spy_trend_timing
+qqq_tilt
