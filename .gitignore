@@ -29,3 +29,9 @@ misc.txt
 agentdb.rvf
 agentdb.rvf.*
 .claude_archive/
+
+# Old run output kept locally only (scripts stay tracked)
+scratchpad/*.log
+scratchpad/*.png
+scratchpad/*.txt
+scratchpad/ideas_pdf/

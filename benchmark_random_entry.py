@@ -1312,6 +1312,10 @@ def main():
     print(f"  REAL   ({real_label}): {real_vs_index}")
     rand_vs_index = [swingtrade.audit_vs_index(t, market_data["Close"]) for t in per_seed_random_trades]
     print(f"  RANDOM (matched count): {average_summaries([d for d in rand_vs_index if d is not None])}")
+    if real_vs_index and rand_vs_index and all(d is not None for d in rand_vs_index):
+        rand_excess = sum(d["mean_excess_pct"] for d in rand_vs_index) / len(rand_vs_index)
+        print(f"  Excess over RANDOM-entry excess (what the signal adds beyond universe/payoff structure): "
+              f"{real_vs_index['mean_excess_pct'] - rand_excess:+.3f}pp per trade")
     gate = swingtrade.index_gate_verdict(real_vs_index)
     print(f"  INDEX GATE: {'PASS' if gate['passed'] else 'FAIL'} -- {gate['reason']}")
 
