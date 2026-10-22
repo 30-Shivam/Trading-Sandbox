@@ -186,7 +186,7 @@ def _build_document(row: dict, config_snapshot: dict, now: datetime, tier: str |
     return {
         "ticker": _native(row["Ticker"]),
         "signal_date": str(row["As_Of"]),
-        "strategy": config_snapshot.get("strategy", "rsi"),
+        "strategy": config_snapshot.get("strategy") or "rsi",  # `or`: an explicit None must not become a NaN strategy
         "signal": _native(row["Signal"]),
         "tier": tier if tier is not None else _tier_for_signal(row["Signal"]),
         "trade_score": _native(row["Trade_Score"]),

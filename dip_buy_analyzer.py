@@ -185,7 +185,6 @@ from watchlist import parse_ticker_text, read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
-SMALLMID_WATCHLIST_FILE = SCRIPT_DIR / "smallmid_watchlist.txt"
 
 DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for flat position sizing
 DEFAULT_RISK_AMOUNT = 25         # default $ sidebar value for risk-based position sizing
@@ -341,19 +340,6 @@ def cached_fetch_bundle(tickers: tuple[str, ...]):
     it doesn't need its own cache key) rather than threading `sector_lookup`
     through this function's own signature/cache key."""
     sector_lookup = read_ticker_sectors(WATCHLIST_FILE)
-    return market_data.fetch_ticker_bundle(tickers, sector_lookup=sector_lookup)
-
-
-@st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Fetching small/mid-cap watchlist data...")
-def cached_fetch_smallmid_bundle(tickers: tuple[str, ...]):
-    """RSI Mean-Reversion (Small/Mid-Cap)'s own separate fetch -- a
-    DELIBERATELY distinct function from cached_fetch_bundle() above, not a
-    call into it with different tickers. cached_fetch_bundle() hardcodes
-    `read_ticker_sectors(WATCHLIST_FILE)` internally -- calling it with
-    smallmid tickers would silently return {} sectors for every one of them
-    (none are in the primary watchlist). See config_loader.py's own
-    SMALLMID_RSI_* constants for why this strategy needs its own universe."""
-    sector_lookup = read_ticker_sectors(SMALLMID_WATCHLIST_FILE)
     return market_data.fetch_ticker_bundle(tickers, sector_lookup=sector_lookup)
 
 
@@ -765,7 +751,7 @@ def render_experimental_section(
     market_data.build_pair_price_panels(). Default None preserves every
     existing caller's behavior (config.strategy == "pairs" would otherwise
     silently score zero signals, same real gap
-    run_smallmid_pairs_experimental()'s own docstring flags)."""
+    the retired small/mid pairs runner once flagged)."""
     st.subheader(label)
     # Computed fresh from THIS call's own config.momentum_lookback_days, not
     # precomputed once elsewhere -- see optimize.py's build_objective() for
@@ -1650,130 +1636,6 @@ def main():
                 momentum_panel=momentum_panel,
                 yield_curve=yield_curve,
             )
-
-        st.divider()
-        st.subheader(f"{config_loader.SMALLMID_RSI_LABEL} (experimental)")
-        st.info(
-            "**Different ticker universe, not a different strategy.** RSI Mean-Reversion's "
-            "own v66 config, UNCHANGED, scanned against S&P 600 SmallCap + S&P 400 MidCap "
-            "(~1000 tickers) instead of the main watchlist. A real random-baseline check "
-            "(2026-09-01) found v66 shows no edge on the main large-cap watchlist (see its "
-            "caveat in the Mechanical Strategies tab) but a genuine, holdout-validated edge "
-            "here (holdout sharpe_like 0.223 vs a random baseline of ~0.05, consistent across "
-            "cuts, 18,000+ real simulated trades). A follow-up attempt to re-tune specifically "
-            "for this universe was tried and REJECTED -- it overfit and lost to v66-as-is on "
-            "holdout, so this reuses v66 exactly unmodified, not a new config. **Real caveats, "
-            "not yet resolved**: current (not point-in-time historical) index membership carries "
-            "some survivorship-bias risk, not independently measured for this universe; zero "
-            "real settled trades yet; small/mid-cap transaction costs aren't modeled beyond this "
-            "project's existing flat cost assumptions. **Never used for capital allocation.**"
-        )
-        if not SMALLMID_WATCHLIST_FILE.exists():
-            st.caption(f"{config_loader.SMALLMID_RSI_LABEL}: unavailable -- watchlist not found "
-                       f"({SMALLMID_WATCHLIST_FILE}).")
-        else:
-            smallmid_tickers = tuple(read_tickers(SMALLMID_WATCHLIST_FILE))
-            smallmid_config, smallmid_source = load_secondary_config(config_loader.SMALLMID_RSI_CONFIG_VERSION)
-            if smallmid_config is None:
-                st.caption(f"{config_loader.SMALLMID_RSI_LABEL}: unavailable -- {smallmid_source}")
-            else:
-                smallmid_bundle, smallmid_market_df, smallmid_fetch_skipped, smallmid_sector_data, _ = (
-                    cached_fetch_smallmid_bundle(smallmid_tickers)
-                )
-                smallmid_sector_lookup = read_ticker_sectors(SMALLMID_WATCHLIST_FILE)
-                render_experimental_section(
-                    f"{config_loader.SMALLMID_RSI_LABEL} (v{config_loader.SMALLMID_RSI_CONFIG_VERSION}, experimental)",
-                    smallmid_config,
-                    smallmid_bundle, smallmid_market_df, smallmid_fetch_skipped,
-                    storage_ok,
-                    sector_lookup=smallmid_sector_lookup, sector_data=smallmid_sector_data,
-                    log_strategy_override=config_loader.SMALLMID_RSI_LOG_STRATEGY,
-                )
-
-        st.divider()
-        st.subheader(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL} (experimental)")
-        st.info(
-            "**Different ticker universe, not a different strategy.** ma_crossover's own live "
-            "v71 config, UNCHANGED, scanned against S&P 600 SmallCap + S&P 400 MidCap (~1000 "
-            "tickers) instead of the main watchlist. A real random-baseline check (2026-09-09) "
-            "found a genuine, holdout-validated edge here too (holdout sharpe_like 0.028 vs a "
-            "random baseline of -0.042, win_rate 16.4% vs 14.3%, consistent across ALL/TUNE/"
-            "HOLDOUT cuts, 5,275 real simulated trades) -- no re-tune attempted, v71 shipped "
-            "unmodified since the scoping check itself already cleared the bar. **Real caveats, "
-            "not yet resolved**: current (not point-in-time historical) index membership carries "
-            "some survivorship-bias risk, not independently measured for this universe; zero "
-            "real settled trades yet; the by-year breakdown isn't uniform (loses to random in "
-            "2024/2025, wins decisively in 2021/2023/2026). **Never used for capital allocation "
-            "-- v71's own capital eligibility on the primary watchlist does NOT transfer here.**"
-        )
-        if not SMALLMID_WATCHLIST_FILE.exists():
-            st.caption(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: unavailable -- watchlist not found "
-                       f"({SMALLMID_WATCHLIST_FILE}).")
-        else:
-            smallmid_ma_tickers = tuple(read_tickers(SMALLMID_WATCHLIST_FILE))
-            smallmid_ma_config, smallmid_ma_source = load_secondary_config(
-                config_loader.SMALLMID_MA_CROSSOVER_CONFIG_VERSION
-            )
-            if smallmid_ma_config is None:
-                st.caption(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: unavailable -- {smallmid_ma_source}")
-            else:
-                smallmid_ma_bundle, smallmid_ma_market_df, smallmid_ma_fetch_skipped, smallmid_ma_sector_data, _ = (
-                    cached_fetch_smallmid_bundle(smallmid_ma_tickers)
-                )
-                smallmid_ma_sector_lookup = read_ticker_sectors(SMALLMID_WATCHLIST_FILE)
-                render_experimental_section(
-                    f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL} "
-                    f"(v{config_loader.SMALLMID_MA_CROSSOVER_CONFIG_VERSION}, experimental)",
-                    smallmid_ma_config,
-                    smallmid_ma_bundle, smallmid_ma_market_df, smallmid_ma_fetch_skipped,
-                    storage_ok,
-                    sector_lookup=smallmid_ma_sector_lookup, sector_data=smallmid_ma_sector_data,
-                    log_strategy_override=config_loader.SMALLMID_MA_CROSSOVER_LOG_STRATEGY,
-                )
-
-        st.divider()
-        st.subheader(f"{config_loader.SMALLMID_PAIRS_LABEL} (experimental)")
-        st.info(
-            "**Different ticker universe, not a different strategy.** Mean-Reversion Pairs' own "
-            "live v58 config, UNCHANGED, scanned against S&P 600 SmallCap + S&P 400 MidCap (~1000 "
-            "tickers) instead of the main watchlist. A real random-baseline check (2026-09-11) "
-            "found a genuine, holdout-validated edge here too (holdout sharpe_like 0.006 vs a "
-            "random baseline of -0.024, plus a much tighter Monte-Carlo-reshuffled drawdown "
-            "distribution than random's -- mean 10.4% vs 26.7%) -- no re-tune attempted, v58 "
-            "shipped unmodified since the scoping check itself already cleared the bar. **Real "
-            "caveats, not yet resolved**: current (not point-in-time historical) index membership "
-            "carries some survivorship-bias risk, not independently measured for this universe; "
-            "zero real settled trades yet; the by-year breakdown isn't uniform (loses to random in "
-            "2021/2026, wins in 2022-2025). **Never used for capital allocation -- v58's own "
-            "capital eligibility on the primary watchlist does NOT transfer here.**"
-        )
-        if not SMALLMID_WATCHLIST_FILE.exists():
-            st.caption(f"{config_loader.SMALLMID_PAIRS_LABEL}: unavailable -- watchlist not found "
-                       f"({SMALLMID_WATCHLIST_FILE}).")
-        else:
-            smallmid_pairs_tickers = tuple(read_tickers(SMALLMID_WATCHLIST_FILE))
-            smallmid_pairs_config, smallmid_pairs_source = load_secondary_config(
-                config_loader.SMALLMID_PAIRS_CONFIG_VERSION
-            )
-            if smallmid_pairs_config is None:
-                st.caption(f"{config_loader.SMALLMID_PAIRS_LABEL}: unavailable -- {smallmid_pairs_source}")
-            else:
-                (smallmid_pairs_bundle, smallmid_pairs_market_df, smallmid_pairs_fetch_skipped,
-                 smallmid_pairs_sector_data, _) = cached_fetch_smallmid_bundle(smallmid_pairs_tickers)
-                smallmid_pairs_sector_lookup = read_ticker_sectors(SMALLMID_WATCHLIST_FILE)
-                smallmid_pair_price_panels = market_data.build_pair_price_panels(
-                    smallmid_pairs_bundle, smallmid_pairs_sector_lookup
-                )
-                render_experimental_section(
-                    f"{config_loader.SMALLMID_PAIRS_LABEL} "
-                    f"(v{config_loader.SMALLMID_PAIRS_CONFIG_VERSION}, experimental)",
-                    smallmid_pairs_config,
-                    smallmid_pairs_bundle, smallmid_pairs_market_df, smallmid_pairs_fetch_skipped,
-                    storage_ok,
-                    sector_lookup=smallmid_pairs_sector_lookup, sector_data=smallmid_pairs_sector_data,
-                    pair_price_panels=smallmid_pair_price_panels,
-                    log_strategy_override=config_loader.SMALLMID_PAIRS_LOG_STRATEGY,
-                )
 
     with tab2:
         st.subheader("LLM Agent (experimental)")

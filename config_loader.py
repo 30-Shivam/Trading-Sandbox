@@ -322,7 +322,6 @@ SECONDARY_VALIDATION_CAVEATS: dict[str, str] = {
 # per this project's own graduated-promotion discipline -- no cash pool,
 # no allocate_capital() call, same as every strategy's first live exposure.
 EXPERIMENTAL_STRATEGY_VERSIONS = {
-    "Momentum Rank": 65,
     # Value Rank (Price-to-Book, cheapest decile) added 2026-09-21 -- the
     # first genuinely new strategy this cycle's continuous algorithm-
     # derivation loop actually PASSED (4 prior candidates -- Low-Volatility
@@ -379,83 +378,9 @@ EXPERIMENTAL_STRATEGY_VERSIONS = {
     "Accruals Rank": 77,
 }
 
-# RSI Mean-Reversion (Small/Mid-Cap), added 2026-09-01 -- NOT in
-# EXPERIMENTAL_STRATEGY_VERSIONS above, deliberately. A real random-baseline
-# check (improvements.txt item 114) found RSI Mean-Reversion's own v66 config
-# -- already live as a SECONDARY strategy, and separately flagged in
-# SECONDARY_VALIDATION_CAVEATS below for losing to random on the current
-# large-cap watchlist -- shows a genuine, holdout-validated edge (sharpe_like
-# 0.223 vs a random baseline of ~0.05, consistent TUNE/HOLDOUT, 18,000+ real
-# trades) on a completely different universe: S&P 600 SmallCap + S&P 400
-# MidCap (smallmid_watchlist.txt, ~1000 tickers, zero overlap with
-# watchlist.txt). A follow-up attempt to re-tune RSI specifically for this
-# universe (item 115, a real 20-trial Optuna search) was REJECTED -- the
-# fresh candidate overfit TUNE and lost to v66-as-unmodified on holdout
-# (0.121 vs 0.223) -- so this reuses v66 exactly as-is, not a new config.
-#
-# Kept OUT of EXPERIMENTAL_STRATEGY_VERSIONS because that dict's own loop
-# (ingest.py's run_experimental_strategies(), dip_buy_analyzer.py's
-# render_experimental_section() call site) assumes every entry shares the
-# ONE ticker bundle already fetched from watchlist.txt -- no existing
-# strategy has ever needed its own separate universe before this. See
-# ingest.py's run_smallmid_rsi_experimental() / dip_buy_analyzer.py's
-# smallmid section for the dedicated (not generalized-loop) wiring this
-# needs instead. Same "never capital-allocated" treatment as every
-# experimental strategy -- ships here with real, positive backtest evidence,
-# but zero real settled trades yet, so it still starts at the bottom of the
-# same graduated-promotion ladder every other strategy has climbed.
-SMALLMID_RSI_LABEL = "RSI Mean-Reversion (Small/Mid-Cap)"
-SMALLMID_RSI_CONFIG_VERSION = 66
-# Distinct Mongo strategy label -- keeps this universe's real settled-trade
-# track record from ever pooling with RSI Mean-Reversion's own existing
-# (already-caveated) large-cap history, same rationale as
-# SECONDARY_LOG_STRATEGY_OVERRIDES's v17->v66 rename above.
-SMALLMID_RSI_LOG_STRATEGY = "rsi_mean_reversion_smallmid"
-
-# MA Crossover (Small/Mid-Cap), added 2026-09-09 -- same universe-swap
-# pattern as SMALLMID_RSI_* above, NOT in EXPERIMENTAL_STRATEGY_VERSIONS for
-# the identical reason (that loop assumes one shared bundle from
-# watchlist.txt). Per explicit user follow-up ("rate of improvement seems
-# extremely slow... anything in terms of strategy refinement" -> "let's
-# scope this out"), a real random-baseline check (improvements.txt item 121)
-# found ma_crossover's own live v71 config -- already capital-eligible on
-# the primary watchlist -- ALSO shows a genuine, holdout-validated edge on
-# the same smallmid_watchlist.txt universe RSI uses (holdout sharpe_like
-# 0.028 vs a random baseline of -0.042, win_rate 16.4% vs 14.3%, consistent
-# across ALL/TUNE/HOLDOUT cuts, 5,275 real simulated trades). Unlike RSI's
-# variant, no re-tune was even attempted here yet -- straight to shipping
-# v71 unmodified, since the scoping check itself already cleared the bar.
-# Same graduated-promotion floor as every experimental strategy: real,
-# positive backtest evidence, but zero real settled trades on THIS universe
-# yet, so it starts at the bottom of the ladder despite v71 already being
-# capital-eligible on the primary watchlist -- that capital eligibility does
-# NOT transfer to a different ticker universe.
-SMALLMID_MA_CROSSOVER_LABEL = "MA Crossover (Small/Mid-Cap)"
-SMALLMID_MA_CROSSOVER_CONFIG_VERSION = 71
-# Distinct Mongo strategy label -- keeps this universe's real settled-trade
-# track record from ever pooling with ma_crossover's own existing
-# primary-watchlist history, same rationale as SMALLMID_RSI_LOG_STRATEGY.
-SMALLMID_MA_CROSSOVER_LOG_STRATEGY = "ma_crossover_smallmid"
-
-# Mean-Reversion Pairs (Small/Mid-Cap), added 2026-09-11 -- same universe-swap
-# pattern as SMALLMID_RSI_*/SMALLMID_MA_CROSSOVER_* above, NOT in
-# EXPERIMENTAL_STRATEGY_VERSIONS for the identical shared-bundle reason. Per
-# explicit user follow-up (item 121's own recommended next step -- finish the
-# universe-expansion sweep across every live/experimental mechanical
-# strategy), a real random-baseline check (improvements.txt item 125) found
-# Mean-Reversion Pairs' own live v58 config -- already capital-eligible on
-# the primary watchlist -- ALSO shows a genuine, holdout-validated edge on
-# smallmid_watchlist.txt (holdout sharpe_like 0.006 vs a random baseline of
-# -0.024, plus a much tighter Monte-Carlo-reshuffled drawdown distribution
-# than random's, 10.35% mean vs 26.65%). `momentum_rank` (v65) was tested in
-# the SAME sweep and did NOT clear the bar (ties/trails random on every cut)
-# -- deliberately NOT given this treatment.
-SMALLMID_PAIRS_LABEL = "Mean-Reversion Pairs (Small/Mid-Cap)"
-SMALLMID_PAIRS_CONFIG_VERSION = 58
-# Distinct Mongo strategy label -- keeps this universe's real settled-trade
-# track record from ever pooling with Mean-Reversion Pairs' own existing
-# primary-watchlist history, same rationale as SMALLMID_MA_CROSSOVER_LOG_STRATEGY.
-SMALLMID_PAIRS_LOG_STRATEGY = "pairs_smallmid"
+# Small/Mid-Cap RSI / MA Crossover / Pairs variants RETIRED 2026-10-21 (live: 12.8%/5%/0-39%
+# win rates, rsi_mean_reversion_smallmid 6.9% win / 58% expired over 693 actionable trades).
+# Workflows, runners and dashboard sections deleted; history stays in Mongo.
 
 
 def load_active_config() -> tuple[swingtrade.TradingConfig, str]:

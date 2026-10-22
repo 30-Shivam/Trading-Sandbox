@@ -46,12 +46,6 @@ part of the technical signal.
 Usage:
     python ingest.py
     python ingest.py --watchlist my_list.txt --position-budget 500
-    python ingest.py --smallmid-rsi-only  # isolated small/mid-cap RSI variant, see
-                                           # run_smallmid_rsi_experimental()'s own docstring
-    python ingest.py --smallmid-ma-crossover-only  # isolated small/mid-cap MA Crossover variant, see
-                                                    # run_smallmid_ma_crossover_experimental()'s own docstring
-    python ingest.py --smallmid-pairs-only  # isolated small/mid-cap Pairs variant, see
-                                             # run_smallmid_pairs_experimental()'s own docstring
 """
 
 import argparse
@@ -85,11 +79,11 @@ import regime_switcher
 import sec_fundamentals
 import storage
 import swingtrade
+import universe
 from watchlist import read_ticker_sectors, read_tickers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
-SMALLMID_WATCHLIST_FILE = SCRIPT_DIR / "smallmid_watchlist.txt"
 DEFAULT_POSITION_BUDGET = 250.0
 MAX_LLM_CANDIDATES = 10  # same cap as dip_buy_analyzer.py's LLM Agent tab -- cost/rate-limit
                           # control, see llm_agent.py's module docstring
@@ -391,76 +385,12 @@ def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade
             print(f"[WARN] LLM Agent [{variant}] signal logging failed: {exc}", file=sys.stderr)
 
 
-def run_regime_switcher(strategy_frames: dict[str, pd.DataFrame], config: swingtrade.TradingConfig) -> None:
-    """Headless automation for regime_switcher.py -- see that module's own
-    docstring for the full design/rationale (EXPLICITLY prospective-only,
-    skips the backtesting-validation pipeline every other strategy went
-    through, by deliberate user choice). `strategy_frames` is keyed by the
-    REAL strategy identifier (e.g. "ma_crossover"/"pairs"/"rsi_mean_reversion",
-    whatever's currently live -- regime_switcher.py's own
-    REGIME_STRATEGY_PREFERENCE is what actually decides which of these
-    matter), not a display label -- see run()'s own construction of this
-    dict, built alongside (not from) all_signal_frames since that dict's
-    keys are human-readable labels like "Primary (ma_crossover)".
-
-    Automated here (not left dashboard-only like a normal new experimental
-    strategy would be) specifically so its own prospective trust floor
-    accumulates by calendar time regardless of whether anyone opens the
-    dashboard -- the exact gap already identified and fixed for the LLM
-    Agent in item 54. NEVER capital-allocated -- Shares_To_Buy/Est_Cost
-    are always 0, same as llm_agent.py."""
-    candidates: dict[str, dict[str, dict]] = {}
-    for strategy_name, df in strategy_frames.items():
-        if df is None or df.empty:
-            continue
-        interesting = df[df["Signal"] != "Ignore"]
-        for _, row in interesting.iterrows():
-            candidates.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
-
-    if not candidates:
-        print("Regime Switcher: no tickers scored above Ignore under any currently-live strategy today -- nothing to evaluate.")
-        return
-
-    switcher_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "regime_switcher"})
-    rows = []
-    for ticker, strategy_rows in candidates.items():
-        pick = regime_switcher.select_regime_pick(ticker, strategy_rows)
-        if pick is None:
-            continue
-        rows.append({
-            "Ticker": ticker, "As_Of": pick["As_Of"], "Signal": pick["Signal"],
-            "Trade_Score": pick["Trade_Score"], "Last_Close": pick["Last_Close"],
-            "Buy_Price": pick["Buy_Price"], "Sell_Price": pick["Sell_Price"], "Stop_Loss": pick["Stop_Loss"],
-            "RRR": pick["RRR"], "RSI": pick.get("RSI"), "ATR": pick["ATR"],
-            "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
-            "Next_Earnings_Date": pick.get("Next_Earnings_Date"),
-            "Catalyst_Warning": pick.get("Catalyst_Warning", False), "Top_Headline": pick.get("Top_Headline", ""),
-            "Currency": pick.get("Currency", "USD"),
-            "Regime": pick["Regime"], "Source_Strategy": pick["Source_Strategy"],
-        })
-        print(f"  {ticker}: {pick['Signal']} (regime={pick['Regime']}, source={pick['Source_Strategy']}, "
-              f"Trade_Score={pick['Trade_Score']:.1f})")
-
-    if not rows:
-        print("Regime Switcher: candidates existed but none matched their regime's preferred strategy -- no picks today.")
-        return
-
-    switcher_df = pd.DataFrame(rows)
-    try:
-        logged = storage.log_trade_signals(switcher_df, switcher_config.to_dict())
-        print(f"Regime Switcher: logged {logged['actionable']} actionable + {logged['research']} research "
-              "signal(s) to MongoDB (strategy=regime_switcher, never capital-allocated, prospective-only -- "
-              "see regime_switcher.py).")
-    except Exception as exc:
-        print(f"[WARN] Regime Switcher signal logging failed: {exc}", file=sys.stderr)
-
-
 def run_experimental_strategies(
     bundle: dict, market_df, sector_lookup: dict[str, str] | None, sector_data: dict | None,
     yield_curve=None,
 ) -> None:
     """Headless automation for config_loader.EXPERIMENTAL_STRATEGY_VERSIONS
-    (currently just Momentum Rank v65) -- mirrors run_regime_switcher()'s
+    (currently just Momentum Rank v65) -- mirrors the old run_regime_switcher()'s
     own reasoning exactly: automated here, not left dashboard-only, so its
     real prospective trust floor accumulates by calendar time regardless of
     whether anyone opens the dashboard's Experimental tab.
@@ -561,197 +491,6 @@ def run_experimental_strategies(
             print(f"[WARN] {label} (v{version}, experimental) signal logging failed: {exc}", file=sys.stderr)
 
 
-def run_smallmid_rsi_experimental(watchlist_path: Path = SMALLMID_WATCHLIST_FILE) -> None:
-    """Headless automation for the RSI Mean-Reversion (Small/Mid-Cap)
-    experimental variant (config_loader.SMALLMID_RSI_LABEL, 2026-09-01,
-    improvements.txt items 114/115) -- reuses RSI Mean-Reversion's already-
-    tuned System_Config v66 UNMODIFIED against a completely different
-    ticker universe (S&P 600 SmallCap + S&P 400 MidCap, ~1000 tickers,
-    smallmid_watchlist.txt) than every other strategy in this file scans.
-
-    Deliberately NOT folded into run_experimental_strategies()/
-    EXPERIMENTAL_STRATEGY_VERSIONS -- that loop assumes every entry shares
-    the ONE bundle already fetched from the primary watchlist (see its own
-    docstring). This strategy's entire reason for existing is a DIFFERENT
-    universe, so it does its own fetch_ticker_bundle() call here rather than
-    taking `bundle` as a parameter. A deliberate, isolated exception, not a
-    new generalized pattern -- generalize EXPERIMENTAL_STRATEGY_VERSIONS
-    itself only if/when a second strategy also needs its own universe.
-
-    NEVER capital-allocated -- no _size_positions() call, same mechanism as
-    run_experimental_strategies() (explicit zeroed Shares_To_Buy/Est_Cost
-    below, not reliance on storage/signals.py to enforce it). Logs under
-    config_loader.SMALLMID_RSI_LOG_STRATEGY (a swapped TradingConfig, same
-    inline pattern run_secondary_strategy() uses for
-    SECONDARY_LOG_STRATEGY_OVERRIDES) so this universe's real settled-trade
-    track record never pools with RSI Mean-Reversion's own existing
-    large-cap history."""
-    if not watchlist_path.exists():
-        print(f"{config_loader.SMALLMID_RSI_LABEL}: skipped -- watchlist not found ({watchlist_path}).")
-        return
-    tickers = tuple(read_tickers(watchlist_path))
-    if not tickers:
-        print(f"{config_loader.SMALLMID_RSI_LABEL}: skipped -- no tickers found in {watchlist_path}.")
-        return
-    sector_lookup = read_ticker_sectors(watchlist_path)
-
-    config, source = config_loader.load_config_by_version(config_loader.SMALLMID_RSI_CONFIG_VERSION)
-    if config is None:
-        print(f"{config_loader.SMALLMID_RSI_LABEL}: skipped -- {source}")
-        return
-
-    bundle, market_df, fetch_skipped, sector_data, _yield_curve = market_data.fetch_ticker_bundle(
-        tickers, sector_lookup=sector_lookup,
-    )
-    results, score_skipped = market_data.score_bundle_for_strategy(
-        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-    )
-    if not results:
-        print(f"{config_loader.SMALLMID_RSI_LABEL}: no tickers scored today.")
-        return
-
-    results_df = pd.DataFrame(results)
-    results_df = _score_for_strategy(results_df, config)
-    # Never capital-allocated -- explicit zeros, same rationale as
-    # run_experimental_strategies()'s own identical lines.
-    results_df["Shares_To_Buy"] = 0.0
-    results_df["Est_Cost"] = 0.0
-
-    log_config = swingtrade.TradingConfig(
-        **{**config.to_dict(), "strategy": config_loader.SMALLMID_RSI_LOG_STRATEGY}
-    )
-    try:
-        logged = storage.log_trade_signals(results_df, log_config.to_dict())
-        print(f"{config_loader.SMALLMID_RSI_LABEL}: analyzed {len(results_df)}/{len(tickers)} ticker(s), "
-              f"logged {logged['actionable']} actionable + {logged['research']} research signal(s) "
-              "to MongoDB (never capital-allocated).")
-    except Exception as exc:
-        print(f"[WARN] {config_loader.SMALLMID_RSI_LABEL} signal logging failed: {exc}", file=sys.stderr)
-
-    if fetch_skipped or score_skipped:
-        skipped_count = len(fetch_skipped) + len(score_skipped)
-        print(f"{config_loader.SMALLMID_RSI_LABEL}: {skipped_count} ticker(s) could not be analyzed/scored.")
-
-
-def run_smallmid_ma_crossover_experimental(watchlist_path: Path = SMALLMID_WATCHLIST_FILE) -> None:
-    """Headless automation for the MA Crossover (Small/Mid-Cap) experimental
-    variant (config_loader.SMALLMID_MA_CROSSOVER_LABEL, 2026-09-09,
-    improvements.txt item 121) -- same universe-swap pattern as
-    run_smallmid_rsi_experimental() above (see that function's own
-    docstring for the full architectural rationale: deliberately NOT folded
-    into run_experimental_strategies()/EXPERIMENTAL_STRATEGY_VERSIONS, its
-    own fetch_ticker_bundle() call against a completely different universe,
-    NEVER capital-allocated, logs under a distinct strategy label so this
-    universe's track record never pools with ma_crossover's own existing
-    primary-watchlist history -- including its capital-eligible one)."""
-    if not watchlist_path.exists():
-        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: skipped -- watchlist not found ({watchlist_path}).")
-        return
-    tickers = tuple(read_tickers(watchlist_path))
-    if not tickers:
-        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: skipped -- no tickers found in {watchlist_path}.")
-        return
-    sector_lookup = read_ticker_sectors(watchlist_path)
-
-    config, source = config_loader.load_config_by_version(config_loader.SMALLMID_MA_CROSSOVER_CONFIG_VERSION)
-    if config is None:
-        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: skipped -- {source}")
-        return
-
-    bundle, market_df, fetch_skipped, sector_data, _yield_curve = market_data.fetch_ticker_bundle(
-        tickers, sector_lookup=sector_lookup,
-    )
-    results, score_skipped = market_data.score_bundle_for_strategy(
-        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-    )
-    if not results:
-        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: no tickers scored today.")
-        return
-
-    results_df = pd.DataFrame(results)
-    results_df = _score_for_strategy(results_df, config)
-    # Never capital-allocated -- explicit zeros, same rationale as
-    # run_experimental_strategies()'s own identical lines.
-    results_df["Shares_To_Buy"] = 0.0
-    results_df["Est_Cost"] = 0.0
-
-    log_config = swingtrade.TradingConfig(
-        **{**config.to_dict(), "strategy": config_loader.SMALLMID_MA_CROSSOVER_LOG_STRATEGY}
-    )
-    try:
-        logged = storage.log_trade_signals(results_df, log_config.to_dict())
-        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: analyzed {len(results_df)}/{len(tickers)} ticker(s), "
-              f"logged {logged['actionable']} actionable + {logged['research']} research signal(s) "
-              "to MongoDB (never capital-allocated).")
-    except Exception as exc:
-        print(f"[WARN] {config_loader.SMALLMID_MA_CROSSOVER_LABEL} signal logging failed: {exc}", file=sys.stderr)
-
-    if fetch_skipped or score_skipped:
-        skipped_count = len(fetch_skipped) + len(score_skipped)
-        print(f"{config_loader.SMALLMID_MA_CROSSOVER_LABEL}: {skipped_count} ticker(s) could not be analyzed/scored.")
-
-
-def run_smallmid_pairs_experimental(watchlist_path: Path = SMALLMID_WATCHLIST_FILE) -> None:
-    """Headless automation for the Mean-Reversion Pairs (Small/Mid-Cap)
-    experimental variant (config_loader.SMALLMID_PAIRS_LABEL, 2026-09-11,
-    improvements.txt item 125) -- same universe-swap pattern as
-    run_smallmid_rsi_experimental()/run_smallmid_ma_crossover_experimental()
-    above (see the former's own docstring for the full architectural
-    rationale). Only real difference from those two: "pairs" needs
-    `pair_price_panels` (per-sector wide Close-price panels, built from this
-    function's OWN fetched bundle via market_data.build_pair_price_panels())
-    threaded into score_bundle_for_strategy() -- without it,
-    simulate_pairs_signals() silently returns zero signals (see
-    reoptimize_sector_rs.py's own real-bug precedent for this exact gap)."""
-    if not watchlist_path.exists():
-        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: skipped -- watchlist not found ({watchlist_path}).")
-        return
-    tickers = tuple(read_tickers(watchlist_path))
-    if not tickers:
-        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: skipped -- no tickers found in {watchlist_path}.")
-        return
-    sector_lookup = read_ticker_sectors(watchlist_path)
-
-    config, source = config_loader.load_config_by_version(config_loader.SMALLMID_PAIRS_CONFIG_VERSION)
-    if config is None:
-        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: skipped -- {source}")
-        return
-
-    bundle, market_df, fetch_skipped, sector_data, _yield_curve = market_data.fetch_ticker_bundle(
-        tickers, sector_lookup=sector_lookup,
-    )
-    pair_price_panels = market_data.build_pair_price_panels(bundle, sector_lookup)
-    results, score_skipped = market_data.score_bundle_for_strategy(
-        bundle, market_df, config, sector_lookup=sector_lookup, sector_data=sector_data,
-        pair_price_panels=pair_price_panels,
-    )
-    if not results:
-        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: no tickers scored today.")
-        return
-
-    results_df = pd.DataFrame(results)
-    results_df = _score_for_strategy(results_df, config)
-    # Never capital-allocated -- explicit zeros, same rationale as
-    # run_experimental_strategies()'s own identical lines.
-    results_df["Shares_To_Buy"] = 0.0
-    results_df["Est_Cost"] = 0.0
-
-    log_config = swingtrade.TradingConfig(
-        **{**config.to_dict(), "strategy": config_loader.SMALLMID_PAIRS_LOG_STRATEGY}
-    )
-    try:
-        logged = storage.log_trade_signals(results_df, log_config.to_dict())
-        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: analyzed {len(results_df)}/{len(tickers)} ticker(s), "
-              f"logged {logged['actionable']} actionable + {logged['research']} research signal(s) "
-              "to MongoDB (never capital-allocated).")
-    except Exception as exc:
-        print(f"[WARN] {config_loader.SMALLMID_PAIRS_LABEL} signal logging failed: {exc}", file=sys.stderr)
-
-    if fetch_skipped or score_skipped:
-        skipped_count = len(fetch_skipped) + len(score_skipped)
-        print(f"{config_loader.SMALLMID_PAIRS_LABEL}: {skipped_count} ticker(s) could not be analyzed/scored.")
-
-
 def run_best_ideas_strategy(
     strategy_frames: dict[str, pd.DataFrame], regime_picks: list[dict],
     bundle: dict, market_df, sector_lookup: dict[str, str] | None,
@@ -784,6 +523,8 @@ def run_best_ideas_strategy(
         macro_snapshot=macro_snapshot, fetch_llm=llm_agent.is_available(),
     )
     for label, rows in results.items():
+        if label in best_ideas.RETIRED_VARIANT_LABELS:
+            continue  # retired 2026-10-21: net-negative live, see best_ideas.RETIRED_VARIANT_LABELS
         if not rows:
             print(f"Best Ideas [{label}]: no signals today.")
             continue
@@ -846,6 +587,7 @@ def run(
         yield_curve=yield_curve,
     )
     skipped = fetch_skipped + primary_score_skipped
+    print(universe.format_coverage_line(universe.coverage_summary(len(tickers), skipped)))
     if not primary_results:
         print("[ERROR] no tickers were successfully analyzed.", file=sys.stderr)
         for ticker, reason in skipped:
@@ -922,7 +664,6 @@ def run(
                         print(f"\n[{row['Ticker']} ({row['Signal']})] {summary}")
 
     run_llm_agent(all_signal_frames, config)
-    run_regime_switcher(strategy_frames, config)
     run_experimental_strategies(bundle, market_df, sector_lookup, sector_data, yield_curve=yield_curve)
 
     # Recomputes the same regime picks run_regime_switcher() just derived
@@ -971,56 +712,7 @@ def main():
              "Strong Buy/Buy signal found across all three strategies. Requires GEMINI_API_KEY "
              "(free tier); degrades to a warning if unavailable rather than failing the scan.",
     )
-    parser.add_argument(
-        "--smallmid-rsi-only", action="store_true",
-        help="Run ONLY the RSI Mean-Reversion (Small/Mid-Cap) experimental variant "
-             "(run_smallmid_rsi_experimental()) against smallmid_watchlist.txt, then exit -- "
-             "skips the primary/secondary/market-uptrend pipeline entirely. Meant to be invoked "
-             "as its own isolated process/workflow (see .github/workflows/smallmid_rsi.yml), "
-             "not combined with the main scan -- see config_loader.py's own SMALLMID_RSI_* "
-             "constants for why this strategy is kept structurally separate.",
-    )
-    parser.add_argument(
-        "--smallmid-ma-crossover-only", action="store_true",
-        help="Run ONLY the MA Crossover (Small/Mid-Cap) experimental variant "
-             "(run_smallmid_ma_crossover_experimental()) against smallmid_watchlist.txt, then "
-             "exit -- same isolated-process convention as --smallmid-rsi-only, see "
-             ".github/workflows/smallmid_ma_crossover.yml and config_loader.py's own "
-             "SMALLMID_MA_CROSSOVER_* constants.",
-    )
-    parser.add_argument(
-        "--smallmid-pairs-only", action="store_true",
-        help="Run ONLY the Mean-Reversion Pairs (Small/Mid-Cap) experimental variant "
-             "(run_smallmid_pairs_experimental()) against smallmid_watchlist.txt, then exit -- "
-             "same isolated-process convention as --smallmid-rsi-only, see "
-             ".github/workflows/smallmid_pairs.yml and config_loader.py's own "
-             "SMALLMID_PAIRS_* constants.",
-    )
     args = parser.parse_args()
-    if args.smallmid_rsi_only:
-        try:
-            storage.ensure_indexes()
-        except storage.MongoNotConfigured as exc:
-            print(f"[ERROR] {exc}", file=sys.stderr)
-            sys.exit(1)
-        run_smallmid_rsi_experimental()
-        sys.exit(0)
-    if args.smallmid_ma_crossover_only:
-        try:
-            storage.ensure_indexes()
-        except storage.MongoNotConfigured as exc:
-            print(f"[ERROR] {exc}", file=sys.stderr)
-            sys.exit(1)
-        run_smallmid_ma_crossover_experimental()
-        sys.exit(0)
-    if args.smallmid_pairs_only:
-        try:
-            storage.ensure_indexes()
-        except storage.MongoNotConfigured as exc:
-            print(f"[ERROR] {exc}", file=sys.stderr)
-            sys.exit(1)
-        run_smallmid_pairs_experimental()
-        sys.exit(0)
     sys.exit(run(args.watchlist, args.position_budget, args.with_ai_context, args.risk_amount))
 
 

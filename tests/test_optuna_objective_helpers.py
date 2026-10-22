@@ -325,10 +325,10 @@ def test_find_live_config_finds_secondary_strategy_by_matching_params_strategy()
 
 @pytest.mark.skipif(not _mongo_available(), reason="MONGODB_URI not configured/reachable")
 def test_find_live_config_finds_experimental_strategy_too():
-    # momentum_rank (v65, promoted 2026-08-24) is EXPERIMENTAL, not
-    # SECONDARY -- confirms find_live_config_for_strategy() checks both
+    # value_rank (v76) is EXPERIMENTAL, not SECONDARY (momentum_rank v65
+    # was retired 2026-10-21) -- confirms find_live_config_for_strategy() checks both
     # dicts, not just SECONDARY_STRATEGY_VERSIONS.
-    config, label = optimize.find_live_config_for_strategy("momentum_rank")
+    config, label = optimize.find_live_config_for_strategy("value_rank")
     assert config is not None
-    assert "65" in label
+    assert "76" in label
     assert "experimental" in label

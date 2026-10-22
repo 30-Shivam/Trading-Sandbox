@@ -68,31 +68,31 @@ gracefully with no warning-free crash if the key isn't set.
 
 ## 3. Command cheat sheet
 
-Everything below is `py -3 <script>.py` (or `streamlit run` for the one
+Everything below is `python <script>.py` (or `streamlit run` for the one
 interactive app). Run from the repo root.
 
 | Command | What it does |
 |---|---|
 | `streamlit run dip_buy_analyzer.py` | Interactive dashboard — look at today's picks, set position sizing, size real trades |
-| `py -3 ingest.py` | Headless scan: fetch → score → log signals to Mongo, no browser needed |
-| `py -3 ingest.py --watchlist other.txt --position-budget 500` | Same, with a different ticker list / per-trade sizing |
-| `py -3 settle_trades.py` | Resolve unsettled signals to WIN/LOSS/EXPIRED against real subsequent price history |
-| `py -3 run_backtest.py --start 2021-06-01 --end 2026-07-26` | Walk-forward backtest one config (default: `DEFAULT_CONFIG`) against history, no Mongo needed |
-| `py -3 run_backtest.py --with-catalyst` | Same, plus a real (not always-False) Catalyst_Warning simulation and a catalyst-vs-non performance breakdown |
-| `py -3 optimize.py --trials 50 --start 2021-06-01 --end 2026-07-26` | Optuna search for better RSI/ATR/stop-loss/streak-penalty params (5D); writes a `candidate`, never touches `active` |
-| `py -3 optimize.py --trials 50 --recency-half-life-days 90` | Same, weighting recent conditions more heavily (0 = old uniform pooling) |
-| `py -3 optimize.py --strategy breakout --trials 30` | Same search, but for the breakout/trend-following signal (lookback + ATR multiples) instead of RSI |
-| `py -3 evaluate_config.py --tickers A,B,C --rsi-oversold-threshold 52 ...` | Backtest one specific hand-picked config before writing it as a candidate |
-| `py -3 promote_config.py` | List every `System_Config` version (status, metrics, notes) |
-| `py -3 promote_config.py --promote 4` | Promote version 4 to `active` (retires whatever was active) |
-| `py -3 confirm_fill.py` | List logged signals you haven't confirmed as real fills yet |
-| `py -3 confirm_fill.py --ticker INTC --date 2026-07-24 --price 89.60` | Mark a signal as an actual trade you made (price optional, defaults to the logged buy_price) |
-| `py -3 check_survivorship_bias.py` | Compare today's watchlist vs. a genuine point-in-time S&P 500 sample, same config/window |
-| `py -3 benchmark_random_entry.py` | Does the active config's RSI-oversold timing actually beat picking entry days at random? |
-| `py -3 benchmark_random_entry.py --strategy breakout --breakout-lookback-days 55` | Same question for the breakout/trend-following signal instead of RSI |
+| `python ingest.py` | Headless scan: fetch → score → log signals to Mongo, no browser needed |
+| `python ingest.py --watchlist other.txt --position-budget 500` | Same, with a different ticker list / per-trade sizing |
+| `python settle_trades.py` | Resolve unsettled signals to WIN/LOSS/EXPIRED against real subsequent price history |
+| `python run_backtest.py --start 2021-06-01 --end 2026-07-26` | Walk-forward backtest one config (default: `DEFAULT_CONFIG`) against history, no Mongo needed |
+| `python run_backtest.py --with-catalyst` | Same, plus a real (not always-False) Catalyst_Warning simulation and a catalyst-vs-non performance breakdown |
+| `python optimize.py --trials 50 --start 2021-06-01 --end 2026-07-26` | Optuna search for better RSI/ATR/stop-loss/streak-penalty params (5D); writes a `candidate`, never touches `active` |
+| `python optimize.py --trials 50 --recency-half-life-days 90` | Same, weighting recent conditions more heavily (0 = old uniform pooling) |
+| `python optimize.py --strategy breakout --trials 30` | Same search, but for the breakout/trend-following signal (lookback + ATR multiples) instead of RSI |
+| `python evaluate_config.py --tickers A,B,C --rsi-oversold-threshold 52 ...` | Backtest one specific hand-picked config before writing it as a candidate |
+| `python promote_config.py` | List every `System_Config` version (status, metrics, notes) |
+| `python promote_config.py --promote 4` | Promote version 4 to `active` (retires whatever was active) |
+| `python confirm_fill.py` | List logged signals you haven't confirmed as real fills yet |
+| `python confirm_fill.py --ticker INTC --date 2026-07-24 --price 89.60` | Mark a signal as an actual trade you made (price optional, defaults to the logged buy_price) |
+| `python check_survivorship_bias.py` | Compare today's watchlist vs. a genuine point-in-time S&P 500 sample, same config/window |
+| `python benchmark_random_entry.py` | Does the active config's RSI-oversold timing actually beat picking entry days at random? |
+| `python benchmark_random_entry.py --strategy breakout --breakout-lookback-days 55` | Same question for the breakout/trend-following signal instead of RSI |
 
 Add `--help` to any script for its full flag list and a detailed docstring
-(e.g. `py -3 optimize.py --help`).
+(e.g. `python optimize.py --help`).
 
 ## 4. Walkthrough: from a cold start to a real order
 
@@ -106,7 +106,7 @@ most recent close (e.g. running it Sunday night gives you Friday's numbers —
 exactly what you want for placing a Monday order).
 
 ```bash
-py -3 ingest.py
+python ingest.py
 ```
 ```
 Using System_Config v3 (active).
@@ -121,7 +121,7 @@ That's it for logging — it already happened. No separate step needed.
 (`streamlit run dip_buy_analyzer.py`), or pull straight from Mongo:
 
 ```bash
-py -3 -c "
+python -c "
 import storage
 db = storage.get_db()
 docs = list(db['Trade_Signals'].find({'signal': 'Strong Buy'}).sort('trade_score', -1))
@@ -154,7 +154,7 @@ blotter), but don't mistake "it's logged" for "I definitely own this." If
 you actually place the order, tell the system:
 
 ```bash
-py -3 confirm_fill.py --ticker INTC --date 2026-07-24 --price 89.60
+python confirm_fill.py --ticker INTC --date 2026-07-24 --price 89.60
 ```
 
 `--price` is optional (your real fill, if it differed from the logged
@@ -179,7 +179,7 @@ capital allocation or `confirm_fill.py` — see `improvements.txt` item 20.
 **Step 4 — Each following trading day, settle.**
 
 ```bash
-py -3 settle_trades.py
+python settle_trades.py
 ```
 ```
 Found 1 unsettled signal(s).
@@ -285,7 +285,7 @@ way.
 nobody has the dashboard open:
 
 ```bash
-py -3 ingest.py
+python ingest.py
 ```
 
 This is the Phase 7 addition. It runs the identical fetch → score → log
@@ -295,8 +295,8 @@ Safe to re-run any time the same day — logging is an idempotent upsert, not
 an insert, so you won't get duplicate signals.
 
 Because Phase 8 (Kubernetes CronJob) isn't built yet, "on a schedule"
-currently means *you* schedule it — e.g. Windows Task Scheduler running
-`py -3 d:\Trading-Sandbox\ingest.py` once a day after market close, or just
+currently means *you* schedule it — e.g. cron, launchd (macOS) or Windows Task Scheduler running
+`python ingest.py` (from the repo root) once a day after market close, or just
 running it by hand when you remember. Either way, this is the step that
 actually matters for keeping the learning loop fed — the dashboard alone
 only logs on days you happen to open it.
@@ -309,7 +309,7 @@ allocate real capital the way the dashboard's "Total Available Cash" does).
 ## 6. Letting Optuna search for better parameters
 
 ```bash
-py -3 optimize.py --trials 50 --start 2021-06-01 --end 2026-07-26
+python optimize.py --trials 50 --start 2021-06-01 --end 2026-07-26
 ```
 
 **Runs across multiple CPU cores by default now.** `swingtrade.run_walk_forward()`
@@ -455,7 +455,7 @@ findings above kept shrinking the apparent edge, the most basic remaining
 question is whether the entry TIMING itself carries any real information, or
 whether the returns are coming entirely from the stop/target payoff shape
 (tight stop, wide target) plus a generally-appreciating universe.
-`py -3 benchmark_random_entry.py` answers this directly: it runs the active
+`python benchmark_random_entry.py` answers this directly: it runs the active
 config's real RSI-timed strategy, then `swingtrade.simulate_random_entries()`
 fires the exact same NUMBER of trades per ticker on randomly chosen days
 instead (identical macro/liquidity gates, identical entry-fill/stop/target
@@ -478,7 +478,7 @@ signal, same ATR-based stop/target sizing, but entered via a resting
 stop-buy order (`_find_breakout_fill()`, the upside mirror of the RSI
 signal's downside limit-fill logic — a gap-up fills at the worse/higher real
 Open, an intraday touch fills at exactly the trigger). Run it the same way:
-`py -3 benchmark_random_entry.py --strategy breakout --breakout-lookback-days 55`
+`python benchmark_random_entry.py --strategy breakout --breakout-lookback-days 55`
 (default lookback is 20 if you omit the flag). A real full-watchlist run at
 two lookbacks showed 20-day has no value over random (every cut within
 noise), but **55-day showed a real, if modest, positive edge on the 27
@@ -516,7 +516,7 @@ If you want to test a specific hand-picked value (e.g. capping something
 Optuna pinned at a boundary) before ever writing it as a candidate:
 
 ```bash
-py -3 evaluate_config.py --tickers NVDA,AMD,INTC,MU,AVGO \
+python evaluate_config.py --tickers NVDA,AMD,INTC,MU,AVGO \
     --start 2021-06-01 --end 2026-07-26 \
     --rsi-oversold-threshold 52.19 --atr-take-profit-multiplier 1.86 \
     --stop-loss-atr-multiplier 0.5 \
@@ -531,7 +531,7 @@ comparison, and — only if you pass `--write-candidate` — writes it to
 ## 8. Reviewing and promoting a candidate
 
 ```bash
-py -3 promote_config.py
+python promote_config.py
 ```
 
 Lists every `System_Config` document (version, status, key metrics, notes)
@@ -539,7 +539,7 @@ so you can compare candidates against whatever's currently active. When
 you've decided:
 
 ```bash
-py -3 promote_config.py --promote 4
+python promote_config.py --promote 4
 ```
 
 Promotes version 4 to `active` (retiring whatever was active before). The
@@ -565,18 +565,18 @@ and are dropped for a breakout config, not shown as always-empty).
 
 Here's what "running the system" actually looks like:
 
-1. Once a day, either manually (`py -3 ingest.py` then `py -3
-   settle_trades.py`) or automatically via `py -3 daily_run.py`, which runs
+1. Once a day, either manually (`python ingest.py` then `python
+   settle_trades.py`) or automatically via `python daily_run.py`, which runs
    both back-to-back and posts a Discord report (status line + full output
    attached) either way — see "Automating the daily run" below to have this
    fire on its own every weekday.
 2. Open the dashboard (`streamlit run dip_buy_analyzer.py`) whenever you want
    to actually look at today's picks and size a real position.
-3. Whenever you actually place an order: `py -3 confirm_fill.py --ticker X
+3. Whenever you actually place an order: `python confirm_fill.py --ticker X
    --date Y [--price Z]`, so `Trade_Outcomes` can eventually distinguish
    your real track record from every mechanical signal's hypothetical one.
 4. Every few weeks, once `Trade_Outcomes` has grown, or just to re-tune
-   against history: `py -3 optimize.py --trials 50 ...`, review with
+   against history: `python optimize.py --trials 50 ...`, review with
    `promote_config.py`, promote if it looks like a genuine improvement (not
    just a boundary-pinned artifact — see section 6).
 
@@ -642,7 +642,7 @@ Register-ScheduledTask -TaskName "TradingSandbox-DailyRun" -Action $Action -Trig
     -Description "Runs ingest.py + settle_trades.py daily on weekdays after US market close."
 ```
 
-Adjust the `-Execute` path if your Python install lives elsewhere (`py -3 -c
+Adjust the `-Execute` path if your Python install lives elsewhere (`python -c
 "import sys; print(sys.executable)"` prints the exact path in use), and
 `-At 5:00PM` to whenever you want it to fire (after US market close, so the
 day's final bar is available). `-StartWhenAvailable` means a missed run
@@ -711,3 +711,35 @@ day. The scheduling gap itself is closed without needing any of that —
 `daily_run.py` + Task Scheduler (section 9) — so containerization is now
 purely about deployment portability, not a blocker to running this
 unattended.
+
+## 11. Ticker universe and the 2026-10-21 overhaul
+
+**Universe.** `universe.py` builds a rules-based universe instead of a
+hand-picked list: S&P 500 + 400 + 600 constituents, minus anything under $5
+or under $3M median daily dollar volume. Every dropped name is recorded with
+a reason in `universe.json`'s `dropped` list.
+
+```bash
+python universe.py build            # refresh universe.json (about 1,500 names)
+python universe.py show --caps large,mid
+python ingest.py --watchlist universe.json   # opt-in: scan the new universe
+```
+
+`universe.json` uses the same shape as `watchlist.txt`, so every existing
+loader reads it unchanged. The live scan still defaults to `watchlist.txt`
+on purpose: switching universes resets the meaning of every strategy's
+prospective track record (trust floors in `ic_tracking.py`), so make that
+change deliberately, not by accident. `watchlist.txt`, `smallmid_watchlist.txt`
+and `adr_watchlist.txt` remain for the backtest/benchmark scripts.
+
+**Coverage.** `ingest.py` prints `COVERAGE n/m (pct) [DEGRADED] skipped: ...`
+after scoring, and `daily_run.py` copies it into the Discord/GitHub summary.
+Below 90% analyzed, the run is labelled DEGRADED instead of silently OK.
+
+**Retired 2026-10-21** (live results in Mongo, `Trade_Outcomes`): the three
+Small/Mid-Cap variants (RSI, MA Crossover, Pairs: their workflows, runners and
+dashboard sections are deleted), Momentum Rank, Regime Switcher signal logging
+and the `best_ideas_sector_rs` variant. Historical rows stay in Mongo.
+Still logging because other components read their outcomes: `ma_crossover`
+(the active primary, and a `best_ideas` input), `pairs`, `llm_agent` and the
+`best_ideas` / `_qualitative` / `_meta` rows.

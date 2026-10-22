@@ -157,6 +157,14 @@ METHODOLOGIES = [
 # (skips a pointless ensemble_weight() call every scan), not the real
 # safety mechanism.
 
+# Variant labels whose own Trade_Signals logging was retired 2026-10-21
+# (live: 60 settled trades at -0.7..-1.1% avg PnL, 12% win rate). Only
+# best_ideas_sector_rs is safe to stop logging: it is already out of
+# METHODOLOGIES, so nothing reads its IC. best_ideas_qualitative/meta are
+# NOT listed -- ic_tracking.methodology_report() needs their logged
+# outcomes to weight the composite.
+RETIRED_VARIANT_LABELS = frozenset({"best_ideas_sector_rs"})
+
 # Composite/sub-methodology score -> Signal thresholds, all on Best Ideas'
 # own 0-100 "ensemble conviction" scale -- distinct from (not directly
 # comparable to) any individual TradingConfig's own RRR-weighted

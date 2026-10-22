@@ -17,3 +17,14 @@ ruvector.db
 
 
 misc.txt
+
+# Ruflo local secrets and runtime data
+.env.local
+.env.*.local
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+
+# Local agent/vector stores (regenerated)
+agentdb.rvf
+agentdb.rvf.*

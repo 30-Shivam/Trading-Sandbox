@@ -38,6 +38,7 @@ Usage:
     py -3 daily_run.py
 """
 
+import re
 import subprocess
 import sys
 import time
@@ -96,6 +97,13 @@ def run_step(
     return ok, f"{header}\n{body}"
 
 
+def extract_coverage(ingest_output: str) -> str | None:
+    """The `COVERAGE n/m (pct) [DEGRADED] ...` line ingest.py prints (see
+    universe.format_coverage_line), or None if the scan never got that far."""
+    match = re.search(r"^COVERAGE .*$", ingest_output, re.MULTILINE)
+    return match.group(0) if match else None
+
+
 def main() -> int:
     start = time.time()
     started_at = datetime.now(timezone.utc)
@@ -146,9 +154,15 @@ def main() -> int:
     step_line = " ".join(f"{n}={'ok' if ok else 'FAILED'}" for n, ok in step_results.items())
     print(f"daily_run.py: {status} ({elapsed:.0f}s elapsed). Steps: {step_line}")
 
+    coverage_line = extract_coverage(output_ingest)
+    if coverage_line is None:
+        coverage_line = "COVERAGE unknown (ingest never reached scoring)"
+    degraded = all_ok and "DEGRADED" in coverage_line
+    if degraded:
+        status = "DEGRADED"
     message = (
         f"[Trading-Sandbox] daily_run.py {status} -- {elapsed:.0f}s elapsed, "
-        f"{started_at:%Y-%m-%d %H:%M} UTC\n{step_line}"
+        f"{started_at:%Y-%m-%d %H:%M} UTC\n{step_line}\n{coverage_line}"
     )
     full_report = f"{output_ingest}\n\n{output_settle}\n\n{output_review}\n\n{output_research}\n\n{output_briefing}"
     filename = f"daily_run_{started_at:%Y%m%d_%H%M%S}.txt"
