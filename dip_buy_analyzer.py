@@ -18,11 +18,11 @@ compute, for every scanned ticker:
      Buy_Signal is True only when both are satisfied:
        a) the last close is at/below the structural support buy price, and
        b) the 14-day RSI is below rsi_oversold_threshold (mathematically
-          oversold), computed via pandas_ta.
+          oversold), computed via swingtrade.indicators.
 
   2. A limit SELL (take-profit) price, defined as
        buy_price + (atr_take_profit_multiplier * ATR14)
-     where ATR14 is the 14-day Average True Range (via pandas_ta), so the
+     where ATR14 is the 14-day Average True Range (via swingtrade.indicators), so the
      take-profit target scales with the stock's actual current volatility
      instead of a static percentage.
 
@@ -139,22 +139,6 @@ compute, for every scanned ticker:
       scan, not a research-only/informational view like the Loosened
       Filters section above.
 
-  13. A second top-level tab, "LLM Agent (experimental)" -- a genuine
-      LLM-derived Buy/Hold/Avoid judgment (see llm_agent.py), NOT another
-      mechanical strategy. Unlike everything in the "Mechanical Strategies"
-      tab, this can never be validated via walk-forward backtesting
-      (re-prompting a model with "historical" context risks it already
-      knowing what happened next from training data) -- it can only be
-      validated PROSPECTIVELY, over real elapsed time, which the tab's own
-      validation-progress counter makes visible. Evaluates only a small,
-      capped set of tickers the mechanical strategies already flagged
-      today (never an independent blind scan), logs Buy/Hold decisions to
-      MongoDB the same way research-tier signals are (tier="research" for
-      Hold, "actionable" for Buy) purely to accumulate real graded
-      outcomes over time, and is **never** passed to
-      swingtrade.allocate_capital() -- no cash pool, not capital-eligible,
-      regardless of how confident a call looks.
-
 The actual level/score/allocation math lives in the `swingtrade` package
 (no yfinance/streamlit dependency there); persistence lives in the
 `storage` package (no yfinance/streamlit dependency there either). This
@@ -165,16 +149,12 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-import yfinance as yf
 
 import ai_context
-import best_ideas
 import config_loader
 import daily_briefing
 import ic_tracking
-import llm_agent
 import market_data
-import regime_switcher
 import sec_fundamentals
 import storage
 import swingtrade
@@ -188,8 +168,6 @@ WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 
 DEFAULT_POSITION_BUDGET = 250    # default $ sidebar value for flat position sizing
 DEFAULT_RISK_AMOUNT = 25         # default $ sidebar value for risk-based position sizing
-MAX_LLM_CANDIDATES = 10          # cap on the "LLM Agent" tab's per-page-load evaluation
-                                  # count -- cost/rate-limit control, see llm_agent.py
 DEFAULT_TOTAL_CASH = 5_000       # default $ sidebar value for total available cash --
                                   # used by the secondary-strategy cash pools
 # squeeze_breakout's own entry here REMOVED 2026-08-26 -- it went past the
@@ -284,11 +262,6 @@ DISPLAY_COLUMNS_PAIRS = [
 # Distance_to_Buy_Pct are omitted entirely rather than shown as always-zero
 # columns, same convention as render_experimental_section()'s own display
 # columns.
-DISPLAY_COLUMNS_BEST_IDEAS = [
-    "Ticker", "Currency", "Signal", "Trade_Score", "Last_Close", "Buy_Price", "Stop_Loss",
-    "Sell_Price", "RRR", "RSI", "ATR", "Next_Earnings_Date", "Catalyst_Warning",
-    "Top_Headline", "As_Of",
-]
 IC_CACHE_TTL_SEC = 1800  # IC/IR only changes as new trades settle, not every
                           # scan -- a much longer cache than SCAN_CACHE_TTL_SEC
                           # is fine and avoids re-querying Trade_Signals/
@@ -302,24 +275,8 @@ def cached_market_uptrend(config: swingtrade.TradingConfig) -> tuple[bool, float
     return market_data.check_market_uptrend(config)
 
 
-@st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner=False)
-def cached_macro_snapshot() -> dict:
-    """VIX level/change + broad-market headlines for the LLM Agent tab (see
-    market_data.get_macro_snapshot()) -- fetched ONCE per page load and
-    shared across every candidate ticker evaluated that run, same caching
-    pattern as cached_market_uptrend/cached_fetch_bundle above."""
-    return market_data.get_macro_snapshot()
 
 
-@st.cache_data(ttl=IC_CACHE_TTL_SEC, show_spinner=False)
-def cached_ic_reports() -> dict[str, dict]:
-    """Information Coefficient / Information Ratio track record for every
-    Best Ideas methodology plus the composite itself (see
-    ic_tracking.methodology_report(), best_ideas.METHODOLOGIES) -- cached
-    separately/longer than the main scan (see IC_CACHE_TTL_SEC) since this
-    only changes as new trades settle, not on every dashboard interaction."""
-    names = best_ideas.METHODOLOGIES + ["best_ideas"]
-    return {name: ic_tracking.methodology_report(name) for name in names}
 
 
 @st.cache_data(ttl=SCAN_CACHE_TTL_SEC, show_spinner="Fetching watchlist data...")
@@ -428,31 +385,6 @@ def confirmable_holdings(saved_holdings: dict, pending_signals: list[dict]) -> d
     }
 
 
-def _render_hold_verdict_expander(ticker: str, mechanical_label: str, verdict: dict | None) -> None:
-    """Shared Streamlit rendering for llm_agent.evaluate_holding()'s
-    (target-hit, "hold past target?") and evaluate_stop_breach()'s
-    (stop-breached, "hold through for recovery?") second opinions -- the
-    two schemas' `action` vocabularies differ ("Hold For More"/"Take
-    Profit" vs. "Hold Through"/"Cut Loss") but the display shape is
-    identical (both share `confidence`/`news_sentiment`/`rationale`/
-    `provider_agreement`/`secondary_provider`/`secondary_decision`), so
-    this is written once rather than duplicated per schema."""
-    with st.expander(f"{ticker} -- mechanical: {mechanical_label} | LLM: {verdict['action'] if verdict else 'unavailable'}"):
-        if verdict is None:
-            st.caption("LLM evaluation failed or returned an unusable response for this ticker.")
-            return
-        agreement_note = (
-            f" ({verdict['secondary_provider']} agreed)"
-            if verdict["provider_agreement"] is True
-            else f" (providers disagreed -- {verdict['secondary_provider']} said "
-                 f"{verdict['secondary_decision']}, defaulted to the more conservative call)"
-            if verdict["provider_agreement"] is False else ""
-        )
-        st.write(
-            f"**{verdict['action']}** (confidence: {verdict['confidence']:.0f}/100) "
-            f"-- news sentiment: **{verdict['news_sentiment']}**{agreement_note}"
-        )
-        st.write(verdict["rationale"])
 
 
 def style_results(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
@@ -1111,15 +1043,13 @@ def main():
         tickers = tuple(parse_ticker_text(ticker_text))
         st.caption(f"{len(tickers)} ticker(s) loaded.")
 
-    tab_briefing, tab1, tab_best_ideas, tab_daily, tab2 = st.tabs(
-        ["Daily Briefing", "Mechanical Strategies", "Best Ideas", "Daily Signals (experimental)",
-         "LLM Agent (experimental)"]
+    tab_briefing, tab1, tab_daily = st.tabs(
+        ["Daily Briefing", "Mechanical Strategies", "Daily Signals (experimental)"]
     )
 
     with tab_briefing:
         st.caption(
-            "One consolidated view of the day's state -- Position Review, today's LLM Agent Buy "
-            "candidates (audit results included), and portfolio health for trust-floor-cleared "
+            "One consolidated view of the day's state -- Position Review and portfolio health for trust-floor-cleared "
             "methodologies. Same underlying logic as daily_briefing.py's own scheduled Discord "
             "digest (see daily_run.py) -- purely a synthesis of already-existing data, no new "
             "scans or LLM calls of its own."
@@ -1285,65 +1215,6 @@ def main():
                 with st.expander(f"Could not review ({len(review_skipped)})"):
                     st.dataframe(pd.DataFrame(review_skipped, columns=["Ticker", "Reason"]), hide_index=True)
 
-            # LLM second opinions for positions the mechanical rule just
-            # flagged SELL -- "is it worth holding a bit longer instead?"
-            # for BOTH directions, each with its own deliberately different
-            # default framing (see llm_agent.evaluate_holding()/
-            # evaluate_stop_breach()'s own docstrings for why these are two
-            # separate schemas, not one). Purely informational, never
-            # overrides the mechanical Recommendation above or affects
-            # sizing -- same "second opinion on something mechanically
-            # flagged" philosophy as the LLM Agent tab (not a blind
-            # evaluation of every holding).
-            if not review_df.empty and llm_agent.is_available():
-                hit_target = review_df[review_df["Recommendation"] == "SELL (target hit)"]
-                stop_breached = review_df[review_df["Recommendation"] == "SELL (stop breached)"]
-                if not hit_target.empty or not stop_breached.empty:
-                    macro_snapshot = cached_macro_snapshot()
-
-                if not hit_target.empty:
-                    st.caption(
-                        "LLM second opinion below for position(s) that hit their target -- "
-                        "informational only, never overrides the mechanical recommendation above."
-                    )
-                    for _, row in hit_target.iterrows():
-                        ticker = row["Ticker"]
-                        holding_context = {
-                            "avg_cost": float(row["Avg_Cost"]),
-                            "last_close": float(row["Last_Close"]),
-                            "sell_price": float(row["Sell_Price"]),
-                            "unrealized_pnl_pct": float(row["Unrealized_PnL_Pct"]),
-                            "headlines": market_data.get_multi_headlines(ticker),
-                            "macro": macro_snapshot,
-                            "qualitative": market_data.get_qualitative_snapshot(ticker),
-                        }
-                        with st.spinner(f"Getting LLM second opinion on {ticker}..."):
-                            hold_verdict = llm_agent.evaluate_holding(ticker, holding_context)
-                        _render_hold_verdict_expander(ticker, "SELL (target hit)", hold_verdict)
-
-                if not stop_breached.empty:
-                    st.caption(
-                        "LLM second opinion below for position(s) that breached their stop -- "
-                        "deliberately a STRICTER default than the target-hit opinion above (a missed "
-                        "gain only costs opportunity; holding through a real breakdown risks further, "
-                        "compounding capital loss). Informational only, never overrides the mechanical "
-                        "recommendation above."
-                    )
-                    for _, row in stop_breached.iterrows():
-                        ticker = row["Ticker"]
-                        stop_context = {
-                            "avg_cost": float(row["Avg_Cost"]),
-                            "last_close": float(row["Last_Close"]),
-                            "stop_loss": float(row["Stop_Loss"]),
-                            "unrealized_pnl_pct": float(row["Unrealized_PnL_Pct"]),
-                            "headlines": market_data.get_multi_headlines(ticker),
-                            "macro": macro_snapshot,
-                            "qualitative": market_data.get_qualitative_snapshot(ticker),
-                        }
-                        with st.spinner(f"Getting LLM second opinion on {ticker}..."):
-                            stop_verdict = llm_agent.evaluate_stop_breach(ticker, stop_context)
-                        _render_hold_verdict_expander(ticker, "SELL (stop breached)", stop_verdict)
-
         st.subheader("Scan Results")
         # See _display_columns_for_strategy() -- "rsi"/"pairs" each need
         # their own column set, every other strategy shares the generic one.
@@ -1464,151 +1335,6 @@ def main():
             with st.expander(f"Skipped tickers ({len(skipped)})"):
                 st.dataframe(pd.DataFrame(skipped, columns=["Ticker", "Reason"]), hide_index=True)
 
-    with tab_best_ideas:
-        st.subheader("Best Ideas")
-        st.warning(
-            "**Research tab -- full creative discretion, deliberately built WITHOUT this "
-            "project's usual validate-before-build sequencing (per explicit user request).** "
-            "Blends every methodology this codebase can bring to bear -- the live mechanical "
-            "strategies, the regime switcher, an LLM second opinion (llm_agent.py), a NEW "
-            "sector-relative-strength momentum score, a NEW rule-based qualitative/"
-            "fundamentals composite, and a NEW LLM meta-synthesis call that reasons "
-            "explicitly across all of the above -- into ONE recommendation per ticker. "
-            "Methodologies are blended by their own REAL, measured Information Coefficient/"
-            "Information Ratio (see the track record section below and ic_tracking.py), NOT "
-            "sharpe_like/win_rate, which can be confounded by payoff structure (see "
-            "best_ideas.py's module docstring). Every methodology here -- including the "
-            "3 new ones -- is logged under its own strategy label and settles completely "
-            "independently, same trust-floor discipline as the LLM Agent/Regime Switcher "
-            "tabs: a brand-new methodology gets an equal-weight prior until it clears its "
-            "own 20-settled-trade trust floor, at which point its real demonstrated IR "
-            "takes over the blend. **Never used for capital allocation, ever** -- no cash "
-            "pool, no allocate_capital() call, regardless of how confident a call looks."
-        )
-
-        strategy_frames_bi: dict[str, pd.DataFrame] = {config.strategy: results_df}
-        for label, df in secondary_results_by_label.items():
-            secondary_config, _ = secondary_configs[label]
-            if secondary_config is not None and df is not None and not df.empty:
-                strategy_frames_bi[secondary_config.strategy] = df
-
-        regime_candidates_bi: dict[str, dict[str, dict]] = {}
-        for strategy_name, df in strategy_frames_bi.items():
-            if df is None or df.empty:
-                continue
-            for _, row in df[df["Signal"] != "Ignore"].iterrows():
-                regime_candidates_bi.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
-        regime_picks_bi = [
-            pick for ticker, rows in regime_candidates_bi.items()
-            if (pick := regime_switcher.select_regime_pick(ticker, rows)) is not None
-        ]
-
-        ic_reports = cached_ic_reports()
-        with st.spinner("Generating Best Ideas (mechanical + regime + sector + LLM meta-synthesis)..."):
-            best_ideas_results = best_ideas.run_best_ideas(
-                strategy_frames_bi, regime_picks_bi, bundle, sector_data or {}, sector_lookup, config,
-                ic_reports, macro_snapshot=cached_macro_snapshot(), fetch_llm=llm_agent.is_available(),
-            )
-
-        composite_rows = best_ideas_results["best_ideas"]
-        if not composite_rows:
-            st.caption(
-                "No composite recommendation cleared the Watch threshold today -- either no "
-                "candidate had any available methodology opinion, or every blended score "
-                "landed below the Best Ideas conviction floor. Genuinely empty, not a bug."
-            )
-        else:
-            composite_df = pd.DataFrame(composite_rows).sort_values(
-                "Trade_Score", ascending=False
-            ).reset_index(drop=True)
-            st.dataframe(
-                style_results(composite_df[DISPLAY_COLUMNS_BEST_IDEAS]),
-                width="stretch", hide_index=True,
-            )
-            for _, row in composite_df.iterrows():
-                with st.expander(f"{row['Ticker']} -- {row['Signal']} (conviction {row['Trade_Score']:.0f}/100)"):
-                    st.write(row["Rationale"])
-                    st.caption("Methodology breakdown (score, blend weight):")
-                    breakdown_df = pd.DataFrame([
-                        {"Methodology": name, "Score": info["score"], "Blend Weight": f"{info['weight']:.0%}"}
-                        for name, info in row["Methodology_Breakdown"].items()
-                    ]).sort_values("Blend Weight", ascending=False)
-                    st.dataframe(breakdown_df, width="stretch", hide_index=True)
-
-        if storage_ok:
-            for label, rows in best_ideas_results.items():
-                if not rows:
-                    continue
-                row_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": label})
-                try:
-                    logged = storage.log_trade_signals(pd.DataFrame(rows), row_config.to_dict())
-                    st.caption(
-                        f"[{label}] Logged {logged['actionable']} actionable + {logged['research']} "
-                        "research signal(s) to MongoDB (never capital-allocated)."
-                    )
-                except Exception as exc:
-                    st.warning(f"[{label}] Signal logging failed: {exc}")
-        else:
-            st.caption("MongoDB not connected -- signals aren't being logged.")
-
-        st.divider()
-        st.subheader("Methodology track record (Information Coefficient / Information Ratio)")
-        st.caption(
-            "Rank correlation between each methodology's OWN score at signal time and its "
-            "realized forward pnl_pct at settlement, pooled over rolling 14-day windows "
-            "(daily breadth is too thin for a strict per-day IC) -- IR is mean(IC)/std(IC) "
-            "across those windows: how STABLE the ranking skill is, not just whether it "
-            "showed up once. This is what actually sets each methodology's blend weight "
-            "above -- see ic_tracking.py. Signals are tier-weighted (real Strong Buy/Buy = "
-            "1.0, Watch-only research signals = 0.5, research_loosened = 0.25) so one "
-            "correlated batch of Watch signals can't fake a trustworthy sample. **Weighting is "
-            "continuous credibility shrinkage (2026-08-29), not a hard cutover**: "
-            f"`credibility = effective_n / (effective_n + {ic_tracking.CREDIBILITY_HALF_LIFE_TRADES})`, "
-            "then weight blends that credibility's worth of the methodology's own signal (preferring "
-            f"IR once {ic_tracking.MIN_WINDOWS_FOR_IR_TRUST}+ rolling windows exist, else overall_ic) "
-            "with the neutral equal-weight prior -- a methodology with a little real evidence now counts "
-            "for a little, not nothing, and even strong evidence never reaches 100% credibility. See "
-            "ic_tracking.ensemble_weight()'s own docstring for the full real-data motivation."
-        )
-        methodology_names = best_ideas.METHODOLOGIES + ["best_ideas"]
-        methodology_weights = {name: ic_tracking.ensemble_weight(ic_reports.get(name) or {}) for name in methodology_names}
-        credibilities = {}
-        for name in methodology_names:
-            eff_n = (ic_reports.get(name) or {}).get("effective_n_settled", 0.0) or 0.0
-            credibilities[name] = eff_n / (eff_n + ic_tracking.CREDIBILITY_HALF_LIFE_TRADES)
-        low_credibility_count = sum(1 for c in credibilities.values() if c < 0.25)
-        if low_credibility_count:
-            st.caption(
-                f"**{low_credibility_count} of {len(methodology_names)} methodologies are still below "
-                "25% credibility** (real settled-trade evidence still thin) -- today's composite blend "
-                "leans heavily toward the neutral equal-weight prior for those, regardless of how their "
-                "own overall IC below looks."
-            )
-        ic_cols = st.columns(len(methodology_names))
-        for col, name in zip(ic_cols, methodology_names):
-            report = ic_reports.get(name) or {
-                "n_settled": 0, "effective_n_settled": 0.0, "overall_ic": None, "ir": None, "trust_floor_met": False,
-            }
-            weight = methodology_weights[name]
-            with col:
-                st.caption(f"**{name}**")
-                st.metric("Settled trades", report["n_settled"])
-                if report["n_settled"] == 0:
-                    st.caption("0 settled trades yet.")
-                else:
-                    effective_n = report.get("effective_n_settled", report["n_settled"])
-                    st.metric("Effective (tier + cluster)", f"{effective_n:.1f}")
-                    tier_only_n = report.get("tier_only_effective_n_settled")
-                    if tier_only_n is not None and abs(tier_only_n - effective_n) >= 0.5:
-                        st.caption(
-                            f"Tier-only would be {tier_only_n:.1f} -- same-day/same-sector clustering "
-                            "accounts for the rest of the gap from raw."
-                        )
-                    st.metric("Overall IC", f"{report['overall_ic']:.2f}" if report["overall_ic"] is not None else "n/a")
-                    st.metric("IR", f"{report['ir']:.2f}" if report["ir"] is not None else "n/a")
-                    st.metric("Weight", f"{weight:.2f}")
-                    st.caption(f"Credibility: {credibilities[name]:.0%} (effective_n={effective_n:.1f})")
-
     with tab_daily:
         st.warning(
             "**Experimental -- built to fire faster, not yet promoted.** Every strategy in "
@@ -1636,282 +1362,6 @@ def main():
                 momentum_panel=momentum_panel,
                 yield_curve=yield_curve,
             )
-
-    with tab2:
-        st.subheader("LLM Agent (experimental)")
-        st.warning(
-            "**Experimental -- not mechanically validated.** Every strategy in the "
-            "Mechanical Strategies tab was proven to beat matched-count random-entry "
-            "timing on 5 years of held-out historical data before being trusted (see "
-            "improvements.txt items 24-28). An LLM judgment CANNOT be validated that "
-            "way -- re-prompting a model with 'historical' context risks it already "
-            "knowing what happened next from training data. This can only be validated "
-            "PROSPECTIVELY: real time passing, real settled trades -- see the progress "
-            "counter below. **Never used for capital allocation** -- no cash pool, no "
-            "allocate_capital() call, regardless of how confident a call looks."
-        )
-
-        if not llm_agent.is_available():
-            st.caption(
-                "Unavailable: set GEMINI_API_KEY (same key used by the AI Context "
-                "feature in the other tab; primary provider) and/or GROQ_API_KEY "
-                "(fallback provider, used only if Gemini is unavailable or fails) "
-                "to enable -- either one alone is enough."
-            )
-        else:
-            # Candidate pre-filter: never independently scans the full watchlist --
-            # only tickers at least one mechanical strategy already found interesting
-            # today, capped at MAX_LLM_CANDIDATES. See llm_agent.py's module
-            # docstring for why (cost/rate-limit control, and framing this as a
-            # second opinion rather than a blind scan).
-            mechanical_frames = {"Primary (v19)": results_df, **secondary_results_by_label}
-            candidates: dict[str, dict] = {}
-            for strategy_label, df in mechanical_frames.items():
-                if df is None or df.empty:
-                    continue
-                interesting = df[df["Signal"] != "Ignore"]
-                for _, row in interesting.iterrows():
-                    entry = candidates.setdefault(row["Ticker"], {"scores": {}, "row": row})
-                    entry["scores"][strategy_label] = float(row["Trade_Score"])
-
-            ranked_candidates = sorted(
-                candidates.items(), key=lambda item: max(item[1]["scores"].values()), reverse=True
-            )[:MAX_LLM_CANDIDATES]
-
-            if not ranked_candidates:
-                st.caption(
-                    "No tickers scored above Ignore under any mechanical strategy today -- "
-                    "nothing for the LLM Agent to weigh in on (see the Mechanical Strategies "
-                    "tab). Genuinely empty, not a bug."
-                )
-            else:
-                st.caption(
-                    f"Evaluating {len(ranked_candidates)} ticker(s) flagged by at least one "
-                    "mechanical strategy today, highest mechanical Trade_Score first."
-                )
-                llm_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "llm_agent"})
-                # Fetched ONCE for the whole tab, not per ticker -- see
-                # cached_macro_snapshot()/market_data.get_macro_snapshot().
-                # Every candidate this run shares the same macro backdrop.
-                macro_snapshot = cached_macro_snapshot()
-                llm_rows = []
-                for ticker, entry in ranked_candidates:
-                    row = entry["row"]
-                    fundamentals = {}
-                    try:
-                        info = yf.Ticker(ticker).info
-                        fundamentals = {
-                            k: info[k] for k in ("trailingPE", "marketCap", "sector") if info.get(k) is not None
-                        }
-                    except Exception:
-                        pass
-                    context = {
-                        "last_close": float(row["Last_Close"]),
-                        "rsi": float(row["RSI"]) if pd.notna(row.get("RSI")) else None,
-                        "atr": float(row["ATR"]),
-                        "mechanical_scores": entry["scores"],
-                        "catalyst_warning": bool(row.get("Catalyst_Warning", False)),
-                        "next_earnings_date": row.get("Next_Earnings_Date"),
-                        "headlines": market_data.get_multi_headlines(ticker),
-                        "fundamentals": fundamentals,
-                        "macro": macro_snapshot,
-                        "qualitative": market_data.get_qualitative_snapshot(ticker),
-                    }
-
-                    with st.spinner(f"Evaluating {ticker}..."):
-                        verdict = llm_agent.evaluate_ticker(ticker, context)
-
-                    with st.expander(f"{ticker} -- {verdict['decision'] if verdict else 'unavailable'}"):
-                        if verdict is None:
-                            st.caption("LLM evaluation failed or returned an unusable response for this ticker.")
-                            continue
-                        agreement_note = (
-                            f" ({verdict['secondary_provider']} agreed)" if verdict["provider_agreement"] is True
-                            else f" (providers disagreed -- {verdict['secondary_provider']} said "
-                                 f"{verdict['secondary_decision']}, defaulted to the more conservative call)"
-                            if verdict["provider_agreement"] is False else ""
-                        )
-                        st.write(
-                            f"**{verdict['decision']}** (confidence: {verdict['confidence']:.0f}/100) -- "
-                            f"news sentiment: **{verdict['news_sentiment']}**{agreement_note}"
-                        )
-                        st.write(verdict["rationale"])
-
-                        # Adversarial second-pass review -- only worth the extra LLM
-                        # call for "Buy" (the only decision a human might actually act
-                        # on), see llm_agent.audit_verdict()'s own docstring.
-                        audit = llm_agent.audit_verdict(ticker, context, verdict) if verdict["decision"] == "Buy" else None
-                        if audit is not None:
-                            if audit["audit_result"] == "PASS":
-                                st.caption(f"Audit: PASS -- {audit['audit_notes']}")
-                            else:
-                                st.caption(f"Audit: FAIL -- {audit['audit_notes']}")
-
-                        if verdict["decision"] in ("Buy", "Hold", "Avoid"):
-                            # 2026-09-20 REAL BUG FIX -- see ingest.run_llm_agent()'s
-                            # identical fix for the full writeup: "Avoid" used to be
-                            # silently discarded (never logged, never IC-tracked),
-                            # and Trade_Score used to be RAW confidence regardless
-                            # of decision (a confident bearish call would have shown
-                            # a HIGH trade_score, inverting the correlation).
-                            atr = context["atr"]
-                            buy_price = round(context["last_close"], 2)
-                            sell_price = round(buy_price + llm_config.atr_take_profit_multiplier * atr, 2)
-                            stop_loss = round(buy_price - llm_config.stop_loss_atr_multiplier * atr, 2)
-                            risk = buy_price - stop_loss
-                            rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
-                            llm_rows.append({
-                                "Ticker": ticker, "As_Of": row["As_Of"], "Signal": verdict["decision"],
-                                "Trade_Score": best_ideas.llm_bullishness_score(verdict["decision"], verdict["confidence"]),
-                                "Last_Close": context["last_close"],
-                                "Buy_Price": buy_price, "Sell_Price": sell_price, "Stop_Loss": stop_loss,
-                                "RRR": rrr, "RSI": context["rsi"], "ATR": atr,
-                                "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
-                                "Next_Earnings_Date": context["next_earnings_date"],
-                                "Catalyst_Warning": context["catalyst_warning"], "Top_Headline": "",
-                                "Currency": row.get("Currency", "USD"),
-                                "Provider_Agreement": verdict["provider_agreement"],
-                                "Secondary_Provider": verdict["secondary_provider"],
-                                "Secondary_Decision": verdict["secondary_decision"],
-                                "Secondary_Confidence": verdict["secondary_confidence"],
-                                "Audit_Result": audit["audit_result"] if audit else None,
-                                "Audit_Notes": audit["audit_notes"] if audit else None,
-                            })
-
-                if llm_rows and storage_ok:
-                    llm_df = pd.DataFrame(llm_rows)
-                    # Neither "Hold" nor "Avoid" is in the shared Strong Buy/Buy/
-                    # Watch/Ignore vocabulary storage/signals.py expects -- map both
-                    # to "Watch" (research tier, loggable), same actionable/research
-                    # split every mechanical strategy uses. Trade_Score (already
-                    # direction-aware via best_ideas.llm_bullishness_score() above)
-                    # is what distinguishes a bearish Avoid from a neutral Hold, not
-                    # the Signal label.
-                    llm_df["Signal"] = llm_df["Signal"].replace({"Hold": "Watch", "Avoid": "Watch"})
-                    try:
-                        logged = storage.log_trade_signals(llm_df, llm_config.to_dict())
-                        st.caption(
-                            f"Logged {logged['actionable']} actionable + {logged['research']} "
-                            "research signal(s) to MongoDB (strategy=llm_agent, never capital-allocated)."
-                        )
-                    except Exception as exc:
-                        st.warning(f"Signal logging failed: {exc}")
-                elif llm_rows:
-                    st.caption("MongoDB not connected -- signals aren't being logged.")
-
-        st.divider()
-        st.subheader("Validation progress")
-        st.caption(
-            "Tracked exactly like every mechanical strategy's signals (same "
-            "settle_trades.py grading), but can ONLY be trusted after real time "
-            "passes. Proposed floor before drawing ANY conclusion: at least 20-30 "
-            "settled trades AND at least 4-6 weeks since the first one -- roughly "
-            "double optimize.py's own 15-trade trust floor, since prospective, "
-            "LLM-noise data deserves a higher bar than a large backtested sample, "
-            "not a lower one. This tab only ever evaluates the default \"balanced\" "
-            "prompt; the two challenger variants below run headlessly via "
-            "ingest.py's daily automation (see llm_agent.PROMPT_VARIANTS) so their "
-            "progress can be compared here once real data exists."
-        )
-        if storage_ok:
-            try:
-                db = storage.get_db()
-                variant_cols = st.columns(len(llm_agent.PROMPT_VARIANTS))
-                for variant, col in zip(llm_agent.PROMPT_VARIANTS, variant_cols):
-                    strategy_name = llm_agent.variant_strategy_name(variant)
-                    outcomes = list(db["Trade_Outcomes"].find({"strategy": strategy_name}))
-                    with col:
-                        st.caption(f"**{variant}** ({strategy_name})")
-                        if not outcomes:
-                            st.caption("0 settled trades yet.")
-                        else:
-                            first_exit_date = min(o["exit_date"] for o in outcomes)
-                            days_elapsed = (pd.Timestamp.now().normalize() - pd.Timestamp(first_exit_date)).days
-                            win_count = sum(1 for o in outcomes if o["status"] == "WIN")
-                            st.metric("Settled trades", len(outcomes))
-                            st.metric("Days since first settled trade", days_elapsed)
-                            st.metric("Win rate so far", f"{win_count / len(outcomes) * 100:.1f}%")
-            except Exception as exc:
-                st.caption(f"Could not load validation progress: {exc}")
-        else:
-            st.caption("MongoDB not connected -- no progress to show.")
-
-        st.divider()
-        st.subheader("Regime Switcher (experimental)")
-        st.caption(
-            "For each ticker at least one of the 3 live mechanical strategies (breakout/"
-            "squeeze_breakout/ma_crossover) flagged today, picks whichever one's signal to "
-            "trust based on the ticker's own ADX (>=25 = trending -> prefers breakout, then "
-            "ma_crossover; <25 = choppy -> prefers squeeze_breakout) -- see regime_switcher.py. "
-            "**Deliberately skips this project's own backtesting-validation pipeline** (by "
-            "explicit user choice) -- can ONLY be judged by real settled trades over real time, "
-            "same trust-floor convention as the LLM Agent tab above. **Never used for capital "
-            "allocation** regardless of how confident a pick looks."
-        )
-        strategy_frames: dict[str, pd.DataFrame] = {config.strategy: results_df}
-        for label, df in secondary_results_by_label.items():
-            secondary_config, _ = secondary_configs[label]
-            if secondary_config is not None and df is not None and not df.empty:
-                strategy_frames[secondary_config.strategy] = df
-
-        regime_candidates: dict[str, dict[str, dict]] = {}
-        for strategy_name, df in strategy_frames.items():
-            if df is None or df.empty:
-                continue
-            interesting = df[df["Signal"] != "Ignore"]
-            for _, row in interesting.iterrows():
-                regime_candidates.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
-
-        regime_picks = []
-        for ticker, strategy_rows in regime_candidates.items():
-            pick = regime_switcher.select_regime_pick(ticker, strategy_rows)
-            if pick is not None:
-                regime_picks.append(pick)
-
-        if not regime_picks:
-            st.caption(
-                "No regime-matched picks today -- either nothing scored above Ignore under "
-                "any of the 3 live strategies, or none of today's candidates matched their "
-                "own regime's preferred strategy. Genuinely empty, not a bug."
-            )
-        else:
-            picks_df = pd.DataFrame(regime_picks)
-            st.dataframe(
-                picks_df[["Ticker", "Signal", "Trade_Score", "Regime", "Source_Strategy",
-                          "Buy_Price", "Sell_Price", "Stop_Loss"]],
-                width="stretch", hide_index=True,
-            )
-            if storage_ok:
-                switcher_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": "regime_switcher"})
-                try:
-                    logged = storage.log_trade_signals(picks_df, switcher_config.to_dict())
-                    st.caption(
-                        f"Logged {logged['actionable']} actionable + {logged['research']} "
-                        "research signal(s) to MongoDB (strategy=regime_switcher, never "
-                        "capital-allocated)."
-                    )
-                except Exception as exc:
-                    st.warning(f"Signal logging failed: {exc}")
-
-        st.caption("**Validation progress**")
-        if storage_ok:
-            try:
-                db = storage.get_db()
-                outcomes = list(db["Trade_Outcomes"].find({"strategy": "regime_switcher"}))
-                if not outcomes:
-                    st.caption("0 settled trades yet.")
-                else:
-                    first_exit_date = min(o["exit_date"] for o in outcomes)
-                    days_elapsed = (pd.Timestamp.now().normalize() - pd.Timestamp(first_exit_date)).days
-                    win_count = sum(1 for o in outcomes if o["status"] == "WIN")
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Settled trades", len(outcomes))
-                    col2.metric("Days since first settled trade", days_elapsed)
-                    col3.metric("Win rate so far", f"{win_count / len(outcomes) * 100:.1f}%")
-            except Exception as exc:
-                st.caption(f"Could not load validation progress: {exc}")
-        else:
-            st.caption("MongoDB not connected -- no progress to show.")
 
 
 if __name__ == "__main__":

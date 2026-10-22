@@ -19,12 +19,10 @@ TOP_LEVEL_MODULES = [
     "daily_briefing",
     "confirm_fill",
     "evaluate_config",
-    "llm_agent",
     "ai_context",
     "market_data",
     "notifications",
     "config_loader",
-    "best_ideas",
     "ic_tracking",
 ]
 

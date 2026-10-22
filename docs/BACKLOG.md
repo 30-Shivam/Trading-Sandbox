@@ -27,17 +27,19 @@
 - [ ] Alpaca market-data API as a fallback when Yahoo rate-limits (check feed/volume consistency first: IEX volume is a small slice of consolidated volume).
 
 ## Cost / simplification
-- [x] Soft-disabled llm_agent + best_ideas steps (`config_loader.DISABLED_RESEARCH_STEPS`): net negative live, burn LLM quota. Re-enable by editing the set.
+- [x] llm_agent + best_ideas + llm_strategy_research removed 2026-10-22 (net negative live). Restore from git history if ever needed.
 - [x] Retired small/mid variants, momentum_rank, regime_switcher logging, sector_rs logging.
-- [ ] Decide on `llm_strategy_research.py` (15 cycles in 2 months, 1 escalated, 0 promoted): throttle to weekly or drop.
+- [x] `llm_strategy_research.py` dropped (0 promoted). `simulate_llm_strategy_*` / `levels/llm_rules.py` / the `llm_strategy` config path are now orphaned but still dispatch-tested.
 - [x] ma_crossover v71 retired as primary 2026-10-22 (explicit "no primary"; ingest skips logging the rsi fallback). accruals_rank NOT promoted: universe run excess +0.001%, t=0.52 (FAIL); curated-list pass was bias.
-- [ ] Remove dead code for retired strategies (regime_switcher.py, best_ideas.py, llm_agent.py, smallmid references) once the above decisions are final.
+- [x] Dead code removed: llm_agent, best_ideas, llm_strategy_research, regime_switcher, reoptimize_*, benchmark_consensus_signal.
+- [ ] Still in place: core ma_crossover code (config fields, dispatch, ~20 tests), `llm_strategy` plumbing, market_data macro/qualitative snapshot helpers (now unused), smallmid references.
 
 ## Reliability
 - [x] Batched fetch + retry (1,487 tickers in 2.2 min), COVERAGE line, DEGRADED status.
 - [x] Dead-man's-switch ping (`HEALTHCHECK_URL` secret; no-op without it). TODO: create a healthchecks.io check and add the secret.
 - [x] `requirements.lock` (pip freeze). CI still installs `requirements.txt`; consider pinning.
-- [ ] pandas_ta emits a pandas-4 deprecation warning; replace or pin before upgrading pandas.
+- [x] pandas_ta replaced by `swingtrade/indicators.py` (exact-match tests vs pandas_ta; dev-only oracle, skipped if absent).
+- [x] Split swingtrade/backtest.py (6.8k lines) and levels.py (4.5k) into packages. Not split: optimize.py, benchmark_random_entry.py, dip_buy_analyzer.py, config.py, scoring.py.
 - [ ] Switch live scan to `universe.json` (opt-in) once accruals/value verdicts are in; rank strategies change meaning with the universe.
 
 ## Code health
