@@ -48,3 +48,12 @@
 
 - [x] 2026-10-22: llm_strategy_research soft-disabled; Bonferroni registry now 28 trials (factor portfolios, SPY timing, QQQ tilt added).
 - [ ] Consider dropping value_rank/accruals_rank paper satellite too if they stay at excess~0 (they fail the gate); decide after ~20 trading days of paper data.
+
+## Strategy search loop (2026-10-22, protocol: one fixed spec per idea, design <2013 / holdout 2013+, block-bootstrap t, every try registered; budget 5, 4 used)
+Scripts in `research/etf_overlays/` (cache dir is regenerated). Bonferroni bar is now 0.05/32 = 0.0016. ALL FOUR FAILED:
+- vol_managed_spy (target = SPY design vol, cap 1.5x): design excess -0.1%/yr; holdout +2.4%/yr p=0.065. Reject (design fail).
+- lev2x_trend200 (2x SPY above 200d SMA else T-bills): design +2.3%/yr t=0.5; holdout +6.5%/yr p=0.04 BUT maxDD -36.3% vs SPY -33.7% (fails the drawdown gate) and not Bonferroni-significant. Reject.
+- sector_etf_mom_top3: design +3.7%/yr p=0.07; holdout -0.1%/yr. Reject.
+- gem_dual_momentum: design +4.4%/yr (DD -20% vs -55%); holdout -6.3%/yr t=-3.0. Reject.
+- Not testable: LLM/news sentiment (no point-in-time news history; live LLM variants lost money).
+- [ ] 1 slot left in this session's budget; remaining paths are beta bets (2x trend is the closest) or paid point-in-time fundamentals data.

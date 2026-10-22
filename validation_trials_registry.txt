@@ -26,3 +26,7 @@ factor_near_52w_high
 factor_trend_above_200d
 spy_trend_timing
 qqq_tilt
+vol_managed_spy
+lev2x_trend200
+sector_etf_mom_top3
+gem_dual_momentum
