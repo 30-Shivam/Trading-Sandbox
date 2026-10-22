@@ -53,6 +53,13 @@ jobs:
           # limit -- OpenRouter's free ":free" models need no paid top-up,
           # just an API key from openrouter.ai/keys.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Alpaca PAPER trading (paper_trade.py). Off unless the repo VARIABLE
+          # PAPER_TRADING_ENABLED is "1" (Settings -> Secrets and variables ->
+          # Actions -> Variables); keys are repo secrets. broker.py only ever
+          # talks to paper-api.alpaca.markets.
+          PAPER_TRADING_ENABLED: ${{ vars.PAPER_TRADING_ENABLED }}
+          ALPACA_PAPER_KEY: ${{ secrets.ALPACA_PAPER_KEY }}
+          ALPACA_PAPER_SECRET: ${{ secrets.ALPACA_PAPER_SECRET }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # Only needed if your Mongo setup uses a non-default database name

@@ -743,3 +743,24 @@ and the `best_ideas_sector_rs` variant. Historical rows stay in Mongo.
 Still logging because other components read their outcomes: `ma_crossover`
 (the active primary, and a `best_ideas` input), `pairs`, `llm_agent` and the
 `best_ideas` / `_qualitative` / `_meta` rows.
+
+## 12. Alpaca paper trading (optional)
+
+`paper_trade.py` turns today's actionable signals into real paper-money bracket
+orders (limit entry + stop + target) and writes the real fills back to Mongo
+(`confirmed_filled`, real fill price). Paper fills are optimistic, so treat the
+result as an execution-realism check, not proof of edge.
+
+```bash
+python paper_trade.py --dry-run     # show what would be ordered, send nothing
+PAPER_TRADING_ENABLED=1 python paper_trade.py
+python paper_trade.py --report      # paper P&L vs hypothetical settlement
+```
+
+Needs `ALPACA_PAPER_KEY` / `ALPACA_PAPER_SECRET` in `.env` (local) or repo secrets
+(GitHub Actions). `daily_run.py` runs it automatically only when
+`PAPER_TRADING_ENABLED=1` (a repo *variable* in CI). Defaults: strategies
+`value_rank,accruals_rank`, max 10 positions, $100 risk and $2,500 notional per
+trade, 50% max exposure, stale entries cancelled after 3 days, positions closed
+after 21 days. Override with `PAPER_*` env vars (see the module docstring).
+`broker.py` refuses any host except `paper-api.alpaca.markets`.

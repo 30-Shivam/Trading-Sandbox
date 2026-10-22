@@ -38,6 +38,7 @@ Usage:
     py -3 daily_run.py
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -53,7 +54,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # Per-step caps sized to fit inside the workflow's 45-minute limit with room to report.
 STEP_TIMEOUT_SEC = {
     "ingest.py": 22 * 60, "settle_trades.py": 8 * 60, "review_positions.py": 3 * 60,
-    "llm_strategy_research.py": 6 * 60, "daily_briefing.py": 3 * 60,
+    "llm_strategy_research.py": 6 * 60, "daily_briefing.py": 3 * 60, "paper_trade.py": 3 * 60,
 }
 
 
@@ -111,6 +112,14 @@ def main() -> int:
     ok_ingest, output_ingest = run_step("ingest.py", "ingest.py", STEP_TIMEOUT_SEC["ingest.py"])
     print(output_ingest)
 
+    # Optional: only when PAPER_TRADING_ENABLED=1. Runs after ingest (needs
+    # today's signals) and BEFORE settle (so settlement sees real fills).
+    paper_enabled = os.getenv("PAPER_TRADING_ENABLED") == "1"
+    ok_paper, output_paper = (True, "")
+    if paper_enabled:
+        ok_paper, output_paper = run_step("paper_trade.py", "paper_trade.py", STEP_TIMEOUT_SEC["paper_trade.py"])
+        print(output_paper)
+
     ok_settle, output_settle = run_step("settle_trades.py", "settle_trades.py", STEP_TIMEOUT_SEC["settle_trades.py"])
     print(output_settle)
 
@@ -142,7 +151,7 @@ def main() -> int:
     print(output_briefing)
 
     elapsed = time.time() - start
-    all_ok = ok_ingest and ok_settle and ok_review and ok_research and ok_briefing
+    all_ok = ok_ingest and ok_paper and ok_settle and ok_review and ok_research and ok_briefing
 
     status = "OK" if all_ok else "FAILED"
     # One line naming exactly which step(s) failed -- the per-step headers
@@ -151,6 +160,8 @@ def main() -> int:
         "ingest": ok_ingest, "settle": ok_settle, "review": ok_review,
         "research": ok_research, "briefing": ok_briefing,
     }
+    if paper_enabled:
+        step_results["paper"] = ok_paper
     step_line = " ".join(f"{n}={'ok' if ok else 'FAILED'}" for n, ok in step_results.items())
     print(f"daily_run.py: {status} ({elapsed:.0f}s elapsed). Steps: {step_line}")
 
@@ -164,7 +175,7 @@ def main() -> int:
         f"[Trading-Sandbox] daily_run.py {status} -- {elapsed:.0f}s elapsed, "
         f"{started_at:%Y-%m-%d %H:%M} UTC\n{step_line}\n{coverage_line}"
     )
-    full_report = f"{output_ingest}\n\n{output_settle}\n\n{output_review}\n\n{output_research}\n\n{output_briefing}"
+    full_report = f"{output_ingest}\n\n{output_paper}\n\n{output_settle}\n\n{output_review}\n\n{output_research}\n\n{output_briefing}"
     filename = f"daily_run_{started_at:%Y%m%d_%H%M%S}.txt"
     notifications.notify_with_file(message, filename, full_report)
     # Second, independent channel -- always live in GitHub Actions (no
