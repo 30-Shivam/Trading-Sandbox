@@ -90,3 +90,21 @@ def test_daily_run_extracts_coverage_line():
     out = "noise\nCOVERAGE 380/407 (93.4%) skipped: other=27\nmore"
     assert daily_run.extract_coverage(out) == "COVERAGE 380/407 (93.4%) skipped: other=27"
     assert daily_run.extract_coverage("nothing here") is None
+
+
+def test_healthcheck_ping_success_failure_and_noop(monkeypatch):
+    import daily_run
+    import requests
+    calls = []
+    monkeypatch.setattr(requests, "get", lambda url, timeout: calls.append(url))
+    monkeypatch.delenv("HEALTHCHECK_URL", raising=False)
+    assert daily_run.ping_healthcheck(True) is False and calls == []
+    assert daily_run.ping_healthcheck(True, "https://hc.example/abc/") is True
+    assert daily_run.ping_healthcheck(False, "https://hc.example/abc") is True
+    assert calls == ["https://hc.example/abc", "https://hc.example/abc/fail"]
+
+    def boom(url, timeout):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(requests, "get", boom)
+    assert daily_run.ping_healthcheck(True, "https://hc.example/abc") is False

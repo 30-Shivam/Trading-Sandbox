@@ -57,6 +57,8 @@ jobs:
           # PAPER_TRADING_ENABLED is "1" (Settings -> Secrets and variables ->
           # Actions -> Variables); keys are repo secrets. broker.py only ever
           # talks to paper-api.alpaca.markets.
+          # Optional dead-man's switch URL (e.g. a healthchecks.io check); see daily_run.ping_healthcheck().
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
           PAPER_TRADING_ENABLED: ${{ vars.PAPER_TRADING_ENABLED }}
           ALPACA_PAPER_KEY: ${{ secrets.ALPACA_PAPER_KEY }}
           ALPACA_PAPER_SECRET: ${{ secrets.ALPACA_PAPER_SECRET }}

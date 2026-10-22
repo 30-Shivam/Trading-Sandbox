@@ -98,6 +98,23 @@ def run_step(
     return ok, f"{header}\n{body}"
 
 
+def ping_healthcheck(ok: bool, url: str | None = None) -> bool:
+    """Dead-man's switch (healthchecks.io-style): GET HEALTHCHECK_URL on success,
+    HEALTHCHECK_URL/fail on failure. If the scheduler never fires, no ping arrives
+    and the service alerts -- the one failure this script cannot report from
+    inside. No-op without HEALTHCHECK_URL; never raises."""
+    url = url or os.getenv("HEALTHCHECK_URL")
+    if not url:
+        return False
+    try:
+        import requests
+        requests.get(url.rstrip("/") + ("" if ok else "/fail"), timeout=10)
+        return True
+    except Exception as exc:
+        print(f"[WARN] healthcheck ping failed: {exc}", file=sys.stderr)
+        return False
+
+
 def extract_coverage(ingest_output: str) -> str | None:
     """The `COVERAGE n/m (pct) [DEGRADED] ...` line ingest.py prints (see
     universe.format_coverage_line), or None if the scan never got that far."""
@@ -191,6 +208,7 @@ def main() -> int:
         # to an actual proactive alert on top of the two channels above.
         print(f"::error title=daily_run.py FAILED::{message}")
 
+    ping_healthcheck(all_ok)
     return 0 if all_ok else 1
 
 

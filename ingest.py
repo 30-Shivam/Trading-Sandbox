@@ -663,28 +663,34 @@ def run(
                     if summary:
                         print(f"\n[{row['Ticker']} ({row['Signal']})] {summary}")
 
-    run_llm_agent(all_signal_frames, config)
+    if "llm_agent" in config_loader.DISABLED_RESEARCH_STEPS:
+        print("LLM Agent: disabled (config_loader.DISABLED_RESEARCH_STEPS) -- skipped.")
+    else:
+        run_llm_agent(all_signal_frames, config)
     run_experimental_strategies(bundle, market_df, sector_lookup, sector_data, yield_curve=yield_curve)
 
-    # Recomputes the same regime picks run_regime_switcher() just derived
-    # internally (cheap, no network -- pure re-application of
-    # regime_switcher.select_regime_pick() over strategy_frames, already
-    # fetched/scored above) rather than threading a return value through
-    # run_regime_switcher()'s existing signature -- keeps that
-    # already-working function untouched. See best_ideas.py for why the
-    # RAW pick dicts (not run_regime_switcher()'s own reduced row shape)
-    # are what run_best_ideas_strategy() needs.
-    best_ideas_regime_candidates: dict[str, dict[str, dict]] = {}
-    for strategy_name, df in strategy_frames.items():
-        if df is None or df.empty:
-            continue
-        for _, row in df[df["Signal"] != "Ignore"].iterrows():
-            best_ideas_regime_candidates.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
-    regime_picks = [
-        pick for ticker, rows in best_ideas_regime_candidates.items()
-        if (pick := regime_switcher.select_regime_pick(ticker, rows)) is not None
-    ]
-    run_best_ideas_strategy(strategy_frames, regime_picks, bundle, market_df, sector_lookup, sector_data, config)
+    if "best_ideas" in config_loader.DISABLED_RESEARCH_STEPS:
+        print("Best Ideas: disabled (config_loader.DISABLED_RESEARCH_STEPS) -- skipped.")
+    else:
+        # Recomputes the same regime picks run_regime_switcher() just derived
+        # internally (cheap, no network -- pure re-application of
+        # regime_switcher.select_regime_pick() over strategy_frames, already
+        # fetched/scored above) rather than threading a return value through
+        # run_regime_switcher()'s existing signature -- keeps that
+        # already-working function untouched. See best_ideas.py for why the
+        # RAW pick dicts (not run_regime_switcher()'s own reduced row shape)
+        # are what run_best_ideas_strategy() needs.
+        best_ideas_regime_candidates: dict[str, dict[str, dict]] = {}
+        for strategy_name, df in strategy_frames.items():
+            if df is None or df.empty:
+                continue
+            for _, row in df[df["Signal"] != "Ignore"].iterrows():
+                best_ideas_regime_candidates.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
+        regime_picks = [
+            pick for ticker, rows in best_ideas_regime_candidates.items()
+            if (pick := regime_switcher.select_regime_pick(ticker, rows)) is not None
+        ]
+        run_best_ideas_strategy(strategy_frames, regime_picks, bundle, market_df, sector_lookup, sector_data, config)
 
     if skipped:
         print(f"Skipped {len(skipped)} ticker(s) (primary scan -- fetch + scoring failures):")
