@@ -1,5 +1,7 @@
 # Cheapest fix for the survivorship / point-in-time data problem (researched 2026-10-23)
 
+> UPDATE 2026-10-23 (later): Tiingo free key tested - delisted history is served for some names (TWTR, ATVI, SIVB) but not all (FRC missing, BBBY empty); bulk pull of all 181 names in progress. Also found a worse bug than missing delisted prices: the ratio-model dataset included filings from BEFORE a stock joined the index (look-ahead). The 'promising' ridge result was mostly that artifact; see docs/BACKLOG.md correction. Probability table below pre-dates this and is optimistic for the ridge.
+
 ## What is actually missing (measured, not assumed)
 - Point-in-time S&P 500 members 2010-2025 (hanshof CSV): **752 unique names**.
 - Yahoo returns usable history for **571 (76%)**; **181 (24%) have none** (delisted/acquired/renamed). Coverage by membership year: 73% (2010) -> 96% (2025). Early years, where long-horizon tests live, are worst.

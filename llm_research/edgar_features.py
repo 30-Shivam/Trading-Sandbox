@@ -39,6 +39,11 @@ def rows_for(ticker, d):
     gp = annual_by_accn(series(d, ["GrossProfit"])); op = annual_by_accn(series(d, ["OperatingIncomeLoss"]))
     cf = annual_by_accn(series(d, ["NetCashProvidedByUsedInOperatingActivities"]))
     at = annual_by_accn(series(d, ["Assets"])); li = annual_by_accn(series(d, ["Liabilities"]))
+    # Many filers never tag total Liabilities: derive it as LiabilitiesAndStockholdersEquity - equity (same accession/period).
+    lse = annual_by_accn(series(d, ["LiabilitiesAndStockholdersEquity"]))
+    eq = annual_by_accn(series(d, ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "StockholdersEquity"]))
+    for key, (v, filed) in lse.items():
+        if key not in li and key in eq: li[key] = (v - eq[key][0], filed)
     rows = []
     for (accn, end), (r1, filed) in rev.items():
         prev_end = (pd.Timestamp(end) - pd.DateOffset(years=1))
