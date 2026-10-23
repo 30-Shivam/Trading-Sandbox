@@ -54,7 +54,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # Per-step caps sized to fit inside the workflow's 45-minute limit with room to report.
 STEP_TIMEOUT_SEC = {
     "ingest.py": 22 * 60, "settle_trades.py": 8 * 60, "review_positions.py": 3 * 60,
-    "daily_briefing.py": 3 * 60, "paper_trade.py": 3 * 60, "rebalance.py": 2 * 60,
+    "daily_briefing.py": 3 * 60, "ratio_tracker.py": 12 * 60, "paper_trade.py": 3 * 60, "rebalance.py": 2 * 60,
 }
 
 
@@ -146,6 +146,11 @@ def main() -> int:
     ok_review, output_review = run_step("review_positions.py", "review_positions.py", STEP_TIMEOUT_SEC["review_positions.py"])
     print(output_review)
 
+    # Evidence-only forward test of the frozen SEC-ratio model (never trades). Deliberately NOT part of all_ok:
+    # an EDGAR/Yahoo hiccup here must not mark the trading pipeline FAILED.
+    _, output_tracker = run_step("ratio_tracker.py", "ratio_tracker.py", STEP_TIMEOUT_SEC["ratio_tracker.py"], args=["--weekly"])
+    print(output_tracker)
+
     # Runs LAST and unconditionally -- it only reads/synthesizes what the
     # steps above already wrote, so it should report the day's FINAL
     # state even if an earlier step failed partway through (same as
@@ -178,7 +183,7 @@ def main() -> int:
         f"[Trading-Sandbox] daily_run.py {status} -- {elapsed:.0f}s elapsed, "
         f"{started_at:%Y-%m-%d %H:%M} UTC\n{step_line}\n{coverage_line}"
     )
-    full_report = f"{output_ingest}\n\n{output_paper}\n\n{output_settle}\n\n{output_review}\n\n{output_briefing}"
+    full_report = f"{output_ingest}\n\n{output_paper}\n\n{output_settle}\n\n{output_review}\n\n{output_tracker}\n\n{output_briefing}"
     filename = f"daily_run_{started_at:%Y%m%d_%H%M%S}.txt"
     notifications.notify_with_file(message, filename, full_report)
     # Second, independent channel -- always live in GitHub Actions (no
