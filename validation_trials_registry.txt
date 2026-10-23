@@ -40,3 +40,5 @@ french_blend_mom_bm_ac_op
 etf_factor_blend_mtum_vlue_qual
 sec_ratio_ridge
 llm_masked_fundamentals
+btc_trend200
+spy_btc_trend_blend
