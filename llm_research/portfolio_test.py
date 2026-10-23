@@ -2,7 +2,7 @@
 score_fn(train_df, test_df) -> test scores; selection threshold = top (1-q) of the TRAIN fitted scores.
 Training uses only filings whose 126d label had ALREADY ended before the test year started."""
 import sys, numpy as np, pandas as pd, pathlib
-sys.path.insert(0, "/private/tmp/claude-501/-Users-30-shivam-Downloads-Trading-Sandbox/a118247b-3bee-4075-8406-247029065205/scratchpad/research")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "research" / "etf_overlays"))  # metrics.py (committed)
 ROOT = pathlib.Path(__file__).parent; D = pd.read_pickle(ROOT/"cache"/"dataset.pkl"); P = pd.read_pickle(ROOT/"cache"/"prices.pkl")
 F = ["rev_growth","gross_margin","gm_change","op_margin","opm_change","roa","roa_change","accruals","cfo_to_assets","leverage","lev_change","asset_growth"]
 D["year"] = D.filed.dt.year
