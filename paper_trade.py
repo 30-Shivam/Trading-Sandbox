@@ -9,7 +9,7 @@ treat paper P&L as an upper bound, not proof of edge.
 Safety rails
   * Off unless PAPER_TRADING_ENABLED=1. `--dry-run` prints orders, sends none.
   * broker.py refuses any host except paper-api.alpaca.markets.
-  * Only strategies in PAPER_STRATEGIES (default value_rank,accruals_rank),
+  * Only strategies in PAPER_STRATEGIES (default none: nothing has passed the index gate),
     only tier "actionable", only plain USD tickers (no '.'/'-' share classes), whole shares.
   * Caps: PAPER_MAX_POSITIONS, per-trade risk and notional, satellite exposure (default 15% of equity; core ETFs from rebalance.py are excluded).
   * client_order_id = ts.<strategy>.<ticker>.<signal_date> is unique, so a
@@ -35,7 +35,7 @@ import storage
 
 ID_PREFIX = "ts"
 DEFAULTS = {
-    "PAPER_STRATEGIES": "value_rank,accruals_rank",
+    "PAPER_STRATEGIES": "",  # empty = no satellite: only index-gate PASSERS may be listed (none yet, 2026-10-23)
     "PAPER_MAX_POSITIONS": "10",
     "PAPER_RISK_PER_TRADE_USD": "100",
     "PAPER_MAX_NOTIONAL_USD": "2500",

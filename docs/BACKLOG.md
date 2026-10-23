@@ -57,3 +57,11 @@ Scripts in `research/etf_overlays/` (cache dir is regenerated). Bonferroni bar i
 - gem_dual_momentum: design +4.4%/yr (DD -20% vs -55%); holdout -6.3%/yr t=-3.0. Reject.
 - Not testable: LLM/news sentiment (no point-in-time news history; live LLM variants lost money).
 - [ ] 1 slot left in this session's budget; remaining paths are beta bets (2x trend is the closest) or paid point-in-time fundamentals data.
+
+## Strategy search, round 2 (2026-10-23) - option (c) adopted: SPY core, satellite only for gate-passers
+- [x] `paper_trade.py` default PAPER_STRATEGIES is now empty; `rebalance.py` default is SPY 85% + QQQ 15%, satellite reserve 0%. Existing satellite positions (7) are not force-sold; they age out via max-hold.
+- Free survivorship-free data: no free survivorship-free STOCK price set exists (searched; Quandl WIKI has no public mirror, others paid). Workaround: Ken French library decile portfolios (CRSP incl. delisted, 1926+), files in `research/french_deciles/README.md`. EDGAR Financial Statement Data Sets (free, as-filed, 2009+) are the point-in-time fundamentals source.
+- French long-only value-weighted deciles vs market, design 1963-2002 / holdout 2003-2026-08 (gross, no costs): mom +8.9% -> +3.1%/yr (holdout t=1.3); B/M value +5.8% -> +2.1% (t=0.6); E/P +4.5% -> +1.7%; low-accruals +1.8% -> +2.1% (t=1.2); profitability +0.8% -> +1.7%; low-investment +3.4% -> +0.5%. Equal-weight blend (mom+B/M+low-AC+profitability): +4.3% -> +2.3%/yr (design t=5.1, holdout t=2.3) but maxDD -54.7% vs market -50.3% (fails the DD gate). Edge visibly decays after publication.
+- Tradable check: real factor ETFs since 2013-07 (MTUM+VLUE+QUAL equal weight, net of fees): CAGR 13.91% vs SPY 13.98%, excess +0.05%/yr t=0.05, maxDD -35.6% vs -33.7%. FAIL. The paper edge is not capturable with investable ETFs.
+- Registry: 8 more trials, now 40 (Bonferroni 0.05/40 = 0.00125). Nothing passes.
+- [ ] Open: stock-level versions on a point-in-time universe still need delisted prices (paid) - the French test says the factor premia exist historically but shrink to ~0 after costs/crowding.

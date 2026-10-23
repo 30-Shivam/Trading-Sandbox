@@ -30,3 +30,11 @@ vol_managed_spy
 lev2x_trend200
 sector_etf_mom_top3
 gem_dual_momentum
+french_mom_hi_decile
+french_value_bm_hi_decile
+french_value_ep_hi_decile
+french_low_accruals_decile
+french_profitability_hi_decile
+french_low_investment_decile
+french_blend_mom_bm_ac_op
+etf_factor_blend_mtum_vlue_qual
