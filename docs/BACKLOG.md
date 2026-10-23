@@ -65,3 +65,9 @@ Scripts in `research/etf_overlays/` (cache dir is regenerated). Bonferroni bar i
 - Tradable check: real factor ETFs since 2013-07 (MTUM+VLUE+QUAL equal weight, net of fees): CAGR 13.91% vs SPY 13.98%, excess +0.05%/yr t=0.05, maxDD -35.6% vs -33.7%. FAIL. The paper edge is not capturable with investable ETFs.
 - Registry: 8 more trials, now 40 (Bonferroni 0.05/40 = 0.00125). Nothing passes.
 - [ ] Open: stock-level versions on a point-in-time universe still need delisted prices (paid) - the French test says the factor premia exist historically but shrink to ~0 after costs/crowding.
+
+## LLM / free-data fundamentals loop (2026-10-23, `llm_research/`, registry now 42 trials, Bonferroni 0.05/42 = 0.0012)
+- Dataset: 4,781 as-filed 10-K ratio rows (2010-2025) from EDGAR + Yahoo; S&P point-in-time members only; survivor-tilted (394 of 568 resolvable names).
+- sec_ratio_ridge (NON-LLM; 12 as-filed ratios, expanding-window ridge, top quintile, EW, hold 126d, 10bps/side, SPY when idle): 2014-2025 CAGR 24.2% vs SPY 14.2%, alpha +7.8%/yr (beta 1.14), excess +9.9%/yr t=2.7 p=0.0018; holdout 2019+ +8.8%/yr t=1.7 p=0.038. maxDD -40.1% vs -33.7% (50/50 with SPY: -36.9%) -> FAILS drawdown gate; p NOT below Bonferroni bar. Top features: operating cash flow/assets (IC +0.10, t=2.8), low accruals (IC -0.056 on accruals, t=-2.1). Edge weakening 2023-25. Status: promising but unproven. Best next step is a forward paper tracker (no capital), not tuning.
+- llm_masked_fundamentals (26 blind Sonnet scorers, 1,548 anonymized rows: 748 ridge picks + 800 random): FAIL. Within picks LLM IC -0.050; LLM-vetoed picks returned +8.0% vs LLM-kept -0.2% (inverted). On random rows LLM IC +0.049, permutation p=0.083. LLM adds no value over ratios; live LLM variants also lost money earlier.
+- Leakage note: LLMs know 2010-2025 outcomes, so even blind historical LLM tests are suspect; a clean LLM test needs forward-only data.

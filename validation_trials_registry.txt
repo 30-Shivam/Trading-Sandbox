@@ -38,3 +38,5 @@ french_profitability_hi_decile
 french_low_investment_decile
 french_blend_mom_bm_ac_op
 etf_factor_blend_mtum_vlue_qual
+sec_ratio_ridge
+llm_masked_fundamentals
