@@ -3,7 +3,9 @@ score_fn(train_df, test_df) -> test scores; selection threshold = top (1-q) of t
 Training uses only filings whose 126d label had ALREADY ended before the test year started."""
 import sys, numpy as np, pandas as pd, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "research" / "etf_overlays"))  # metrics.py (committed)
-ROOT = pathlib.Path(__file__).parent; D = pd.read_pickle(ROOT/"cache"/"dataset.pkl"); P = pd.read_pickle(ROOT/"cache"/"prices.pkl")
+import os
+ROOT = pathlib.Path(__file__).parent; SUF = os.environ.get("RATIO_DATASET_SUFFIX", "")   # "_pit" = corrected point-in-time dataset
+D = pd.read_pickle(ROOT/"cache"/f"dataset{SUF}.pkl"); P = pd.read_pickle(ROOT/"cache"/f"prices{SUF}.pkl")
 F = ["rev_growth","gross_margin","gm_change","op_margin","opm_change","roa","roa_change","accruals","cfo_to_assets","leverage","lev_change","asset_growth"]
 D["year"] = D.filed.dt.year
 

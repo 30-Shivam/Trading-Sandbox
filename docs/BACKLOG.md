@@ -93,3 +93,7 @@ Scripts in `research/etf_overlays/` (cache dir is regenerated). Bonferroni bar i
 - Lesson recorded: any dataset built from "stocks that were ever in the index" must apply membership AS OF each observation date.
 - Also fixed 2026-10-23: `edgar_features.rows_for` dropped every filer without a `Liabilities` tag (now derived from LiabilitiesAndStockholdersEquity - equity); test in tests/test_edgar_features.py.
 - Data fix progress: Tiingo free key works for some delisted names (TWTR, ATVI, SIVB yes; FRC, BBBY no/empty). Bulk pull of the 181 Yahoo-missing names running (~4h, `llm_research/pull_tiingo.py`, resumable). CIK bridge (`llm_research/bridge_cik.py`): 149/181 validated; remaining are mostly banks/insurers (no revenue tag) and pre-XBRL names.
+
+## Ratio model on clean PIT data (2026-10-23, final verdict)
+Tiingo pull: 173 of 181 delisted names returned history (7 not found). `build_dataset_pit.py`: membership as of filing date, delisted prices from Tiingo, 63 truncated (delisted) labels, 6,528 labelled filings across 630 tickers (~84% of the 752 historical members).
+`sec_ratio_ridge`: ALL excess +2.64%/yr t=1.23 p=0.097; holdout 2019+ +3.34%/yr t=1.07 p=0.12; maxDD -36.8% vs SPY -33.7% (drawdown gate FAILS). Bonferroni bar over 44+ trials is ~p<0.0011. REJECTED: the original +9.9%/yr was lookahead; clean data barely changes the survivor-only estimate, so the delisted names were not hiding a big edge or a big loss. Forward tracker (frozen model) continues as out-of-sample evidence only.
