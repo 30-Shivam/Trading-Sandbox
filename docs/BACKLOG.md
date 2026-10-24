@@ -112,3 +112,9 @@ CAVEATS: random baskets understate the SE of real top-SUE baskets (sector/beta c
 2013+ (Yahoo adj close): SPY CAGR 14.85% maxDD -33.7%; 85/15 (3% drift rebal) 15.63% / -32.8%; daily-rebal 15.61% / -32.9%; static 15.76% / -32.6%; QQQ 19.66% / -35.1%.
 2022 calendar year: SPY -24.5% maxDD, 85/15 -26.0%. 2020 crash: SPY -33.7% vs 85/15 -32.8% (QQQ fell less, -28.6%).
 Verdict: max-drawdown clause PASSES narrowly (-32.8% vs -33.7%) only because the 2020 episode dominates; in the 2022 bear it is 1.5 pts worse. Excess +0.8%/yr is QQQ beta, not alpha; no t-stat claimed.
+
+## RESULT: pead_8k_sue_react (trial 45, spec frozen in docs/PEAD_SPEC.md before any returns) -> FAILED (2026-10-23)
+Diagnostics: 27,268 quarters with SUE; 8-K Item 2.02 matched for 98.6%; 8-K -> periodic-report lag median 2d, p90 22d; 21,105 member events, 1,083 triggers (~65/yr), 1,012 taken, 68 skipped (slots full).
+PRIMARY (entry close[react+1]): CAGR 15.93% vs SPY 15.13%, maxDD -36.1% vs -33.7% (FAILS drawdown), excess +0.70%/yr t=0.89 p=0.23; 2019+ excess -0.61%/yr t=-0.47.
+Sensitivity (entry close[react], circular, NOT decisive): +1.28%/yr t=1.63; 2019+ -0.01%/yr.
+Verdict: no tradable PEAD in S&P 500 large caps 2011-2026; consistent with the literature on decay. Pre-committed rule: this was the LAST S&P 500-only trial. S&P 500 alpha search CLOSED. Remaining decision (user's): pay $79 (MarketParquet) for a small-cap/universe-expansion program (Form 4 cluster buys + PEAD where drift survives), or freeze at 85/15 SPY/QQQ.

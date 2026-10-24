@@ -10,7 +10,7 @@ def quarter_series(units):
     Q1-Q3 = 3-month rows; Q4 = 12-month (10-K) minus the 9-month YTD (same start) . Never uses later restatements."""
     first = {}
     for r in sorted(units, key=lambda r: r["filed"]):
-        if r.get("form") not in ("10-Q", "10-K", "10-Q/A", "10-K/A"): continue
+        if r.get("form") not in ("10-Q", "10-K", "10-Q/A", "10-K/A") or "start" not in r: continue
         k = (r["start"], r["end"])
         if k not in first: first[k] = r
     out = []
