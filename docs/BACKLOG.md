@@ -107,3 +107,8 @@ Power (t=3.09, N=134, unconditional 20d excess sd of the same tickers, windows n
 Events = 10-Q/10-K filed dates of PIT S&P 500 members (proxy only: 10-Q lags the earnings 8-K). 2013+: 24,007 events over 55 quarters (~1,550-1,880/yr); 67% of a year's events fall in its 4 busiest 4-week windows. Per-event 20d excess sd 6.3% (winsorized 1/99).
 Required mean 20d excess for a top-5% basket (N~1,200), block-bootstrap by quarter (4-qtr blocks): t=3.09 -> 0.69% (naive iid 0.56%), t=2.58 -> 0.57%, t=1.65 -> 0.37%. 2010-2012 (only 12 quarters, XBRL-limited): t=3.09 needs 1.34%.
 CAVEATS: random baskets understate the SE of real top-SUE baskets (sector/beta clustering); stress 1.5-2x -> ~1.0-1.4%. Costs (~0.2% round trip) add on top. Screen does NOT prove an effect exists; it says PEAD is the first idea whose breadth gives realistic power.
+
+## 85/15 SPY/QQQ baseline vs SPY (2026-10-23, 0 trials, price-only, no costs/taxes)
+2013+ (Yahoo adj close): SPY CAGR 14.85% maxDD -33.7%; 85/15 (3% drift rebal) 15.63% / -32.8%; daily-rebal 15.61% / -32.9%; static 15.76% / -32.6%; QQQ 19.66% / -35.1%.
+2022 calendar year: SPY -24.5% maxDD, 85/15 -26.0%. 2020 crash: SPY -33.7% vs 85/15 -32.8% (QQQ fell less, -28.6%).
+Verdict: max-drawdown clause PASSES narrowly (-32.8% vs -33.7%) only because the 2020 episode dominates; in the 2022 bear it is 1.5 pts worse. Excess +0.8%/yr is QQQ beta, not alpha; no t-stat claimed.
