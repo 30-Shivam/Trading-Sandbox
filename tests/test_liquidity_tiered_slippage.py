@@ -131,13 +131,13 @@ def test_ma_crossover_simulate_threads_real_dollar_volume_to_settlement(uptrend_
         **swingtrade.DEFAULT_CONFIG.to_dict(), "strategy": "ma_crossover", "slippage_liquidity_scaling": True,
     })
     captured_dollar_volumes = []
-    real_settle = swingtrade.backtest._settle
+    real_settle = swingtrade.backtest.signals_other._settle
 
     def _spy_settle(*args, **kwargs):
         captured_dollar_volumes.append(kwargs.get("dollar_volume"))
         return real_settle(*args, **kwargs)
 
-    with patch("swingtrade.backtest._settle", side_effect=_spy_settle):
+    with patch("swingtrade.backtest.signals_other._settle", side_effect=_spy_settle):
         trades = swingtrade.simulate_ma_crossover_signals(
             "TEST", uptrend_ohlcv, market_ohlcv, uptrend_ohlcv.index[0], uptrend_ohlcv.index[-1], config,
             sector="Tech",

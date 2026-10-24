@@ -24,15 +24,6 @@ fails to load (e.g. its System_Config document is ever deleted) is
 skipped with a warning, not a fatal error -- the primary scan still runs
 regardless.
 
-Also runs the LLM Agent (see llm_agent.py) if GEMINI_API_KEY/GROQ_API_KEY
-are configured -- previously dashboard-only, meaning it only evaluated
-and logged a signal on days someone happened to open the dashboard,
-starving its own prospective validation trust floor (20-30 settled
-trades, 4-6 weeks) of data. Same candidate-selection logic as the
-dashboard's "LLM Agent" tab (tickers any mechanical strategy flagged
-above Ignore, capped at MAX_LLM_CANDIDATES, ranked by Trade_Score) --
-never capital-allocated, same as the dashboard.
-
 Not rewritten in Go (amendment #1) -- see market_data.py's docstring.
 
 Position sizing here uses --position-budget (default matches the dashboard's
@@ -66,16 +57,11 @@ import pandas as pd
 # before any print() call, including argparse's own --help output.
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-import yfinance as yf
 
 import ai_context
-import best_ideas
 import config_loader
-import ic_tracking
-import llm_agent
 import market_data
 import notifications
-import regime_switcher
 import sec_fundamentals
 import storage
 import swingtrade
@@ -85,11 +71,6 @@ from watchlist import read_ticker_sectors, read_tickers
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_WATCHLIST_FILE = SCRIPT_DIR / "watchlist.txt"
 DEFAULT_POSITION_BUDGET = 250.0
-MAX_LLM_CANDIDATES = 10  # same cap as dip_buy_analyzer.py's LLM Agent tab -- cost/rate-limit
-                          # control, see llm_agent.py's module docstring
-CHALLENGER_VARIANTS = ["qualitative_weighted", "evidence_strict"]  # run alongside the
-                          # default "balanced" variant for every candidate -- see
-                          # llm_agent.PROMPT_VARIANTS and run_llm_agent()'s docstring
 
 
 def _score_for_strategy(df: pd.DataFrame, config: swingtrade.TradingConfig) -> pd.DataFrame:
@@ -224,165 +205,6 @@ def run_secondary_strategy(
     return results_df
 
 
-def run_llm_agent(all_signal_frames: dict[str, pd.DataFrame], config: swingtrade.TradingConfig) -> None:
-    """Headless counterpart to dip_buy_analyzer.py's "LLM Agent" tab --
-    same candidate-selection logic (tickers any mechanical strategy
-    flagged above Ignore today, capped at MAX_LLM_CANDIDATES, ranked by
-    highest Trade_Score), same context-building (fundamentals, headlines,
-    macro snapshot, qualitative snapshot -- see market_data.get_qualitative_snapshot()),
-    same Trade_Signals logging convention ("Hold" AND "Avoid" both mapped
-    to "Watch" since neither is in the shared Strong Buy/Buy/Watch/Ignore
-    vocabulary -- Trade_Score, not the Signal label, is what distinguishes
-    a genuine bearish "Avoid" from a genuinely neutral "Hold", see
-    best_ideas.llm_bullishness_score()). NEVER
-    capital-allocated -- Shares_To_Buy/Est_Cost are always 0, no cash pool,
-    no allocate_capital() call, same as the dashboard tab.
-
-    Unlike the dashboard tab, evaluates EVERY candidate under all of
-    llm_agent.PROMPT_VARIANTS (default "balanced" plus CHALLENGER_VARIANTS)
-    for prospective A/B comparison -- context is built once per candidate
-    and reused across variants (only the prompt framing differs, not the
-    underlying data), so this doesn't add extra fetch cost, only extra LLM
-    calls (well within free-tier limits, see llm_agent.py's module
-    docstring). Each variant logs to its own strategy string (see
-    llm_agent.variant_strategy_name()) and settles completely independently.
-
-    Silently does nothing if llm_agent.is_available() is False (no keys
-    configured) -- callers should still call this unconditionally, same
-    "degrade quietly" philosophy as everything else optional in this
-    pipeline."""
-    if not llm_agent.is_available():
-        print("LLM Agent: unavailable (set GEMINI_API_KEY and/or GROQ_API_KEY to enable).")
-        return
-
-    candidates: dict[str, dict] = {}
-    for strategy_label, df in all_signal_frames.items():
-        if df is None or df.empty:
-            continue
-        interesting = df[df["Signal"] != "Ignore"]
-        for _, row in interesting.iterrows():
-            entry = candidates.setdefault(row["Ticker"], {"scores": {}, "row": row})
-            entry["scores"][strategy_label] = float(row["Trade_Score"])
-
-    ranked_candidates = sorted(
-        candidates.items(), key=lambda item: max(item[1]["scores"].values()), reverse=True
-    )[:MAX_LLM_CANDIDATES]
-
-    if not ranked_candidates:
-        print("LLM Agent: no tickers scored above Ignore under any mechanical strategy today -- nothing to evaluate.")
-        return
-
-    all_variants = ["balanced"] + CHALLENGER_VARIANTS
-    print(f"LLM Agent: evaluating {len(ranked_candidates)} ticker(s) flagged by at least one "
-          f"mechanical strategy today, highest mechanical Trade_Score first, under {len(all_variants)} "
-          f"prompt variant(s) ({', '.join(all_variants)}).")
-    macro_snapshot = market_data.get_macro_snapshot()
-
-    # One row-list per variant -- each logs to its own strategy string and
-    # settles independently. Context is built ONCE per candidate (below) and
-    # reused across variants; only the prompt framing passed to
-    # evaluate_ticker() differs, so this adds no extra fetch cost.
-    llm_rows_by_variant: dict[str, list] = {v: [] for v in all_variants}
-
-    for ticker, entry in ranked_candidates:
-        row = entry["row"]
-        fundamentals = {}
-        try:
-            info = yf.Ticker(ticker).info
-            fundamentals = {k: info[k] for k in ("trailingPE", "marketCap", "sector") if info.get(k) is not None}
-        except Exception:
-            pass
-        context = {
-            "last_close": float(row["Last_Close"]),
-            "rsi": float(row["RSI"]) if pd.notna(row.get("RSI")) else None,
-            "atr": float(row["ATR"]),
-            "mechanical_scores": entry["scores"],
-            "catalyst_warning": bool(row.get("Catalyst_Warning", False)),
-            "next_earnings_date": row.get("Next_Earnings_Date"),
-            "headlines": market_data.get_multi_headlines(ticker),
-            "fundamentals": fundamentals,
-            "macro": macro_snapshot,
-            "qualitative": market_data.get_qualitative_snapshot(ticker),
-        }
-
-        for variant in all_variants:
-            verdict = llm_agent.evaluate_ticker(ticker, context, variant=variant)
-            if verdict is None:
-                print(f"  {ticker} [{variant}]: LLM evaluation failed or returned an unusable response.")
-                continue
-
-            agreement_note = (
-                f", providers agreed ({verdict['secondary_provider']})" if verdict["provider_agreement"] is True
-                else f", providers DISAGREED ({verdict['secondary_provider']} said {verdict['secondary_decision']}, "
-                     "defaulted to the more conservative call)" if verdict["provider_agreement"] is False else ""
-            )
-            print(f"  {ticker} [{variant}]: {verdict['decision']} (confidence {verdict['confidence']:.0f}/100, "
-                  f"news_sentiment={verdict['news_sentiment']}{agreement_note}) -- {verdict['rationale']}")
-
-            # Adversarial second-pass review -- only worth the extra LLM call for
-            # "Buy" (the only decision a human might actually act on), see
-            # audit_verdict()'s own docstring for why this isn't run on every verdict.
-            audit = llm_agent.audit_verdict(ticker, context, verdict) if verdict["decision"] == "Buy" else None
-            if audit is not None:
-                print(f"    Audit: {audit['audit_result']} -- {audit['audit_notes']}")
-
-            if verdict["decision"] in ("Buy", "Hold", "Avoid"):
-                # 2026-09-20 REAL BUG FIX: "Avoid" verdicts used to be
-                # silently discarded here (gate was Buy/Hold only) -- the
-                # IC-tracking system could never learn whether llm_agent's
-                # bearish calls were actually right, since they were never
-                # recorded as trades to measure outcomes against. And
-                # Trade_Score used to be the RAW confidence regardless of
-                # decision -- a confident "Hold" (genuinely uncertain) was
-                # indistinguishable from a confident "Buy" in the ranking,
-                # and a logged "Avoid" would have shown a HIGH trade_score
-                # for a BEARISH call, inverting the correlation entirely.
-                # best_ideas.llm_bullishness_score() already solves both
-                # (Buy stretches up from 50, Avoid stretches down from 50,
-                # Hold stays flatly 50 regardless of confidence) -- this
-                # standalone logging path just never reused it. See
-                # ic_tracking.ensemble_weight()'s own 2026-09-20 fix
-                # docstring for the sibling bug this was found alongside.
-                variant_config = swingtrade.TradingConfig(
-                    **{**config.to_dict(), "strategy": llm_agent.variant_strategy_name(variant)}
-                )
-                atr = context["atr"]
-                buy_price = round(context["last_close"], 2)
-                sell_price = round(buy_price + variant_config.atr_take_profit_multiplier * atr, 2)
-                stop_loss = round(buy_price - variant_config.stop_loss_atr_multiplier * atr, 2)
-                risk = buy_price - stop_loss
-                rrr = round((sell_price - buy_price) / risk, 2) if risk > 0 else 0.0
-                llm_rows_by_variant[variant].append({
-                    "Ticker": ticker, "As_Of": row["As_Of"], "Signal": verdict["decision"],
-                    "Trade_Score": best_ideas.llm_bullishness_score(verdict["decision"], verdict["confidence"]),
-                    "Last_Close": context["last_close"],
-                    "Buy_Price": buy_price, "Sell_Price": sell_price, "Stop_Loss": stop_loss,
-                    "RRR": rrr, "RSI": context["rsi"], "ATR": atr,
-                    "Distance_to_Buy_Pct": 0.0, "Shares_To_Buy": 0.0, "Est_Cost": 0.0,
-                    "Next_Earnings_Date": context["next_earnings_date"],
-                    "Catalyst_Warning": context["catalyst_warning"], "Top_Headline": "",
-                    "Currency": row.get("Currency", "USD"),
-                    "Provider_Agreement": verdict["provider_agreement"],
-                    "Secondary_Provider": verdict["secondary_provider"],
-                    "Secondary_Decision": verdict["secondary_decision"],
-                    "Secondary_Confidence": verdict["secondary_confidence"],
-                    "Audit_Result": audit["audit_result"] if audit else None,
-                    "Audit_Notes": audit["audit_notes"] if audit else None,
-                })
-
-    for variant, llm_rows in llm_rows_by_variant.items():
-        if not llm_rows:
-            continue
-        strategy_name = llm_agent.variant_strategy_name(variant)
-        variant_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": strategy_name})
-        llm_df = pd.DataFrame(llm_rows)
-        llm_df["Signal"] = llm_df["Signal"].replace({"Hold": "Watch", "Avoid": "Watch"})
-        try:
-            logged = storage.log_trade_signals(llm_df, variant_config.to_dict())
-            print(f"LLM Agent [{variant}]: logged {logged['actionable']} actionable + {logged['research']} "
-                  f"research signal(s) to MongoDB (strategy={strategy_name}, never capital-allocated).")
-        except Exception as exc:
-            print(f"[WARN] LLM Agent [{variant}] signal logging failed: {exc}", file=sys.stderr)
 
 
 def run_experimental_strategies(
@@ -491,51 +313,6 @@ def run_experimental_strategies(
             print(f"[WARN] {label} (v{version}, experimental) signal logging failed: {exc}", file=sys.stderr)
 
 
-def run_best_ideas_strategy(
-    strategy_frames: dict[str, pd.DataFrame], regime_picks: list[dict],
-    bundle: dict, market_df, sector_lookup: dict[str, str] | None,
-    sector_data: dict | None, config: swingtrade.TradingConfig,
-) -> None:
-    """Headless counterpart to dip_buy_analyzer.py's "Best Ideas" tab -- see
-    best_ideas.py for the full methodology/reasoning (an IC/IR-weighted
-    ensemble across whatever's in best_ideas.METHODOLOGIES currently
-    (ma_crossover/regime_switcher/llm_agent -- squeeze_breakout removed
-    2026-08-26, see improvements.txt item 102's predecessor entries) plus
-    3 new methodologies built for that tab: sector-relative-
-    strength momentum, a rule-based qualitative composite, and an LLM
-    meta-synthesis call). NEVER capital-allocated -- Shares_To_Buy/Est_Cost
-    are always 0, no cash pool, no allocate_capital() call, same as
-    llm_agent.py/regime_switcher.py. Automated here (not left dashboard-
-    only) for the same reason regime_switcher.py's own automation exists:
-    its real prospective trust floor (and every sub-methodology's own
-    IC/IR) should accumulate by calendar time, not just on days someone
-    opens the dashboard.
-
-    Degrades gracefully if llm_agent.is_available() is False -- still
-    computes/logs the mechanical/regime/sector_rs/qualitative-only
-    composite (best_ideas.run_best_ideas() itself gates every LLM/extra-
-    fetch call on `fetch_llm`), just without the LLM/meta enrichment
-    layers that day."""
-    ic_reports = {name: ic_tracking.methodology_report(name) for name in best_ideas.METHODOLOGIES}
-    macro_snapshot = market_data.get_macro_snapshot()
-    results = best_ideas.run_best_ideas(
-        strategy_frames, regime_picks, bundle, sector_data or {}, sector_lookup or {}, config, ic_reports,
-        macro_snapshot=macro_snapshot, fetch_llm=llm_agent.is_available(),
-    )
-    for label, rows in results.items():
-        if label in best_ideas.RETIRED_VARIANT_LABELS:
-            continue  # retired 2026-10-21: net-negative live, see best_ideas.RETIRED_VARIANT_LABELS
-        if not rows:
-            print(f"Best Ideas [{label}]: no signals today.")
-            continue
-        row_config = swingtrade.TradingConfig(**{**config.to_dict(), "strategy": label})
-        df = pd.DataFrame(rows)
-        try:
-            logged = storage.log_trade_signals(df, row_config.to_dict())
-            print(f"Best Ideas [{label}]: logged {logged['actionable']} actionable + {logged['research']} "
-                  "research signal(s) to MongoDB (never capital-allocated).")
-        except Exception as exc:
-            print(f"[WARN] Best Ideas [{label}] signal logging failed: {exc}", file=sys.stderr)
 
 
 def run(
@@ -672,34 +449,7 @@ def run(
                     if summary:
                         print(f"\n[{row['Ticker']} ({row['Signal']})] {summary}")
 
-    if "llm_agent" in config_loader.DISABLED_RESEARCH_STEPS:
-        print("LLM Agent: disabled (config_loader.DISABLED_RESEARCH_STEPS) -- skipped.")
-    else:
-        run_llm_agent(all_signal_frames, config)
     run_experimental_strategies(bundle, market_df, sector_lookup, sector_data, yield_curve=yield_curve)
-
-    if "best_ideas" in config_loader.DISABLED_RESEARCH_STEPS:
-        print("Best Ideas: disabled (config_loader.DISABLED_RESEARCH_STEPS) -- skipped.")
-    else:
-        # Recomputes the same regime picks run_regime_switcher() just derived
-        # internally (cheap, no network -- pure re-application of
-        # regime_switcher.select_regime_pick() over strategy_frames, already
-        # fetched/scored above) rather than threading a return value through
-        # run_regime_switcher()'s existing signature -- keeps that
-        # already-working function untouched. See best_ideas.py for why the
-        # RAW pick dicts (not run_regime_switcher()'s own reduced row shape)
-        # are what run_best_ideas_strategy() needs.
-        best_ideas_regime_candidates: dict[str, dict[str, dict]] = {}
-        for strategy_name, df in strategy_frames.items():
-            if df is None or df.empty:
-                continue
-            for _, row in df[df["Signal"] != "Ignore"].iterrows():
-                best_ideas_regime_candidates.setdefault(row["Ticker"], {})[strategy_name] = row.to_dict()
-        regime_picks = [
-            pick for ticker, rows in best_ideas_regime_candidates.items()
-            if (pick := regime_switcher.select_regime_pick(ticker, rows)) is not None
-        ]
-        run_best_ideas_strategy(strategy_frames, regime_picks, bundle, market_df, sector_lookup, sector_data, config)
 
     if skipped:
         print(f"Skipped {len(skipped)} ticker(s) (primary scan -- fetch + scoring failures):")

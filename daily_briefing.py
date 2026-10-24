@@ -1,8 +1,7 @@
 """
 Daily Briefing -- one consolidated synthesis of the day's state, closing
 the gap where getting "what actually matters today, and why" required
-manually stitching together Position Review, LLM Agent candidates/audit
-results, and portfolio-health numbers through conversation each time (see
+manually stitching together Position Review and portfolio-health numbers through conversation each time (see
 the 2026-08-26 HWM/TDY/HST walkthrough this was built in response to).
 
 Runs as the 4th and final daily_run.py step, after ingest.py (fresh
@@ -12,10 +11,6 @@ state, not a partial one.
 
 Deliberately does NOT re-invent anything: reuses market_data.review_holdings()
 for holdings status (same as review_positions.py/dip_buy_analyzer.py),
-queries today's already-logged llm_agent-family Trade_Signals for
-candidates + audit results (the same fields ingest.py's run_llm_agent()
-already writes -- audit_result, and confidence stored under the shared
-trade_score field, see that function's own docstring), and
 ic_tracking.methodology_report() for portfolio health (same call every
 other trust-floor check in this project makes). Purely a SYNTHESIS/
 presentation layer on top of already-existing data -- no new scoring,
@@ -34,14 +29,14 @@ Usage:
 import sys
 from datetime import date
 
-import best_ideas
 import config_loader
 import ic_tracking
 import market_data
 import notifications
 import storage
 
-LLM_AGENT_STRATEGIES = ("llm_agent", "llm_agent_qualitative_weighted", "llm_agent_evidence_strict")
+# Logged strategy names whose live IC feeds the portfolio-health line.
+HEALTH_METHODOLOGIES = ("pairs", "value_rank", "accruals_rank")
 
 
 def build_position_review_section(rows: list[dict]) -> str:
@@ -62,46 +57,6 @@ def build_position_review_section(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_candidates_section(candidates_by_ticker: dict[str, list[dict]]) -> str:
-    """`candidates_by_ticker`: {ticker: [{"strategy":, "audit_result":,
-    "confidence":}, ...]} -- one entry per llm_agent-family prompt variant
-    that fired Buy for that ticker today (see LLM_AGENT_STRATEGIES).
-    Tickers with at least one audit PASS lead (the one thing worth seeing
-    first -- see the 2026-08-26 walkthrough where confidence alone didn't
-    distinguish a clean call from 5 that failed audit at the same
-    confidence level). Returns "" if nothing fired Buy today.
-
-    audit_result is None (not "FAIL") whenever the audit call itself never
-    returned a verdict (llm_agent.audit_verdict()'s own "never raises,
-    None on failure" contract -- a real API/parse failure, not a
-    content critique) -- distinguished from a real FAIL rather than
-    silently counted as one, confirmed live 2026-08-26 when URI's one
-    variant had 0 pass/0 fail purely because its audit call itself
-    produced no verdict, not because it failed on the merits."""
-    if not candidates_by_ticker:
-        return ""
-
-    def pass_count(ticker):
-        return sum(1 for c in candidates_by_ticker[ticker] if c["audit_result"] == "PASS")
-
-    def fail_count(ticker):
-        return sum(1 for c in candidates_by_ticker[ticker] if c["audit_result"] == "FAIL")
-
-    tickers = sorted(candidates_by_ticker.keys(), key=lambda t: (-pass_count(t), t))
-    lines = ["**Today's LLM Agent Buy candidates**"]
-    for ticker in tickers:
-        variants = candidates_by_ticker[ticker]
-        p, f = pass_count(ticker), fail_count(ticker)
-        if p and not f:
-            tag = "CLEAN"
-        elif p:
-            tag = "MIXED"
-        elif f:
-            tag = "ALL FAILED AUDIT"
-        else:
-            tag = "AUDIT UNAVAILABLE"
-        lines.append(f"  {ticker}: {tag} ({p} pass / {f} fail of {len(variants)} variant(s))")
-    return "\n".join(lines)
 
 
 _LOGGED_NAME_TO_LABEL = {logged: label for label, logged in config_loader.SECONDARY_LOG_STRATEGY_OVERRIDES.items()}
@@ -135,20 +90,18 @@ def build_portfolio_health_section(reports: dict[str, dict]) -> str:
 
 
 def build_daily_briefing(
-    position_rows: list[dict], candidates_by_ticker: dict[str, list[dict]], health_reports: dict[str, dict],
-    today: str | None = None,
+    position_rows: list[dict], health_reports: dict[str, dict], today: str | None = None,
 ) -> str:
-    """Compose the three sections into one message. `today` (optional,
+    """Compose the sections into one message. `today` (optional,
     defaults to date.today()) is injectable for deterministic testing."""
     sections = [
         build_position_review_section(position_rows),
-        build_candidates_section(candidates_by_ticker),
         build_portfolio_health_section(health_reports),
     ]
     sections = [s for s in sections if s]
     header = f"**Daily Briefing -- {today or date.today().isoformat()}**"
     if not sections:
-        return f"{header}\nNothing to report today -- no holdings, no Buy candidates, no trust-floor-cleared methodologies."
+        return f"{header}\nNothing to report today -- no holdings, no trust-floor-cleared methodologies."
     return header + "\n\n" + "\n\n".join(sections)
 
 
@@ -165,20 +118,9 @@ def gather() -> str:
         position_rows, _ = market_data.review_holdings(reviewable, config)
 
     today = date.today().isoformat()
-    docs = list(storage.get_db()["Trade_Signals"].find(
-        {"signal_date": today, "strategy": {"$in": list(LLM_AGENT_STRATEGIES)}, "signal": "Buy"}
-    ))
-    candidates_by_ticker: dict[str, list[dict]] = {}
-    for d in docs:
-        candidates_by_ticker.setdefault(d["ticker"], []).append({
-            "strategy": d["strategy"], "audit_result": d.get("audit_result"), "confidence": d.get("trade_score"),
-        })
+    health_reports = {name: ic_tracking.methodology_report(name) for name in HEALTH_METHODOLOGIES}
 
-    health_reports = {
-        name: ic_tracking.methodology_report(name) for name in best_ideas.METHODOLOGIES + ["best_ideas"]
-    }
-
-    return build_daily_briefing(position_rows, candidates_by_ticker, health_reports, today=today)
+    return build_daily_briefing(position_rows, health_reports, today=today)
 
 
 def main() -> int:

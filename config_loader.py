@@ -28,14 +28,9 @@ import swingtrade
 #     the fair validation bar 2026-09-27 (see SECONDARY_VALIDATION_CAVEATS).
 #   - Squeeze Breakout v53: removed 2026-08-26 (portfolio simplification).
 # Retired strategies stay in Mongo (status=candidate/retired), never deleted.
-# Research-only steps the daily scan skips (soft retirement: code stays, flip a
-# name out of this set to re-enable). Disabled 2026-10-22 on live evidence --
-# best_ideas* (4 variants, ~1,000 settled trades: 9-19% win rate, avg pnl
-# -0.2..-1.0%) and llm_agent* (3 variants, ~860 trades: 9-19% win rate, avg
-# -0.5..-1.5%) were net negative while SPY rose, and the LLM calls consume API
-# quota and daily-run time. The dashboard tabs can still run them on demand.
-# NOTE: ma_crossover/pairs keep logging independently of this.
-DISABLED_RESEARCH_STEPS = frozenset({"llm_agent", "best_ideas", "llm_strategy_research"})
+# llm_agent*, best_ideas* and llm_strategy_research were REMOVED 2026-10-22 (net negative on
+# live evidence: ~1,000 best_ideas trades 9-19% win rate, ~860 llm_agent trades 9-19%, both
+# losing while SPY rose). Sources: `git log --diff-filter=D -- llm_agent.py best_ideas.py`.
 
 SECONDARY_STRATEGY_VERSIONS = {
     # Squeeze Breakout REMOVED 2026-08-26, per explicit user request during

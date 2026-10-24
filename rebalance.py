@@ -18,7 +18,7 @@ Off unless PAPER_TRADING_ENABLED=1 (or --dry-run, which sends nothing).
 Usage:
     python rebalance.py --dry-run
     PAPER_TRADING_ENABLED=1 python rebalance.py
-Env overrides: CORE_TARGETS="SPY:0.70,QQQ:0.15"  SATELLITE_RESERVE=0.15  REBALANCE_DRIFT_BAND=0.03
+Env overrides: CORE_TARGETS="SPY:0.85,QQQ:0.15"  SATELLITE_RESERVE=0.0  REBALANCE_DRIFT_BAND=0.03
 """
 
 import argparse
@@ -28,8 +28,8 @@ from datetime import datetime, timezone
 
 import broker as broker_mod
 
-DEFAULT_TARGETS = {"SPY": 0.70, "QQQ": 0.15}
-DEFAULT_SATELLITE_RESERVE = 0.15
+DEFAULT_TARGETS = {"SPY": 0.85, "QQQ": 0.15}
+DEFAULT_SATELLITE_RESERVE = 0.0   # no strategy has passed the index gate; raise only when one does
 DEFAULT_DRIFT_BAND = 0.03
 MIN_TRADE_USD = 50.0
 

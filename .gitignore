@@ -35,3 +35,4 @@ scratchpad/*.log
 scratchpad/*.png
 scratchpad/*.txt
 scratchpad/ideas_pdf/
+llm_research/cache/
