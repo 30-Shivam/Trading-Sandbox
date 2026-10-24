@@ -42,3 +42,4 @@ sec_ratio_ridge
 llm_masked_fundamentals
 btc_trend200
 spy_btc_trend_blend
+pead_8k_sue_react
