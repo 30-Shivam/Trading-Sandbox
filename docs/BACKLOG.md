@@ -118,3 +118,6 @@ Diagnostics: 27,268 quarters with SUE; 8-K Item 2.02 matched for 98.6%; 8-K -> p
 PRIMARY (entry close[react+1]): CAGR 15.93% vs SPY 15.13%, maxDD -36.1% vs -33.7% (FAILS drawdown), excess +0.70%/yr t=0.89 p=0.23; 2019+ excess -0.61%/yr t=-0.47.
 Sensitivity (entry close[react], circular, NOT decisive): +1.28%/yr t=1.63; 2019+ -0.01%/yr.
 Verdict: no tradable PEAD in S&P 500 large caps 2011-2026; consistent with the literature on decay. Pre-committed rule: this was the LAST S&P 500-only trial. S&P 500 alpha search CLOSED. Remaining decision (user's): pay $79 (MarketParquet) for a small-cap/universe-expansion program (Form 4 cluster buys + PEAD where drift survives), or freeze at 85/15 SPY/QQQ.
+
+## CLOSED 2026-10-23: active alpha research concluded at 45 trials (0 passed)
+See docs/TRIAL_OUTCOMES.md. Policy frozen at 85/15 SPY/QQQ. MarketParquet/small-cap program declined (small-cap beta headwind vs SPY + higher microstructure costs). Remaining work is maintenance only: keep trackers running, refresh the hanshof membership CSV (ends 2025-08-23) if the ratio tracker is ever revisited, review ratio_tracker output once >=150 settled filings exist.
