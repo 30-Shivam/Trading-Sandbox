@@ -108,3 +108,38 @@ def test_healthcheck_ping_success_failure_and_noop(monkeypatch):
 
     monkeypatch.setattr(requests, "get", boom)
     assert daily_run.ping_healthcheck(True, "https://hc.example/abc") is False
+
+
+def test_daily_run_worst_case_step_budget_fits_inside_workflow_timeout():
+    import daily_run
+    assert sum(daily_run.STEP_TIMEOUT_SEC.values()) <= daily_run.WORST_CASE_BUDGET_SEC <= 45 * 60
+
+
+def test_run_step_records_elapsed_even_when_step_times_out(monkeypatch):
+    import subprocess
+    import daily_run
+
+    def hang(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="x", timeout=1, output=b"partial", stderr=None)
+
+    monkeypatch.setattr(daily_run.subprocess, "run", hang)
+    ok, out = daily_run.run_step("x", "x.py", 1)
+    assert ok is False and "TIMED OUT" in out and "x.py" in daily_run.STEP_ELAPSED_SEC
+
+
+def test_coverage_summary_filter_exclusions_are_not_lost_coverage():
+    # Real 2026-10-23 shape: 172 macro-downtrend exclusions + 1 genuine data failure out of 407.
+    skipped = [("WBD", "no data returned for ticker 'WBD'")] + [
+        (f"T{i}", "excluded: macro downtrend (Last_Close 74.09 < SMA200 75.24)") for i in range(171)
+    ] + [("ILQ", "excluded: insufficient liquidity (20d $ volume $1)")]
+    s = universe.coverage_summary(407, skipped)
+    assert s["analyzed"] == 406 and s["skipped"] == 1 and s["excluded"] == 172 and not s["degraded"]
+    assert s["reasons"] == {"no_data_or_delisted": 1}
+    line = universe.format_coverage_line(s)
+    assert line == "COVERAGE 406/407 (99.8%) skipped: no_data_or_delisted=1 excluded_by_filter=172"
+
+
+def test_coverage_summary_real_failures_still_degrade_alongside_exclusions():
+    skipped = [(f"F{i}", "HTTP 429") for i in range(100)] + [("X", "excluded: macro downtrend")] * 50
+    s = universe.coverage_summary(200, skipped)
+    assert s["analyzed"] == 100 and s["degraded"] and s["excluded"] == 50

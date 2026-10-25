@@ -246,10 +246,13 @@ def fetch_fred_series(series_id: str, start, end) -> pd.Series | None:
         if raw_value in (None, ".", ""):
             continue
         try:
-            dates.append(pd.Timestamp(obs["date"]))
-            values.append(float(raw_value))
+            # Parse both fields before appending either, so a bad value can't
+            # leave `dates` one longer than `values`.
+            parsed_date, parsed_value = pd.Timestamp(obs["date"]), float(raw_value)
         except (ValueError, KeyError, TypeError):
             continue
+        dates.append(parsed_date)
+        values.append(parsed_value)
     if not dates:
         return None
     return pd.Series(values, index=pd.DatetimeIndex(dates)).sort_index()
