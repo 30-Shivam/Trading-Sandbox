@@ -121,3 +121,14 @@ Verdict: no tradable PEAD in S&P 500 large caps 2011-2026; consistent with the l
 
 ## CLOSED 2026-10-23: active alpha research concluded at 45 trials (0 passed)
 See docs/TRIAL_OUTCOMES.md. Policy frozen at 85/15 SPY/QQQ. MarketParquet/small-cap program declined (small-cap beta headwind vs SPY + higher microstructure costs). Remaining work is maintenance only: keep trackers running, refresh the hanshof membership CSV (ends 2025-08-23) if the ratio tracker is ever revisited, review ratio_tracker output once >=150 settled filings exist.
+
+## CLOSED 2026-10-24: research program concluded (user decision); repository in maintenance/monitoring mode
+- [x] S&P 500 equity alpha search: closed at 45 trials, 0 passed (see above and docs/TRIAL_OUTCOMES.md).
+- [x] Odd-lot tender offers (SC TO-I): descriptive screen, 0 trials, FAIL both kill rules (median 3 qualifying events/yr vs 12; median net $58 vs $75). `docs/ODDLOT_SPEC.md`, `research/oddlot_tender/`.
+- [x] Crypto basis (Binance perp funding carry, BTC+ETH): descriptive screen, 0 trials, DROP (avg net spread over cash 1.96 pp since 2022 vs 4.0 bar; 2026 YTD funding below T-bills). `docs/CRYPTO_BASIS_SPEC.md`, `research/crypto_basis/`.
+- [x] Options selling / VRP: closed WITHOUT a screen by user decision: tail correlation with SPY and negative skew conflict with the 5% max-drawdown cash gate; no clean historical options surface data in the stack.
+- [x] Dual validation gates kept as permanent assets: Index Gate (`audit_vs_index`/`index_gate_verdict`, promote lock) and Cash Gate (`swingtrade/backtest/cash_gate.py`, `audit_vs_cash.py`, ^IRX/BIL, stationary-block-bootstrap Sharpe CI, Calmar, tail metrics; bar alpha/N from the shared `validation_trials_registry.txt`, currently 45). Descriptive screens never register trials; hypothesis tests do.
+- [x] Portfolio policy permanently frozen at 85% SPY / 15% QQQ. Daily pipeline in monitoring mode: 85/15 baseline + unfunded trackers (value_rank v76, accruals_rank v77, pairs v58, ratio_tracker.py); no strategy/alpha trades. Only orders: rebalance.py drift rebalances on the Alpaca PAPER account.
+- [x] Pipeline hardening 2026-10-24: step caps sum to 33 min (test-enforced <= 35) inside the 45-min runner limit; per-step timings in the status message; `COVERAGE` no longer counts deliberate filter exclusions as lost coverage; pip cache in CI; tests for market_data/confirm_fill/reconcile_settled_outcomes; repo hygiene rules in CLAUDE.md.
+- [ ] Maintenance only: keep trackers running; review ratio_tracker output once >=150 settled filings exist; refresh the hanshof membership CSV (ends 2025-08-23) if the ratio tracker is revisited; create the healthchecks.io check and add the HEALTHCHECK_URL secret.
+
