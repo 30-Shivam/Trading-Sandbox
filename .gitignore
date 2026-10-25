@@ -36,3 +36,16 @@ scratchpad/*.png
 scratchpad/*.txt
 scratchpad/ideas_pdf/
 llm_research/cache/
+
+# --- Repo hygiene (2026-10-24): logs, caches and scratch run output are never committed ---
+*.log
+*.pkl
+.DS_Store
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+research_logs/
+research/**/cache/
+scratchpad/*.csv
+scratchpad/*.json
