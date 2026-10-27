@@ -209,7 +209,8 @@ def test_cli_end_to_end_with_stubbed_cash_and_no_registry_write(tmp_path, monkey
     before = audit_vs_cash.REGISTRY_PATH.read_text()
     rc = audit_vs_cash.main(["--returns-csv", str(csv), "--strategy", "demo", "--n-boot", "500"])
     out = capsys.readouterr().out
-    assert rc == 0 and "CASH GATE: PASS" in out and "Bonferroni bar: alpha 0.05 / 46 trials" in out
+    n = audit_vs_cash.registry_count(audit_vs_cash.REGISTRY_PATH) + 1      # registered entries + the strategy under test
+    assert rc == 0 and "CASH GATE: PASS" in out and f"Bonferroni bar: alpha 0.05 / {n} trials" in out
     assert audit_vs_cash.REGISTRY_PATH.read_text() == before      # read-only without --register
 
 
