@@ -49,3 +49,7 @@ research_logs/
 research/**/cache/
 scratchpad/*.csv
 scratchpad/*.json
+
+# Personal brokerage data never goes in git (put holdings exports here)
+private/
+*.holdings.csv
