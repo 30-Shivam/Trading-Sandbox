@@ -1,6 +1,6 @@
 # Trial outcomes (companion to validation_trials_registry.txt)
-The registry is a plain one-name-per-line file that `benchmark_random_entry.bonferroni_check` rewrites, so it cannot hold notes. Outcomes live here. 45 trials registered; ZERO passed. Active alpha research CONCLUDED 2026-10-23 (user decision).
-Bonferroni bar at 45 trials: alpha = 0.05/45 = 0.0011 (t ~ 3.09).
+The registry is a plain one-name-per-line file that `benchmark_random_entry.bonferroni_check` rewrites, so it cannot hold notes. Outcomes live here. 46 trials registered; ZERO passed. Active alpha research CONCLUDED 2026-10-23 (user decision).
+Bonferroni bar at 46 trials: alpha = 0.05/46 = 0.00109 (t ~ 3.09).
 
 | # | Trial | Outcome |
 |---|---|---|
@@ -8,6 +8,7 @@ Bonferroni bar at 45 trials: alpha = 0.05/45 = 0.0011 (t ~ 3.09).
 | 43 | llm_masked_fundamentals | Blind LLM on anonymised ratios: random-row IC +0.049 p=0.083; vetoed ridge picks beat kept ones (+8.0% vs -0.2%). FAILED |
 | 44 | btc_trend200 / spy_btc_trend_blend | Holdout +8%/yr t=0.42, maxDD -63%; 80/20 blend +1.6%/yr p=0.39. FAILED |
 | 45 | pead_8k_sue_react | 8-K Item 2.02 + net-income SUE + reaction-day return, spec frozen before returns (docs/PEAD_SPEC.md). Primary: excess +0.70%/yr t=0.89 p=0.23; 2019+ -0.61%/yr; maxDD -36.1% vs SPY -33.7%. FAILED (final) |
+| 46 | trend_dip_buy | Reopened for ONE test by user decision 2026-10-27 (docs/DIP_SPEC.md, frozen before returns). >=15% below 126d high, above rising SMA200, hold 20d, 20 slots. Excess +3.26%/yr t=1.27 p=0.090, 2019+ +5.58%/yr t=1.18, maxDD -35.2% vs SPY -33.7%. Beat matched random entries (p=0.0005) but not SPY. 41 PIT names unpriced (favors the strategy). FAILED (final) |
 
 Screens dropped WITHOUT spending a trial: S&P 500 deletion rebound (134 events, needed >2.5% 20d drift), HY-OAS regime gate (FRED truncated the series to 3 years in Apr 2026), GP/A x low-beta, filing-lag.
 

@@ -170,3 +170,10 @@ from .index_gate import (
     INDEX_GATE_MIN_T,
     index_gate_verdict,
 )  # noqa: F401
+from .cash_gate import (
+    audit_vs_cash,
+    cash_gate_verdict,
+    CASH_GATE_MIN_SHARPE,
+    CASH_GATE_MIN_CAGR_PCT,
+    CASH_GATE_MAX_DRAWDOWN_PCT,
+)  # noqa: F401

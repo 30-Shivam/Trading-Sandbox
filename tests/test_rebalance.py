@@ -39,7 +39,21 @@ def test_rejects_targets_over_100_percent():
 def test_parse_targets_and_defaults(monkeypatch):
     assert rb.parse_targets("spy:0.6, qqq:0.1") == {"SPY": 0.6, "QQQ": 0.1}
     monkeypatch.delenv("CORE_TARGETS", raising=False)
-    assert rb.core_symbols() == {"SPY", "QQQ"}
+    assert rb.core_symbols() == {"QQQ", "SPY", "IBIT", "GLD"}
+
+
+def test_default_policy_sums_to_one_and_builds_from_cash():
+    assert sum(rb.DEFAULT_TARGETS.values()) == pytest.approx(1.0)
+    trades = plan(targets=rb.DEFAULT_TARGETS, reserve=0.0)
+    assert {t["symbol"]: t["notional"] for t in trades} == pytest.approx(
+        {"QQQ": 60_000, "SPY": 20_000, "IBIT": 10_000, "GLD": 10_000})
+    assert all(t["side"] == "buy" for t in trades)
+
+
+def test_default_policy_moves_off_old_85_15_by_selling_spy_first():
+    trades = plan(targets=rb.DEFAULT_TARGETS, reserve=0.0, holdings={"SPY": 85_000, "QQQ": 15_000}, cash=0)
+    assert trades[0] == {"symbol": "SPY", "side": "sell", "notional": 65_000.0, "reason": trades[0]["reason"]}
+    assert {t["symbol"]: t["notional"] for t in trades[1:]} == pytest.approx({"QQQ": 45_000, "IBIT": 10_000, "GLD": 10_000})
 
 
 def test_min_trade_filter():

@@ -156,13 +156,23 @@ def load_universe(path: Path = DEFAULT_UNIVERSE_FILE, caps: set[str] | None = No
     return [e for e in entries if caps is None or e.get("cap") in caps]
 
 
+EXCLUDED_BY_FILTER_PREFIX = "excluded:"   # reason prefix used by swingtrade.levels for deliberate filter rejections
+
+
 def coverage_summary(requested: int, skipped: list[tuple[str, str]]) -> dict:
     """How much of the requested universe was actually analyzed, and why the
     rest wasn't. Fetch failures were previously a long, unsummarized list at
     the bottom of the log (a 38% loss on the small/mid scan went unnoticed)."""
     reasons: dict[str, int] = {}
+    excluded = 0
     for _, reason in skipped:
         text = str(reason).lower()
+        if text.startswith(EXCLUDED_BY_FILTER_PREFIX):
+            # A strategy filter (macro downtrend, illiquid) rejected a ticker whose data
+            # fetched and scored fine -- 2026-10-24: 172/407 such exclusions on a weak-market
+            # day made every run read DEGRADED. Tracked separately, not as lost coverage.
+            excluded += 1
+            continue
         if "delist" in text or "no price data" in text or "no data" in text:
             key = "no_data_or_delisted"
         elif "timeout" in text or "timed out" in text:
@@ -172,10 +182,11 @@ def coverage_summary(requested: int, skipped: list[tuple[str, str]]) -> dict:
         else:
             key = "other"
         reasons[key] = reasons.get(key, 0) + 1
-    analyzed = max(requested - len(skipped), 0)
+    failed = len(skipped) - excluded
+    analyzed = max(requested - failed, 0)
     ratio = analyzed / requested if requested else 0.0
     return {
-        "requested": requested, "analyzed": analyzed, "skipped": len(skipped),
+        "requested": requested, "analyzed": analyzed, "skipped": failed, "excluded": excluded,
         "coverage": ratio, "degraded": ratio < MIN_COVERAGE, "reasons": reasons,
     }
 
@@ -184,8 +195,9 @@ def format_coverage_line(summary: dict) -> str:
     """Stable one-liner; daily_run.py greps for the leading `COVERAGE` token."""
     reasons = ", ".join(f"{k}={v}" for k, v in sorted(summary["reasons"].items())) or "none"
     flag = " DEGRADED" if summary["degraded"] else ""
+    excluded = f" excluded_by_filter={summary['excluded']}" if summary.get("excluded") else ""
     return (f"COVERAGE {summary['analyzed']}/{summary['requested']} "
-            f"({summary['coverage']:.1%}){flag} skipped: {reasons}")
+            f"({summary['coverage']:.1%}){flag} skipped: {reasons}{excluded}")
 
 
 def main() -> int:

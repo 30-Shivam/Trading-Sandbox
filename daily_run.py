@@ -51,11 +51,17 @@ import notifications
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
-# Per-step caps sized to fit inside the workflow's 45-minute limit with room to report.
+# Per-step caps, roughly 2-3x observed runtimes (2026-10-23 run: ingest ~4m15s, everything else ~6m together;
+# ratio_tracker's Monday full scan ~5m). Their SUM must stay under WORST_CASE_BUDGET_SEC so even if every step
+# hangs, daily_run.py still reaches its report before the workflow's 45-minute timeout cancels the job
+# (the previous caps summed to 53 min, which defeated the point of having them).
 STEP_TIMEOUT_SEC = {
-    "ingest.py": 22 * 60, "settle_trades.py": 8 * 60, "review_positions.py": 3 * 60,
-    "daily_briefing.py": 3 * 60, "ratio_tracker.py": 12 * 60, "paper_trade.py": 3 * 60, "rebalance.py": 2 * 60,
+    "ingest.py": 12 * 60, "settle_trades.py": 6 * 60, "review_positions.py": 2 * 60,
+    "daily_briefing.py": 2 * 60, "ratio_tracker.py": 8 * 60, "paper_trade.py": 2 * 60, "rebalance.py": 1 * 60,
 }
+WORST_CASE_BUDGET_SEC = 35 * 60   # 45-minute workflow limit minus pip install and reporting headroom
+
+STEP_ELAPSED_SEC: dict[str, float] = {}   # script -> wall-clock seconds, filled by run_step()
 
 
 def run_step(
@@ -77,6 +83,14 @@ def run_step(
     reconfigure() fix applied directly to it (2026-08-29) -- this
     subprocess-level encoding only protects daily_run.py's own capture,
     not a crash inside the child script before it ever writes output."""
+    step_start = time.time()
+    try:
+        return _run_step(name, script, timeout_sec, args)
+    finally:
+        STEP_ELAPSED_SEC[script] = time.time() - step_start
+
+
+def _run_step(name: str, script: str, timeout_sec: int, args: list[str] | None) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             [sys.executable, "-u", str(SCRIPT_DIR / script), *(args or [])],
@@ -171,7 +185,8 @@ def main() -> int:
     if paper_enabled:
         step_results["paper"] = ok_paper
     step_line = " ".join(f"{n}={'ok' if ok else 'FAILED'}" for n, ok in step_results.items())
-    print(f"daily_run.py: {status} ({elapsed:.0f}s elapsed). Steps: {step_line}")
+    timing_line = "Timings: " + " ".join(f"{k.removesuffix('.py')}={v:.0f}s" for k, v in STEP_ELAPSED_SEC.items())
+    print(f"daily_run.py: {status} ({elapsed:.0f}s elapsed). Steps: {step_line}\n{timing_line}")
 
     coverage_line = extract_coverage(output_ingest)
     if coverage_line is None:
@@ -181,7 +196,7 @@ def main() -> int:
         status = "DEGRADED"
     message = (
         f"[Trading-Sandbox] daily_run.py {status} -- {elapsed:.0f}s elapsed, "
-        f"{started_at:%Y-%m-%d %H:%M} UTC\n{step_line}\n{coverage_line}"
+        f"{started_at:%Y-%m-%d %H:%M} UTC\n{step_line}\n{timing_line}\n{coverage_line}"
     )
     full_report = f"{output_ingest}\n\n{output_paper}\n\n{output_settle}\n\n{output_review}\n\n{output_tracker}\n\n{output_briefing}"
     filename = f"daily_run_{started_at:%Y%m%d_%H%M%S}.txt"
